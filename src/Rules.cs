@@ -315,10 +315,13 @@ namespace VbeComplete
         /// </summary>
         public static bool IsCallSite(string line, int wordStartCol)
         {
-            if (string.IsNullOrEmpty(line)) return false;
+            if (line == null) return false;
             int start = Math.Max(0, Math.Min(wordStartCol - 1, line.Length));
             string before = line.Substring(0, start).TrimEnd();
-            if (before.Length == 0) return false;
+            // ★行首（前面只有缩进）同样是调用点：`MsgBox "hi"` / `Split(s)` 都是
+            //   合法的语句开头。这里曾经返回 false，于是"在一行的开头打函数名、
+            //   按 Tab"永远补不出括号 —— 用户报的"函数提示词不自动补双括号"就是它。
+            if (before.Length == 0) return true;
             if (before.EndsWith(".", StringComparison.Ordinal)) return false;
             if (Regex.IsMatch(before, @"\b(?:Sub|Function|Property|Declare|Enum|Type|Event|As|New|On|GoTo|GoSub|Resume|Call)\s*$",
                     RegexOptions.IgnoreCase))

@@ -42,8 +42,9 @@ pane**, and its message loop costs nothing when idle.
 - **Never fights the VBE for space**: it yields as soon as VBE's own member list appears, and moves
   below VBE's parameter-info popup instead of covering it.
 - **`Tab` is the only accept key** — `Enter` still inserts a newline (a wrong completion costs too
-  much). `Sub` gets a space, `Function` gets `()` with the caret inside. Silent inside comments and
-  string literals.
+  much). `Sub` gets a space, `Function` gets `()` with the caret inside — and so do the functions
+  from the word databases (`MsgBox` / `Split` …), even at the very start of a line. Type names
+  (`String`) never get parens. Silent inside comments and string literals.
 - **Enter auto-indent**: block openers indent one level deeper and add `End If` / `Next` / `Loop`;
   `Else` / `Case` lines are re-aligned first.
 - **Shift+Enter** starts a new line below without splitting the current one.
@@ -52,9 +53,11 @@ pane**, and its message loop costs nothing when idle.
   char steps over an existing one; a selection gets wrapped.
 - **Line commands**: `Ctrl+/` comment toggle · `Ctrl+D` duplicate · `Ctrl+K` delete ·
   `Ctrl+Shift+Enter` insert above · `Ctrl+Shift+↑/↓` jump to the last declaration / closing line.
-- **`Ctrl+Q` snippet library** — its own `snippets-cs.db` (SQLite). Two-line list on the left
-  (title + first code line, per-character search highlighting), editor on the right, `Ctrl+N` new /
-  `Ctrl+S` save / `Enter` or `Ctrl+Enter` to insert at the caret.
+- **`Ctrl+Q` snippet library** — its own `snippets-cs.db` (SQLite; the window title shows that
+  file name). On first run the contents of an old `snippets.db` are copied over **once**, after
+  which the two files are unrelated. Two-line list on the left (title + first code line,
+  per-character search highlighting), editor on the right, `Ctrl+N` new / `Ctrl+S` save /
+  `Enter` or `Ctrl+Enter` to insert at the caret.
 - **Adaptive polling**: 50 ms while typing, 150 ms when idle, 250 ms outside the VBE. Text changes
   caused by a paste or by another program only dismiss the popup — they never open it
   (`REQUIRE_KEY_TRIGGER`).
@@ -68,9 +71,9 @@ pane**, and its message loop costs nothing when idle.
   tool; they are fully independent of the Python edition, sharing no file with it.
 - Every shortcut follows one rule: **if the action fails, the original key is replayed**, so keys
   are never silently swallowed.
-- 293 self-checks (fuzzy matching, scopes, `Option Explicit`, Chinese identifiers, member completion,
-  highlight splitting) plus word-DB, snippet-store and off-screen rendering checks, and three live
-  probes keep the logic honest.
+- 296 self-checks (fuzzy matching, scopes, `Option Explicit`, Chinese identifiers, member completion,
+  highlight splitting, call-site detection) plus word-DB, snippet-store and off-screen rendering
+  checks, and four live probes keep the logic honest.
 
 ## Cons
 
@@ -85,5 +88,5 @@ pane**, and its message loop costs nothing when idle.
   completion after a pause can take a few dozen milliseconds.
 - The global hook is mounted only while the VBE is focused, so there is no completion in other
   editors and a short delay when switching back.
-- Live verification (`--enginetest` / `--carettest` / `--hktest`) requires an open VBA project and
-  code window; with no host available those checks skip instead of running.
+- Live verification (`--enginetest` / `--paretest` / `--carettest` / `--hktest`) requires an open
+  VBA project and code window; with no host available those checks skip instead of running.

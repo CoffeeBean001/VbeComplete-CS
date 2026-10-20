@@ -87,9 +87,40 @@ namespace VbeComplete
             {
                 return DumpModule();
             }
+            if (args.Length > 0 && args[0] == "--paretest")
+            {
+                return ParenTest();
+            }
             if (args.Length > 0 && args[0] == "--enginetest")
             {
                 return EngineTest();
+            }
+            // ★认不出的 `--xxx` 不能顺手当成"正常启动"：那会静默起一个托盘实例，
+            //   让人以为"检查跑过了"（其实什么都没跑）。打一行用法就退出。
+            if (args.Length > 0 && args[0].StartsWith("--", StringComparison.Ordinal))
+            {
+                const string usage =
+                    "用法：VbeComplete.exe [开关]\r\n" +
+                    "  （不带参数 = 正常启动）\r\n" +
+                    "  --selftest    纯逻辑自检（不需要 Excel）\r\n" +
+                    "  --dbtest      两个词库的建库/载入检查\r\n" +
+                    "  --snipetest   片段库读写检查\r\n" +
+                    "  --uitest      候选窗 / 片段窗离屏渲染出 PNG\r\n" +
+                    "  --probe       打印当前 VBE 状态（只读）\r\n" +
+                    "  --dump        把当前代码窗全文写到 moddump.txt（只读）\r\n" +
+                    "  --enginetest  用真机模块文本跑候选判定（只读）\r\n" +
+                    "  --paretest    真机验证函数补括号（改完即还原）\r\n" +
+                    "  --carettest   真机验证中文名光标落点（改完即还原）\r\n" +
+                    "  --writetest   真机验证写入链路（改完即还原）\r\n" +
+                    "  --hktest      真机验证行操作快捷键（改完即还原）\r\n";
+                Console.WriteLine("未知开关：" + args[0]);
+                Console.WriteLine(usage);
+                try
+                {
+                    File.WriteAllText(Path.Combine(Settings.Home, "usage.log"), usage, Encoding.UTF8);
+                }
+                catch { }
+                return 2;
             }
 
             // 单实例：同名互斥体已经存在就说明有一份在跑。
@@ -225,6 +256,129 @@ namespace VbeComplete
             sb.AppendLine(ok && restored ? "RESULT: PASS" : "RESULT: FAIL");
 
             File.WriteAllText(Path.Combine(Settings.Home, "writetest.log"), sb.ToString(), Encoding.UTF8);
+            return ok && restored ? 0 : 1;
+        }
+
+        /// <summary>
+        /// 括号补全验证（真机）：走 Engine.AcceptName 这条**真路径**（不是直接调
+        /// Backend.ApplyCompletion），确认"选词库里的函数"真的会得到一对括号、
+        /// 光标真的落在两个括号中间；类型名 / 关键字一个括号都不许补。
+        ///
+        /// ★为什么要单开一条：用户报"选中的是 vba 函数提示词，没有自动补全双括号"。
+        ///   括号逻辑分散在四处（Followup 判档位 → IsCallSite 判位置 →
+        ///   InCallStatement 判 Call 语句 → ApplyCompletion 落光标），只有真机
+        ///   走一遍才知道断在哪一环。全程只动模块末尾的临时行，最后逐字节还原。
+        /// </summary>
+        /// <summary>日志用：安全截一段字符串（越界不抛，换行写成 \n）。</summary>
+        private static string SafeSlice(string s, int from, int len)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            if (from < 0) from = 0;
+            if (from >= s.Length) return "";
+            string part = s.Substring(from, Math.Min(len, s.Length - from));
+            return part.Replace("\r", "\\r").Replace("\n", "\\n");
+        }
+
+        private static int ParenTest()
+        {
+            var sb = new StringBuilder();
+            var be = new VbeBackend();
+            string orig = be.ModuleText();
+            int count = be.LineCount();
+            bool ok = true;
+
+            sb.AppendLine("=== paren test (真机) ===");
+            sb.AppendLine("module lines = " + count);
+            if (count <= 0)
+            {
+                sb.AppendLine("no code module, skip");
+                File.WriteAllText(Path.Combine(Settings.Home, "paretest.log"), sb.ToString(), Encoding.UTF8);
+                return 1;
+            }
+
+            var eng = new Engine { Backend = be };
+
+            // 档位判据先单独对一遍（不碰 COM）
+            bool wp, ws;
+            eng.Followup("MsgBox", null, out wp, out ws);
+            sb.AppendLine("Followup(MsgBox) -> parens=" + wp + " space=" + ws);
+            ok &= wp;
+            eng.Followup("String", null, out wp, out ws);
+            sb.AppendLine("Followup(String 类型) -> parens=" + wp + " space=" + ws);
+            ok &= !wp;
+            eng.Followup("Dim", null, out wp, out ws);
+            sb.AppendLine("Followup(Dim 关键字) -> parens=" + wp + " space=" + ws);
+            ok &= !wp && ws;
+
+            // (探针行, 光标列, 候选名, 期望行, 期望光标列)
+            var cases = new[]
+            {
+                // ★用户报的那条：一行的开头（只有缩进）
+                ("    MsgB", 9, "MsgBox", "    MsgBox()", 12),
+                // 赋值右侧
+                ("    x = Spl", 13, "Split", "    x = Split()", 15),
+                // 类型名：绝不能补括号
+                ("    Dim y As Str", 17, "String", "    Dim y As String", 20),
+            };
+
+            try
+            {
+                foreach (var c in cases)
+                {
+                    be.InsertLines(count + 1, c.Item1);
+                    be.SetCaret(count + 1, c.Item2);
+                    bool acc = eng.AcceptName(c.Item3);
+                    string line = be.LineAt(count + 1) ?? "";
+                    var snap = be.Snapshot();
+                    int caret = snap == null ? -1 : snap.CaretCol;
+
+                    bool lineOk = line == c.Item4;
+                    bool caretOk = caret == c.Item5;
+                    if (!acc || !lineOk || !caretOk) ok = false;
+                    sb.AppendLine("  [" + (acc && lineOk && caretOk ? "PASS" : "FAIL") + "] "
+                        + c.Item1.TrimEnd() + " + Tab " + c.Item3);
+                    sb.AppendLine("         行 = [" + line + "]  want [" + c.Item4 + "]"
+                        + (lineOk ? "" : "  <- 行不对"));
+                    sb.AppendLine("         光标 = " + caret + "  want " + c.Item5
+                        + (caretOk ? "" : "  <- 落点不对"));
+
+                    // 立刻删掉这一行，下一个用例从同一个基准行数开始
+                    for (int i = 0; i < 3; i++)
+                    {
+                        int c2 = be.LineCount();
+                        if (c2 <= count) break;
+                        be.DeleteLines(count + 1, c2 - count);
+                    }
+                }
+            }
+            finally
+            {
+                for (int i = 0; i < 3; i++)
+                {
+                    int c2 = be.LineCount();
+                    if (c2 <= count) break;
+                    be.DeleteLines(count + 1, c2 - count);
+                }
+            }
+
+            string now = be.ModuleText();
+            bool restored = now == orig;
+            sb.AppendLine("restored = " + restored);
+            if (!restored)
+            {
+                ok = false;
+                int n = Math.Min(now == null ? 0 : now.Length, orig == null ? 0 : orig.Length);
+                int at = 0;
+                while (at < n && now[at] == orig[at]) at++;
+                sb.AppendLine("首个差异位置 = " + at + "（len now=" + (now == null ? -1 : now.Length)
+                    + " orig=" + (orig == null ? -1 : orig.Length) + "）");
+                int from = Math.Max(0, at - 40);
+                sb.AppendLine("orig[" + from + "..] = [" + SafeSlice(orig, from, 120) + "]");
+                sb.AppendLine("now [" + from + "..] = [" + SafeSlice(now, from, 120) + "]");
+            }
+            sb.AppendLine(ok && restored ? "RESULT: PASS" : "RESULT: FAIL");
+
+            File.WriteAllText(Path.Combine(Settings.Home, "paretest.log"), sb.ToString(), Encoding.UTF8);
             return ok && restored ? 0 : 1;
         }
 

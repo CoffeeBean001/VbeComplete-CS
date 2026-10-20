@@ -1,7 +1,7 @@
 // 代码片段窗（Ctrl+Q）—— C# 版自己的界面，重新做的一版。
 //
 // ★这一版与 Python 版**没有任何视觉/布局继承关系**，刻意长得不一样：
-//     · 顶部深色标题栏（片段总数 / 命中数常驻右上）
+//     · 顶部工具栏："片段库" + 搜索框（占满剩余宽度，右边缘与主体对齐）
 //     · 左侧自绘列表：每条两行 —— 标题（搜索命中逐字符高亮）+ 代码首行预览
 //     · 右侧：标题输入框 + 代码编辑区（等宽字体、Tab 缩进、Ctrl+Enter 插入）
 //     · 底部状态条 + 主次分明的按钮（"插入"是唯一的高亮主按钮）
@@ -65,7 +65,9 @@ namespace VbeComplete
             _store = store ?? new SnippetStore();
             _onInsert = onInsert;
 
-            Text = "代码片段";
+            // 标题带上库文件名：一眼就能确认"当前用的是 C# 版自己的库"，
+            // 不会跟 Python 版的 snippets.db 混起来。
+            Text = "代码片段 — " + System.IO.Path.GetFileName(SnippetStore.DbPath());
             StartPosition = FormStartPosition.Manual;
             ShowInTaskbar = false;
             TopMost = true;
@@ -115,15 +117,17 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 顶部工具栏：左边"片段库"标签（带强调色竖条）+ 搜索框（占满剩余）+ 右边计数。
+        /// 顶部工具栏：左边"片段库"标签（带强调色竖条）+ 搜索框（占满剩余宽度）。
         /// ★刻意不再写"代码片段"四个字 —— 那是窗口标题，重复一遍只是噪音。
+        /// ★也不在右上角挂"共 N 条 · 命中 M 条"：那是一眼即忘的数字，却会把搜索框
+        ///   挤短、还让它的右边缘跟下面两栏对不齐。计数只在底部状态条出现一次。
         /// </summary>
         private Control BuildToolbar()
         {
             var bar = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                ColumnCount = 3,
+                ColumnCount = 2,
                 RowCount = 1,
                 BackColor = CBody,
                 Padding = new Padding(12, 0, 12, 0),
@@ -131,7 +135,6 @@ namespace VbeComplete
             };
             bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             bar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-            bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             bar.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
 
             var lblMark = new Label
@@ -156,6 +159,8 @@ namespace VbeComplete
                 BackColor = CCard,
                 ForeColor = CText,
                 PlaceholderText = "搜索标题…（多个词用空格分开，↓ 进列表，Enter 插入）",
+                // 上下各 15px = 在 56px 的工具栏里垂直居中；右边 0 = 与主体/底栏的
+                // 12px 内边距对齐（搜索框右边缘正好压在同一条竖线上）。
                 Margin = new Padding(0, 15, 0, 15),
             };
             _search.TextChanged += (s, e) => Refilter(_shownTitle);
@@ -174,26 +179,10 @@ namespace VbeComplete
                     e.Handled = true; e.SuppressKeyPress = true;
                 }
             };
-            _lblCount = new Label
-            {
-                AutoSize = true,
-                ForeColor = CMuted,
-                Anchor = AnchorStyles.Left,
-                Margin = new Padding(14, 0, 0, 0),
-                Text = "",
-            };
 
             bar.Controls.Add(lblMark, 0, 0);
             bar.Controls.Add(_search, 1, 0);
-            bar.Controls.Add(_lblCount, 2, 0);
             return bar;
-        }
-
-        private Label _lblCount;
-
-        private void SetCountText(string text)
-        {
-            if (_lblCount != null) _lblCount.Text = text ?? "";
         }
 
         /// <summary>主体：左列表 + 右编辑区。</summary>
@@ -482,7 +471,6 @@ namespace VbeComplete
                 _code.Text = "";
             }
 
-            SetCountText("共 " + _rows.Count + " 条 · 命中 " + _view.Count);
             SetStatus("共 " + _rows.Count + " 条，命中 " + _view.Count + " 条");
         }
 

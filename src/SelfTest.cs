@@ -165,6 +165,10 @@ namespace VbeComplete
             Ok("call-site/点号后不是", !Rules.IsCallSite("a.b", 3));
             Ok("call-site/声明位置不是", !Rules.IsCallSite("Sub foo", 5));
             Ok("call-site/As 之后不是", !Rules.IsCallSite("Dim x As Long", 10));
+            // 行首（只有缩进）也是调用点 —— "函数提示词不补括号"就栽在这条上
+            Ok("call-site/行首是", Rules.IsCallSite("    MsgB", 5));
+            Ok("call-site/顶格行首是", Rules.IsCallSite("MsgB", 1));
+            Ok("call-site/注释之后不是", !Rules.IsCallSite("Call MsgB", 6));
         }
 
         // ------------------------------------------------------------------

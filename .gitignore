@@ -12,6 +12,8 @@ writetest.log
 uitest.log
 dbtest.log
 enginetest.log
+paretest.log
+usage.log
 probe-cs.log
 moddump.txt
 moddump.before.txt
