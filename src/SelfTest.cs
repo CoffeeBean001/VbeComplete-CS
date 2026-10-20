@@ -44,6 +44,9 @@ namespace VbeComplete
                 TestRules();
                 TestParser();
                 TestEngine();
+                TestFuzzy();
+                TestScope();
+                TestMember();
                 TestEditing();
                 TestSnippets();
             }
@@ -106,11 +109,13 @@ namespace VbeComplete
             Eq("char-col/全角行取词", Rules.WordBefore("    学生 = Split()",
                 Rules.CharColFromDisp("    学生 = Split()", 17), out _), "Split");
 
-            int pos, span;
-            Ok("match/前缀", Rules.Match("MsgBox", "msg", out pos, out span) && pos == 0);
-            Ok("match/边界跳步", Rules.Match("selBegin", "sb", out pos, out span) && pos == 0 && span == 4);
-            Ok("match/非边界不跳步", !Rules.Match("abcDef", "b", out pos, out span) || pos == 0);
-            Ok("match/不命中", !Rules.Match("abc", "xyz", out pos, out span));
+            FuzzyHit mh;
+            Ok("match/前缀", Fuzzy.Match("MsgBox", "msg", out mh) && mh.First == 0 && mh.Kind == 3);
+            Ok("match/边界跳步", Fuzzy.Match("selBegin", "sb", out mh) &&
+                                 mh.First == 0 && mh.Span == 4 && mh.Kind == 2);
+            Ok("match/非前缀单字不算前缀", Fuzzy.Match("abcDef", "b", out mh) &&
+                                           mh.First == 1 && mh.Kind < 3);
+            Ok("match/不命中", !Fuzzy.Match("abc", "xyz", out mh));
 
             Ok("resolved/精确且无更长",
                 Rules.PrefixIsResolved("sub", new List<string> { "sub", "function" }));
@@ -283,6 +288,17 @@ End Type
             var r2 = new Candidate { Name = "b", ScopeKind = 3, Pos = 0, Span = 1, RecentRank = 1 };
             Ok("sort/最近使用优先", Engine.Cmp(r1, r2) < 0);
 
+            // ★命中质量必须排在作用域**前面**：打 `msgbox` 时，一个工程内的
+            //   长名字只是"松散命中"，绝不能因为它"工程内"就顶掉精确命中的 MsgBox。
+            var loose = new Candidate { Name = "MsgBoxLocalHelper", ScopeKind = 4, HitKind = 0, Pos = 3, Span = 9 };
+            var exact = new Candidate { Name = "MsgBox", ScopeKind = 2, HitKind = 3, Pos = 0, Span = 6 };
+            Ok("sort/命中质量优先于作用域", Engine.Cmp(exact, loose) < 0);
+
+            // 名字短的在前（旧代码写反了：长度降序 = 长的在前）
+            var shortN = new Candidate { Name = "ab", ScopeKind = 3, HitKind = 3, Pos = 0, Span = 2 };
+            var longN = new Candidate { Name = "abcdef", ScopeKind = 3, HitKind = 3, Pos = 0, Span = 8 };
+            Ok("sort/名字短的在前", Engine.Cmp(shortN, longN) < 0);
+
             // ---- 启动脚本契约（v131a）----
             // "双击窗口一闪、项目没启动"出过两次，两次都在 .bat 上：
             //   v129：echo 文本里一个裸右括号就让 cmd 丢弃整个 if 块并退出 255；
@@ -332,6 +348,254 @@ End Type
 
         // ------------------------------------------------------------------
         // 编辑手感（块结构 / 缩进 / 自动配对 / 退格接管）
+        // ------------------------------------------------------------------
+        // 模糊匹配：这一层的每个断言都对应 Python 版里一条真实修过的 bug，
+        // 改算法前先看一眼 —— 里面有一条是"贪心会漏判"的经典反例。
+        // ------------------------------------------------------------------
+        private static void TestFuzzy()
+        {
+            FuzzyHit h;
+
+            // 1) 整块连续优先：arr 命中 dataArr 的 Arr，而不是散着的 a..r..r
+            Ok("fuzzy/连续块", Fuzzy.Match("dataArr", "arr", out h));
+            Eq("fuzzy/连续块-kind", h.Kind, 1);
+            Eq("fuzzy/连续块-位置", string.Join(",", h.Positions), "4,5,6");
+
+            // 2) 词首缩略：ds -> dataSheet 的 D 与 S（中间没有连续的 ds）
+            Ok("fuzzy/词首缩略", Fuzzy.Match("dataSheet", "ds", out h));
+            Eq("fuzzy/词首缩略-kind", h.Kind, 2);
+            Eq("fuzzy/词首缩略-位置", string.Join(",", h.Positions), "0,4");
+
+            // 3) ts -> dataSheet：t 在词中、S 在词边界
+            Ok("fuzzy/边界跳步", Fuzzy.Match("dataSheet", "ts", out h));
+            Eq("fuzzy/边界跳步-位置", string.Join(",", h.Positions), "2,4");
+
+            // 4) 前缀 / 完全相等
+            Ok("fuzzy/前缀", Fuzzy.Match("dataSheet", "dat", out h));
+            Eq("fuzzy/前缀-kind", h.Kind, 3);
+            Ok("fuzzy/完全相等", Fuzzy.Match("dataSheet", "datasheet", out h));
+            Eq("fuzzy/完全相等-kind", h.Kind, 4);
+            Ok("fuzzy/大小写无关", Fuzzy.Match("dataSheet", "DATAS", out h));
+
+            // 5) ★贪心漏判的经典反例（Python 版 v59）：
+            //    第 3 个字符 t 若贪心跳到词边界 T(10)，后面就没有 s 了；
+            //    正确解是 [0,1,2,3,4,15]。反向可行性上界就是为这条加的。
+            Ok("fuzzy/子序列不许漏判", Fuzzy.Match("getSettingTitle3", "getse3", out h));
+            Eq("fuzzy/子序列-位置", string.Join(",", h.Positions), "0,1,2,3,4,15");
+            Eq("fuzzy/子序列-最长连续段", h.Run, 5);
+
+            // 6) 跳步但"真的打过一段"：xlworkfaul -> xlWorkbookDefault
+            Ok("fuzzy/长名字跳步", Fuzzy.Match("xlWorkbookDefault", "xlworkfaul", out h));
+            Eq("fuzzy/长名字-最长连续段", h.Run, 6);
+
+            // 7) 不匹配 / 长度不够 / 空 query
+            Ok("fuzzy/不匹配", !Fuzzy.Match("dataSheet", "zzz", out h));
+            Ok("fuzzy/比名字还长", !Fuzzy.Match("abc", "abcd", out h));
+            Ok("fuzzy/空 query 全都要", Fuzzy.Match("abc", "", out h));
+            Eq("fuzzy/空 query-位置个数", h.Positions.Length, 0);
+
+            // 8) 中文名字：没有大小写/驼峰，整块连续照样命中
+            Ok("fuzzy/中文前缀", Fuzzy.Match("学生列表", "学生", out h));
+            Eq("fuzzy/中文-kind", h.Kind, 3);
+
+            // 9) 下划线也是词边界（VBA 里 m_Name 很常见）
+            Ok("fuzzy/下划线边界", Fuzzy.Match("m_studentName", "sn", out h));
+            Eq("fuzzy/下划线边界-位置", string.Join(",", h.Positions), "2,9");
+
+            // 10) 高亮切段：相邻同类必须合并成一段（否则一个名字要画十几个文本项）
+            var segs = PopupForm.SplitByHits("dataSheet", new[] { 0, 4 });
+            Eq("hits/段数", segs.Count, 4);
+            Eq("hits/首段文字", segs[0].Key, "d");
+            Ok("hits/首段命中", segs[0].Value);
+            Eq("hits/次段文字", segs[1].Key, "ata");
+            Ok("hits/次段未命中", !segs[1].Value);
+            Eq("hits/M", segs[2].Key, "S");
+            Eq("hits/尾段", segs[3].Key, "heet");
+            Eq("hits/空名字", PopupForm.SplitByHits("", new[] { 0 }).Count, 0);
+        }
+
+        // ------------------------------------------------------------------
+        // 作用域：哪些名字在当前位置**看得见**。这里每一条都是"提示里混进
+        // 用不了的名字"的真 bug 的反面。
+        // ------------------------------------------------------------------
+        private const string ScopedSample = @"Option Explicit
+Private mModuleLevel As Long
+Public gPublic As Long
+
+Private Sub A()
+    Dim tmpA As Long
+    Dim shared As String
+    tmpA = 1
+End Sub
+
+Public Sub B(ByVal p1 As Long)
+    Dim tmpB As Long
+    shared = ""x""
+End Sub
+
+Public Sub C()
+End Sub
+";
+
+        private static void TestScope()
+        {
+            var ms = Scope.Analyze("Mod1", ScopedSample);
+
+            var va = ms.Visible("A");
+            Ok("scope/A 看得见自己的局部", va.ContainsKey("tmpA"));
+            Eq("scope/局部档位=4", va["tmpA"].Value, 4);
+            Ok("scope/A 看得见模块级 Private", va.ContainsKey("mModuleLevel"));
+            Eq("scope/模块级档位=3", va["mModuleLevel"].Value, 3);
+            Ok("scope/A 看不见 B 的局部", !va.ContainsKey("tmpB"));
+            Ok("scope/A 看得见本模块过程名", va.ContainsKey("B"));
+
+            var vb = ms.Visible("B");
+            Ok("scope/参数是局部", vb.ContainsKey("p1"));
+            Eq("scope/参数档位=4", vb["p1"].Value, 4);
+            Ok("scope/B 看不见 A 的局部", !vb.ContainsKey("tmpA"));
+            // ★这条是核心：B 里**引用**了 shared，但 shared 声明在 A 里
+            //   —— 不能因为"B 里出现过这个词"就把 A 的局部漏给 B。
+            Ok("scope/别处引用过的局部不漏过来", !vb.ContainsKey("shared"));
+
+            var ex = ms.Exported();
+            Ok("scope/Public 过程可导出", ex.ContainsKey("B") && ex.ContainsKey("C"));
+            Ok("scope/Private 过程不导出", !ex.ContainsKey("A"));
+            Ok("scope/Public 变量可导出", ex.ContainsKey("gPublic"));
+            Ok("scope/Private 变量不导出", !ex.ContainsKey("mModuleLevel"));
+            Ok("scope/局部一律不导出", !ex.ContainsKey("tmpA") && !ex.ContainsKey("p1"));
+
+            // 引擎层面：池子里有 shared，但在 B 的位置不该出现在候选里
+            var eng = new Engine { Recent = new Recent(), Bank = new WordBank() };
+            eng.PrimePool(ScopedSample, "Mod1");
+            var items = enginesTrigger(eng, "    sha", 8);
+            Ok("scope/引擎在 B 里不提示 A 的局部",
+                items.All(x => x.Name.ToLowerInvariant() != "shared"),
+                string.Join(",", items.Select(x => x.Name)));
+
+            // 同一个词在它自己的过程里必须提示得到
+            var items2 = enginesTrigger(eng, "    sha", 8, "A");
+            Ok("scope/引擎在 A 里提示得到自己的局部",
+                items2.Any(x => x.Name.ToLowerInvariant() == "shared"),
+                string.Join(",", items2.Select(x => x.Name)));
+        }
+
+        /// <summary>造一个假快照跑 Trigger（不碰 COM），返回候选名。</summary>
+        private static List<Candidate> enginesTrigger(Engine eng, string line, int caretDisp,
+            string proc = "B")
+        {
+            int ln = proc == "A" ? 7 : 13;          // 7 在 Sub A 里，13 在 Sub B 里
+            var be = new FakeBackend
+            {
+                Text = ScopedSample,
+                Snap = new Snapshot { Line = ln, Text = line, Module = "Mod1", CaretCol = caretDisp },
+            };
+            eng.Backend = be;
+            if (!eng.Trigger(false, be.Snap)) return new List<Candidate>();
+            return eng.Items.ToList();
+        }
+
+        /// <summary>只给引擎喂快照的最小后端：不碰 COM。</summary>
+        private sealed class FakeBackend : IVbeSource
+        {
+            public string Text;
+            public Snapshot Snap;
+            public List<ModuleScope> Extra = new List<ModuleScope>();
+            public Snapshot Snapshot(bool verify = true) => Snap;
+            public string ModuleText() => Text;
+            public List<string> ComponentNames() => new List<string>();
+            public List<ModuleScope> ProjectScopes(out int signature)
+            {
+                signature = 0;
+                return Extra;
+            }
+            public bool ApplyCompletion(int lineNo, int wordStartCol, int endCol,
+                string completion, bool wantParens, bool wantSpace, string enclosingProc) => true;
+            public string EnclosingProcName() => null;
+        }
+
+        // ------------------------------------------------------------------
+        // `.` 之后的成员：只在"类型写得明明白白"时才补，否则整个让给 VBE。
+        // ------------------------------------------------------------------
+        private const string MemberSample = @"Option Explicit
+Private Sub Main()
+    Dim c As Cls1
+    Set c = New Cls1
+    c.
+End Sub
+
+Public Sub DoIt()
+End Sub
+";
+
+        private const string Cls1Sample = @"Public Sub Refresh()
+End Sub
+
+Private Sub Hidden()
+End Sub
+
+Public Name As String
+";
+
+        private static void TestMember()
+        {
+            var cls = Scope.Analyze("Cls1", Cls1Sample);
+            Eq("member/类型解析", cls.TypeOf("c", null), null);      // 模块级没有 c
+            var mod = Scope.Analyze("Mod1", MemberSample);
+            Eq("member/Dim As 收类型", mod.TypeOf("c", "Main"), "Cls1");
+
+            var eng = new Engine { Recent = new Recent(), Bank = new WordBank() };
+            var be = new FakeBackend
+            {
+                Text = MemberSample,
+                Extra = new List<ModuleScope> { cls },
+                Snap = new Snapshot { Line = 5, Text = "    c.", Module = "Mod1", CaretCol = 7 },
+            };
+            eng.Backend = be;
+            bool shown = eng.Trigger(false, be.Snap);
+            Ok("member/能确定类型就出成员", shown, "trigger=false");
+            var names = eng.Items.Select(x => x.Name).ToList();
+            Ok("member/含 Public 过程", names.Contains("Refresh"), string.Join(",", names));
+            Ok("member/含 Public 变量", names.Contains("Name"), string.Join(",", names));
+            Ok("member/不含 Private 成员", !names.Contains("Hidden"), string.Join(",", names));
+            Ok("member/不含全工程噪音", !names.Contains("MsgBox"), string.Join(",", names));
+
+            // 类型不确定（变量从没声明过）=> 整个让给 VBE，一条都不弹
+            eng.Hide();
+            var be2 = new FakeBackend
+            {
+                Text = MemberSample,
+                Extra = new List<ModuleScope> { cls },
+                Snap = new Snapshot { Line = 5, Text = "    obj.", Module = "Mod1", CaretCol = 9 },
+            };
+            eng.Backend = be2;
+            Ok("member/类型不确定就让位", !eng.Trigger(false, be2.Snap));
+
+            // 点号后面已经开始打词：收窄仍然生效
+            eng.Hide();
+            var be3 = new FakeBackend
+            {
+                Text = MemberSample,
+                Extra = new List<ModuleScope> { cls },
+                Snap = new Snapshot { Line = 5, Text = "    c.Ref", Module = "Mod1", CaretCol = 10 },
+            };
+            eng.Backend = be3;
+            Ok("member/点号后继续打字仍收窄", eng.Trigger(false, be3.Snap));
+            Ok("member/收窄后只剩一个",
+                eng.Items.Count == 1 && eng.Items[0].Name == "Refresh",
+                string.Join(",", eng.Items.Select(x => x.Name)));
+
+            // `Me.` = 当前模块自己的 Public 成员
+            eng.Hide();
+            var be4 = new FakeBackend
+            {
+                Text = MemberSample,
+                Extra = new List<ModuleScope> { cls },
+                Snap = new Snapshot { Line = 5, Text = "    Me.", Module = "Mod1", CaretCol = 8 },
+            };
+            eng.Backend = be4;
+            Ok("member/Me 用当前模块", eng.Trigger(false, be4.Snap));
+        }
+
         // ------------------------------------------------------------------
         private static void TestEditing()
         {

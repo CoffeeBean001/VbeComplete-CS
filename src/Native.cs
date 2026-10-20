@@ -5,6 +5,7 @@
 //   让整个系统的键盘卡住（低级钩子在输入队列里串行执行）。
 
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -292,6 +293,92 @@ namespace VbeComplete
 
         [DllImport("user32.dll")]
         public static extern IntPtr GetParent(IntPtr hWnd);
+
+        // ---- VBE 自己的提示窗（成员列表 / 参数信息）----
+        //
+        // ★为什么要知道它们在哪儿：VBE 的参数信息窗就画在光标正下方，我们的候选窗
+        //   默认也在那儿（光标底边 +2px）。两窗一重叠，形参签名正好被候选列表压住
+        //   —— 用户要的是"把候选窗下移到签名提示的下方"。
+        //
+        // ★判据只认类名 + 可见 + 尺寸正常：句柄值会被 Windows 回收复用，只凭
+        //   "还记得这个句柄"就相信它，一旦复用就会出现"永远以为 VBE 在弹提示"。
+        private static readonly string[] VbePopupClasses = { "NameListWndClass", "PopupTipWndClass" };
+
+        private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+        private static long _popupRectsAt = long.MinValue;
+        private static RECT[] _popupRectsCache = Array.Empty<RECT>();
+        private static bool _memberListVisible;
+
+        /// <summary>
+        /// VBE 自己的【成员列表】(NameListWndClass) 此刻是不是画在屏幕上。
+        /// 是的话我们就得让位 —— 两个列表叠在一起，用户根本不知道在看哪一个。
+        /// 参数信息窗 (PopupTipWndClass) 不算：那个只要求我们挪开，不要求消失。
+        /// </summary>
+        public static bool VbeMemberListVisible()
+        {
+            VbePopupRects();        // 顺带刷新缓存
+            return _memberListVisible;
+        }
+
+        /// <summary>
+        /// 当前可见的 VBE 提示窗屏幕矩形。拿不到就返回空数组 ——
+        /// **宁可重叠（可接受），也不因为探测失败把窗挪到奇怪的角落**。
+        /// 缓存 150ms：枚举顶层窗口约 1.75ms，每轮轮询都做不可取；
+        /// 但也不能太久 —— VBE 的成员列表弹出来之后我们要尽快让位。
+        /// </summary>
+        public static RECT[] VbePopupRects()
+        {
+            long now = Environment.TickCount64;
+            if (now - _popupRectsAt < 150) return _popupRectsCache;
+
+            var found = new List<RECT>(4);
+            bool memberList = false;
+            try
+            {
+                IntPtr frame = FindWindow("wndclass_desked_gsk", null);
+                uint hostPid = 0;
+                if (frame != IntPtr.Zero) GetWindowThreadProcessId(frame, out hostPid);
+
+                EnumWindows((h, p) =>
+                {
+                    try
+                    {
+                        string cls = ClassNameOf(h);
+                        if (Array.IndexOf(VbePopupClasses, cls) < 0) return true;   // 继续枚举
+                        if (!IsWindowVisible(h)) return true;
+                        if (hostPid != 0)
+                        {
+                            uint pid;
+                            GetWindowThreadProcessId(h, out pid);
+                            if (pid != hostPid) return true;
+                        }
+                        RECT r;
+                        if (!GetWindowRect(h, out r)) return true;
+                        if (r.Right - r.Left <= 0 || r.Bottom - r.Top <= 0) return true;
+                        found.Add(r);
+                        if (string.Equals(cls, "NameListWndClass", StringComparison.OrdinalIgnoreCase))
+                            memberList = true;
+                    }
+                    catch { }
+                    return true;
+                }, IntPtr.Zero);
+            }
+            catch { }
+
+            _popupRectsCache = found.ToArray();
+            _memberListVisible = memberList;
+            _popupRectsAt = now;
+            return _popupRectsCache;
+        }
+
+        /// <summary>两个矩形是否真的重叠（只共边/共点不算）。</summary>
+        public static bool Overlap(RECT a, RECT b) =>
+            !(a.Right <= b.Left || a.Left >= b.Right || a.Bottom <= b.Top || a.Top >= b.Bottom);
 
         // ---- 线程焦点 / 插入符矩形 ----
         [StructLayout(LayoutKind.Sequential)]

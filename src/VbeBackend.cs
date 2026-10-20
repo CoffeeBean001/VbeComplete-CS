@@ -19,7 +19,23 @@ namespace VbeComplete
         public override string ToString() => $"L{Line} C{CaretCol} {Module}";
     }
 
-    internal sealed class VbeBackend
+    /// <summary>
+    /// 引擎需要的那一小撮能力。抽成接口只为一件事：让 Trigger / Accept 能在
+    /// **不碰 COM** 的情况下被完整测试 —— 候选准不准全在这里，靠真机试一条
+    /// bug 要试十次。
+    /// </summary>
+    internal interface IVbeSource
+    {
+        Snapshot Snapshot(bool verify = true);
+        string ModuleText();
+        List<string> ComponentNames();
+        List<ModuleScope> ProjectScopes(out int signature);
+        bool ApplyCompletion(int lineNo, int wordStartCol, int endCol,
+            string completion, bool wantParens, bool wantSpace, string enclosingProc);
+        string EnclosingProcName();
+    }
+
+    internal sealed class VbeBackend : IVbeSource
     {
         // 快照缓存：行列都没动就复用上一轮那份（读数从 8.7ms 降到 0.13ms 的关键）
         private Snapshot _snapCache;
@@ -36,6 +52,15 @@ namespace VbeComplete
         // 工程组件缓存
         private List<string> _comps;
         private DateTime _compsAt = DateTime.MinValue;
+
+        // 全工程作用域缓存：模块名 -> 分析结果。按"行数"判是否过期 ——
+        // 行数没变就复用（读全文 + 跑正则比读一个 CountOfLines 贵两个数量级）。
+        private readonly Dictionary<string, ModuleScope> _modScopes =
+            new Dictionary<string, ModuleScope>(StringComparer.OrdinalIgnoreCase);
+        private List<ModuleScope> _scopesList = new List<ModuleScope>();
+        private int _scopesSig = int.MinValue;
+        private DateTime _scopesAt = DateTime.MinValue;
+        private readonly double _scopesTtl = Settings.Double("SCOPE_TTL", 2.0);
 
         public static readonly bool AutoParen = !Settings.Flag("NO_AUTOPAREN", false);
         public static readonly bool AutoSpace = !Settings.Flag("NO_AUTOSPACE", false);
@@ -136,6 +161,10 @@ namespace VbeComplete
             _modCount = -1;
             _modAt = DateTime.MinValue;
             InvalidateSnapshot();
+            // 当前模块刚被我们改过：作用域缓存里那一条必须作废。否则"删掉一个
+            // 声明、行数却没变"的情况下，候选池里还留着已经不存在的名字。
+            if (!string.IsNullOrEmpty(_modName)) _modScopes.Remove(_modName);
+            _scopesAt = DateTime.MinValue;
         }
 
         /// <summary>"纯文本里失效"的标记：确认模块缓存已经跟不上时强制重读一次。</summary>
@@ -176,6 +205,87 @@ namespace VbeComplete
                 }
                 _comps = list;
                 _compsAt = DateTime.UtcNow;
+            }
+            catch (Exception e) { Fail(e); }
+            return list;
+        }
+
+        // ------------------------------------------------------------------
+        // 读：全工程作用域
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// 全工程每个模块的作用域分析（含"别的模块的 Public 也能提示"）。
+        ///
+        /// ★为什么必须有：旧版候选池只收**当前模块**，于是在 Module2 里写
+        ///   `Public Sub Refresh()`、在 Module1 里敲 `ref` 什么都提示不出来 ——
+        ///   而 VBA 里这是完全合法的跨模块调用。Python 版一直是全工程。
+        ///
+        /// signature 是"各组件名 + 行数"的滚动哈希，供引擎判"池子要不要重建"。
+        /// 行数没变就复用上一次的分析结果（读全文 + 跑正则比读 CountOfLines
+        /// 贵两个数量级，而打字时每秒要触发十几次）。
+        /// </summary>
+        public List<ModuleScope> ProjectScopes(out int signature)
+        {
+            if (_scopesSig != int.MinValue &&
+                (DateTime.UtcNow - _scopesAt).TotalSeconds < _scopesTtl)
+            {
+                signature = _scopesSig;
+                return _scopesList;
+            }
+
+            signature = _scopesSig;
+            var list = new List<ModuleScope>();
+            int sig = 17;
+            try
+            {
+                dynamic vbe = ComCtx.Vbe();
+                if (ReferenceEquals(vbe, null)) return _scopesList;
+                dynamic proj = vbe.ActiveVBProject;
+                if (ReferenceEquals(proj, null)) return _scopesList;
+                dynamic comps = proj.VBComponents;
+                int n = Convert.ToInt32(comps.Count);
+
+                var alive = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                for (int i = 1; i <= n; i++)
+                {
+                    try
+                    {
+                        dynamic comp = comps.Item(i);
+                        string nm = Convert.ToString(comp.Name) ?? "";
+                        if (nm.Length == 0) continue;
+                        alive.Add(nm);
+
+                        dynamic cm = comp.CodeModule;
+                        int count = Convert.ToInt32(cm.CountOfLines);
+                        sig = unchecked(sig * 31 + nm.ToLowerInvariant().GetHashCode() * 17 + count);
+
+                        ModuleScope ms;
+                        if (_modScopes.TryGetValue(nm, out ms) && ms.LineCount == count)
+                        {
+                            list.Add(ms);
+                            continue;
+                        }
+                        string text = count > 0 ? Convert.ToString(cm.Lines(1, count)) : "";
+                        ms = Scope.Analyze(nm, text);
+                        _modScopes[nm] = ms;
+                        list.Add(ms);
+                    }
+                    catch { }   // 单个组件读不出来（被锁定 / 奇怪类型）不影响其它
+                }
+
+                // 已经删掉的模块，缓存也要跟着清
+                if (_modScopes.Count > alive.Count)
+                {
+                    var dead = new List<string>();
+                    foreach (var k in _modScopes.Keys) if (!alive.Contains(k)) dead.Add(k);
+                    foreach (var k in dead) _modScopes.Remove(k);
+                }
+
+                _scopesList = list;
+                _scopesSig = sig;
+                _scopesAt = DateTime.UtcNow;
+                signature = sig;
             }
             catch (Exception e) { Fail(e); }
             return list;

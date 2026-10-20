@@ -167,13 +167,39 @@ namespace VbeComplete
             return true;
         }
 
-        /// <summary>光标是不是紧跟在点号后面（`student.|`）—— 这个位置整个让给 VBE。</summary>
+        /// <summary>
+        /// 光标是不是紧跟在点号后面（`student.|`）—— 这个位置整个让给 VBE。
+        /// </summary>
         public static bool InMemberPosition(string line, int caretCol)
         {
             if (string.IsNullOrEmpty(line)) return false;
             int end = Math.Max(0, Math.Min(caretCol - 1, line.Length));
             string before = line.Substring(0, end).TrimEnd();
             return before.EndsWith(".", StringComparison.Ordinal);
+        }
+
+        /// <summary>
+        /// 光标是不是在 `对象.|` 或 `对象.前|` 这种位置。成立时 root = 点号前那个
+        /// 标识符，dotCol = 点号的 1-based 列。
+        /// 只认"点号前是一个简单标识符"（`Me` / `c` / `m_arr`）—— `Range("A1").`
+        /// 这种要真做表达式求值，不在这一层猜。
+        /// </summary>
+        public static bool MemberRoot(string line, int caretCol, out string root, out int dotCol)
+        {
+            root = null; dotCol = -1;
+            if (string.IsNullOrEmpty(line)) return false;
+            int end = Math.Max(0, Math.Min(caretCol - 1, line.Length));
+            int i = end - 1;
+            while (i >= 0 && IsIdentChar(line[i])) i--;      // 跳过点号后面已经打的词
+            if (i < 0 || line[i] != '.') return false;
+            dotCol = i + 1;                                   // 1-based
+            int j = i - 1;
+            while (j >= 0 && char.IsWhiteSpace(line[j])) j--;
+            int ke = j;
+            while (j >= 0 && IsIdentChar(line[j])) j--;
+            if (ke < 0 || ke - j <= 0) return false;          // 点号前没有标识符
+            root = line.Substring(j + 1, ke - j);
+            return root.Length > 0;
         }
 
         /// <summary>
@@ -263,51 +289,11 @@ namespace VbeComplete
 
         // ------------------------------------------------------------------
         // 匹配
+        //
+        // ★模糊匹配的实现【只有一份】，在 Fuzzy.cs（逐字符命中 + 5 档质量）。
+        //   这里曾经也有一套"前缀 + 词边界跳步"的简版，两个一起用会出现
+        //   "排序按 A 算法、高亮按 B 算法"的自相矛盾 —— 已删除。
         // ------------------------------------------------------------------
-
-        private static bool IsBoundary(string name, int i)
-        {
-            if (i <= 0) return true;
-            char prev = name[i - 1], cur = name[i];
-            if (prev == '_') return true;
-            return char.IsLower(prev) && char.IsUpper(cur);
-        }
-
-        /// <summary>
-        /// 模糊匹配：先认前缀，再认"按词边界跳步"（`sb` 能匹配 `selBegin`）。
-        /// 返回 (命中位置, 跨度)；不命中返回 false。
-        /// ★跳步命中有个硬性要求：query 的第一个字符必须落在词边界上，
-        ///   否则 `e` 会匹配到任意单词内部，噪音把真正的前缀命中挤掉。
-        /// </summary>
-        public static bool Match(string name, string query, out int pos, out int span)
-        {
-            pos = 0; span = 0;
-            if (string.IsNullOrEmpty(name) || query == null) return false;
-            if (query.Length == 0) { pos = 0; span = 0; return true; }
-
-            if (name.StartsWith(query, StringComparison.OrdinalIgnoreCase))
-            {
-                pos = 0; span = query.Length;
-                return true;
-            }
-            if (query.Length > name.Length) return false;
-
-            // 跳步：在边界上贪心找
-            int first = -1, last = -1;
-            int qi = 0;
-            for (int i = 0; i < name.Length && qi < query.Length; i++)
-            {
-                if (char.ToLowerInvariant(name[i]) != char.ToLowerInvariant(query[qi])) continue;
-                if (qi == 0 && !IsBoundary(name, i)) continue;
-                if (first < 0) first = i;
-                last = i;
-                qi++;
-            }
-            if (qi < query.Length || first < 0) return false;
-            pos = first;
-            span = last - first + 1;
-            return true;
-        }
 
         /// <summary>
         /// "打全了没有"：精确命中【并且】没有更长的候选，才算打全。

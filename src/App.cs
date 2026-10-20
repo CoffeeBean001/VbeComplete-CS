@@ -88,6 +88,10 @@ namespace VbeComplete
         private readonly bool NoAutoPair = Settings.Flag("NO_AUTOPAIR", false);
         private readonly bool NoBsDelLine = Settings.Flag("NO_BS_DELLINE", false);
         private readonly bool NoBsDelPair = Settings.Flag("NO_BS_DELPAIR", false);
+        // 自动弹窗只认按键：鼠标右键粘贴 / 拖拽 / 别的程序改代码造成的文本变化
+        // 只收起、不弹（Python 版 REQUIRE_KEY_TRIGGER，默认开）。
+        private readonly bool RequireKeyTrigger = Settings.Flag("REQUIRE_KEY_TRIGGER", true);
+        private const long KeyTriggerWindowMs = 1200;
 
         public App()
         {
@@ -118,6 +122,7 @@ namespace VbeComplete
             _eng.OnHide = () =>
             {
                 _popupVisible = false;
+                _popup.ResetPlacement();
                 if (_popup.Visible) _popup.Hide();
             };
             _eng.OnMove = () =>
@@ -127,6 +132,13 @@ namespace VbeComplete
 
             _popup.RowClicked += i => { _eng.SetSelected(i); _eng.Accept(); };
             _popup.Wheel += lines => _eng.ScrollBy(lines);
+            _popup.ScrollTo += top =>
+            {
+                _eng.SetTop(top);
+                _popup.UpdateView(_eng.SelectedIndex, _eng.TopIndex);
+            };
+            // VBE 自己的成员列表弹出来的时候我们让位（它的类型信息比我们准）
+            _eng.YieldToVbe = () => Native.VbeMemberListVisible();
         }
 
         public void Start()
@@ -393,8 +405,11 @@ namespace VbeComplete
                 }
                 if (vk == Native.VK_RETURN && !shift)
                 {
-                    Post(() => { if (!_eng.Accept()) Native.SendVk(Native.VK_RETURN); });
-                    return Swallow(vk);
+                    // ★回车【不】确认候选 —— 回车在 VBE 里是换行，误触发代价太大
+                    //   （Python 版是用户在真机上明确要求去掉的："确认键只用 Tab"）。
+                    //   这里只收起列表，回车原样交给 VBE 去换行。
+                    Post(() => _eng.Hide());
+                    return Native.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
                 }
                 if (vk == Native.VK_ESCAPE)
                 {
@@ -778,8 +793,25 @@ namespace VbeComplete
                     if (!modSwitched)
                     {
                         _eng.InvalidatePool();
-                        if (_popupVisible) _eng.Hide();
-                        _eng.Trigger(false, snap);
+                        // ★文本变了不等于"用户在打字"：鼠标右键粘贴、拖拽一段
+                        //   代码进来、别的程序通过 COM 改了模块，都会走到这里。
+                        //   那些场景一律只收起、不弹（Python 版 REQUIRE_KEY_TRIGGER）。
+                        //   判据是"最近 1.2 秒内按过键"，以及"输入法可能正在组字"。
+                        bool keyTriggered = !RequireKeyTrigger
+                                            || _pendingKeys > 0
+                                            || Environment.TickCount64 - _lastKeyTs <= KeyTriggerWindowMs;
+                        if (!keyTriggered)
+                        {
+                            if (_popupVisible) _eng.Hide();
+                        }
+                        else
+                        {
+                            // ★不要在这里先 Hide 一下再 Trigger：Hide 会真的把窗口
+                            //   收起来，Trigger 再 Show —— 用户每敲一个字都看到候选窗
+                            //   "闪一下"。Trigger 内部该收的时候自己会收（打全即收 /
+                            //   空结果 / 让位）。
+                            _eng.Trigger(false, snap);
+                        }
                     }
                 }
                 else if (_popupVisible)

@@ -771,19 +771,40 @@ namespace VbeComplete
             try
             {
                 var f = new PopupForm();
-                var items = new System.Collections.Generic.List<Candidate>
+                // 用**真实匹配 + 真实排序**造数据：预览图里看到的高亮位置、
+                // 图标档位、行序，都与用户在 VBE 里看到的一致。
+                // 手写 Pos/Span 的那种预览图，改了算法它也不会跟着变。
+                var eng = new Engine { Recent = new Recent(), Bank = new WordBank() };
+                eng.PrimePool("", "Module1");
+                const string word = "se";
+                var cands = new System.Collections.Generic.List<Candidate>();
+                foreach (var n in new[]
+                         {
+                             "Select", "selBegin", "Size", "GetSettingTitle3", "dataSheet",
+                             "MsgBox", "String", "Set", "Screen", "ScrollBars",
+                         })
                 {
-                    new Candidate { Name = "MsgBox",   Kind = "func", Pos = 0, Span = 2 },
-                    new Candidate { Name = "Main",     Kind = "func", Pos = 0, Span = 2 },
-                    new Candidate { Name = "mCount",   Kind = "var",  Pos = 1, Span = 1 },
-                    new Candidate { Name = "Size",     Kind = "prop", Pos = 0, Span = 2 },
-                    new Candidate { Name = "String",   Kind = "type", Pos = 0, Span = 2 },
-                    new Candidate { Name = "Select",   Kind = "kw",   Pos = 0, Span = 2 },
-                    new Candidate { Name = "selBegin", Kind = "var",  Pos = 0, Span = 2 },
-                };
-                f.SetData(items, 1, 0, 8);
-                int w = 260;
-                int h = items.Count * f.RowHeight + f.DetailHeight + 2;
+                    FuzzyHit fh;
+                    if (!Fuzzy.Match(n, word, out fh)) continue;
+                    cands.Add(new Candidate
+                    {
+                        Name = n,
+                        Kind = eng.Classify(n),
+                        Pos = fh.First,
+                        Span = fh.Span,
+                        Hits = fh.Positions,
+                        HitKind = fh.Kind,
+                        Run = fh.Run,
+                        ScopeKind = 3,
+                        IsBuiltin = VbaBuiltins.IsKeyword(n),
+                    });
+                }
+                cands.Sort(Engine.Cmp);
+
+                f.SetData(cands, 1, 0, 15);
+                var size = f.DesiredSize();
+                int w = size.Width;
+                int h = size.Height;
                 f.StartPosition = FormStartPosition.Manual;
                 f.Location = new System.Drawing.Point(-4000, -4000);
                 f.Show();
@@ -795,7 +816,8 @@ namespace VbeComplete
                     f.DrawToBitmap(bmp, new System.Drawing.Rectangle(0, 0, w, h));
                     string path = Path.Combine(Settings.Home, "popup-preview.png");
                     bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
-                    sb.AppendLine("saved " + path + "  " + w + "x" + h);
+                    sb.AppendLine("saved " + path + "  " + w + "x" + h +
+                                  "  items=" + cands.Count + "  word=" + word);
                 }
                 f.Hide();
                 f.Dispose();
