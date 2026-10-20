@@ -1,0 +1,12 @@
+# cmd.exe 对 LF-only 的批处理会解析失败：goto 标签和多行 if 块直接失效，
+# 表现为"双击窗口一闪就关、程序根本没启动"。v129/v131a 两次踩到。
+# 所以 .bat 必须是 CRLF —— 这里钉死，不依赖每个人的 core.autocrlf。
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 源码与文档统一 LF
+*.cs text eol=lf
+*.csproj text eol=lf
+*.md text eol=lf
+*.ini text eol=lf
+*.json text eol=lf

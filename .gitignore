@@ -1,0 +1,26 @@
+# ---- 编译产物 ----
+src/bin/
+src/obj/
+
+# ---- 运行 / 自检日志 ----
+*.log
+crash.log
+selftest.log
+carettest.log
+hktest.log
+writetest.log
+uitest.log
+probe-cs.log
+popup-preview.png
+
+# ---- 本机私有配置 ----
+# settings.ini 是这一台机器的开关配置（首次启动照 settings.example.ini 生成）
+settings.ini
+recent.json
+recent.json.tmp
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
