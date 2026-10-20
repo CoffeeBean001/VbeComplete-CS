@@ -38,7 +38,6 @@ namespace VbeComplete
     {
         public IVbeSource Backend;
         public Recent Recent;
-        public WordBank Bank;
 
         // ★一屏最多几行：与 Python 版 MAX_VISIBLE_ROWS 对齐（15）。候选不足时
         //   窗口自己变矮 —— 用户口径是"显示几行就几行高"，不是固定 15 行留白。
@@ -98,11 +97,15 @@ namespace VbeComplete
         // ------------------------------------------------------------------
 
         /// <summary>
-        /// 重建池子。key 带"本模块文本长度 + 全工程签名"：
+        /// 重建池子。key 带"本模块文本长度 + 全工程签名 + 被挖掉的词"：
         /// 本模块一边打字一边重解析（保证自己新写的变量立刻能提示），
         /// 别的模块只在行数变了之后才重解析（不然每次按键都要重扫整个工程）。
+        ///
+        /// blank*(1-based) 是"正在输入的那个词"的位置 —— 解析前把它挖成空格，
+        /// 候选池里就不会出现"用户正打到一半的那个名字自己"。
         /// </summary>
-        private void EnsurePool(string moduleName, string moduleText)
+        private void EnsurePool(string moduleName, string moduleText,
+            int blankLine = 0, int blankStart = 0, string blankToken = null)
         {
             int sig = 0;
             List<ModuleScope> others = null;
@@ -111,7 +114,8 @@ namespace VbeComplete
                 others = Backend.ProjectScopes(out sig);
             }
 
-            string key = (moduleName ?? "") + "|" + (moduleText == null ? -1 : moduleText.Length) + "|" + sig;
+            string key = (moduleName ?? "") + "|" + (moduleText == null ? -1 : moduleText.Length) +
+                         "|" + sig + "|" + blankLine + ":" + blankStart + ":" + (blankToken ?? "");
             if (_poolNames.Count > 0 && _poolKey == key) return;
 
             var scopes = new List<ModuleScope>();
@@ -119,11 +123,14 @@ namespace VbeComplete
             _procKinds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             _typeNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            // 1) 当前模块：用传进来的文本（最新鲜），不吃缓存
+            // 1) 当前模块：用传进来的文本（最新鲜），不吃缓存；先把半截词挖掉
             ModuleScope cur = null;
             if (moduleText != null)
             {
-                cur = Scope.Analyze(moduleName ?? "", moduleText);
+                string parsed = !string.IsNullOrEmpty(blankToken)
+                    ? Rules.BlankToken(moduleText, blankLine, blankStart, blankToken)
+                    : moduleText;
+                cur = Scope.Analyze(moduleName ?? "", parsed);
                 _scopeCache[moduleName ?? ""] = cur;
                 scopes.Add(cur);
                 seen.Add(moduleName ?? "");
@@ -169,10 +176,13 @@ namespace VbeComplete
                 foreach (var n in Backend.ComponentNames())
                     if (nameSeen.Add(n)) names.Add(n);
 
-            // 5) 词库里的额外词
-            if (Bank != null)
-                foreach (var n in Bank.ExtraNames())
-                    if (nameSeen.Add(n)) names.Add(n);
+            // 5) ★词库：keywords-cs.db + functions-cs.db 里的全部词条。
+            //   旧版**根本没有把内建名字放进池子** —— 只有"工程里恰好用到过的"
+            //   才会经由全量标识符混进来，于是 `MsgBox` 在没写过的模块里搜不到。
+            //   现在两个库在启动时已经全量载入内存，这里直接并进池子。
+            //   它们不受作用域约束（不进 _poolScoped），排序时靠 IsBuiltin 往后排。
+            foreach (var n in VbaBuiltins.Pool())
+                if (nameSeen.Add(n)) names.Add(n);
 
             _poolNames = names;
             _poolModule = moduleName ?? "";
@@ -234,10 +244,16 @@ namespace VbeComplete
             int caret = Rules.CharColFromDisp(line, snap.CaretCol);
 
             if (!manual && Rules.InCommentOrString(line, caret)) { Hide(); return false; }
+            // ★声明位置一律不弹（含 `As` 之后、裸声明 `Public x` 之后）。
+            //   见 Rules.InDeclarationPosition 的说明。
             if (!manual && !DeclPopup && Rules.InDeclarationPosition(line, caret)) { Hide(); return false; }
 
+            // 先取词：池子要拿"这个词被挖掉之后"的文本去解析。
+            int wordStart;
+            string word = Rules.WordBefore(line, caret, out wordStart);
+
             string text = Backend?.ModuleText();
-            EnsurePool(snap.Module, text);
+            EnsurePool(snap.Module, text, snap.Line, wordStart, word);
 
             // ---- `对象.` 位置 ----
             // VBE 自己有成员列表（带真类型信息），默认整个让给它。只有在
@@ -262,8 +278,6 @@ namespace VbeComplete
                 }
             }
 
-            int wordStart;
-            string word = Rules.WordBefore(line, caret, out wordStart);
             if (word.Length == 0)
             {
                 if (memberPool != null || ((manual || MemberPopup) && atMemberPos))
@@ -289,9 +303,7 @@ namespace VbeComplete
                 // 单字母只认前缀/精确 —— 否则打一个 `e` 会命中几百个
                 if (word.Length == 1 && fh.Kind < 3) continue;
 
-                bool isBuiltin = VbaBuiltins.IsBuiltinFunction(name) ||
-                                 VbaBuiltins.IsBuiltinType(name) ||
-                                 VbaBuiltins.IsKeyword(name);
+                bool isBuiltin = VbaBuiltins.IsBuiltin(name);
 
                 // 2~3 个字符的短输入，内建词汇只接受"首字母相同"的跳步命中：
                 //   ve -> VarType 可以；xl -> Explicit 不行（纯噪音）
@@ -461,8 +473,8 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 图标档位。判据只有这一处：工程过程 > 工程类型 > 内建函数 > 内建类型 >
-        /// 关键字 > 其余。拿不到档位就返回 null（不画图标），绝不默认画成"变量"。
+        /// 图标档位。判据只有这一处：工程过程 > 工程类型 > 词库函数 > 词库类型 >
+        /// 词库关键字 > 其余。拿不到档位就返回 null（不画图标），绝不默认画成"变量"。
         /// </summary>
         public string Classify(string name)
         {
@@ -472,17 +484,9 @@ namespace VbeComplete
                 return kind == "sub" ? "func" : (kind == "property" ? "prop" : "func");
             if (_typeNames.Contains(name)) return "type";
 
-            if (Bank != null)
-            {
-                string bk = Bank.KindOf(name);
-                if (bk == "sub" || bk == "function") return "func";
-                if (bk == "property") return "prop";
-                if (bk == "type") return "type";
-            }
+            string bk = VbaBuiltins.KindOf(name);
+            if (bk != null) return bk;
 
-            if (VbaBuiltins.IsBuiltinFunction(name)) return "func";
-            if (VbaBuiltins.IsBuiltinType(name)) return "type";
-            if (VbaBuiltins.IsKeyword(name)) return "kw";
             return "var";
         }
 
@@ -513,8 +517,8 @@ namespace VbeComplete
 
             if (VbaBuiltins.IsCallableBuiltin(name)) { wantParens = true; return; }
 
-            bool? ov = Bank?.WantsSpace(name);
-            wantSpace = ov ?? VbaBuiltins.KeywordWantsSpace(name);
+            // 关键字要不要空格、以及用户自己在词库里标了 wants_space 的那些
+            wantSpace = VbaBuiltins.KeywordWantsSpace(name);
         }
 
         public static bool IsOwnProcName(string name, string enclosingProc)

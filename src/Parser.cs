@@ -28,8 +28,11 @@ namespace VbeComplete
 
     internal static class Parser
     {
-        // 标识符：字母/下划线开头，后面可以跟字母数字下划线，可选类型后缀
-        private const string IDENT = @"[A-Za-z_][A-Za-z0-9_]*[\%\&\#\@\$]?";
+        // 标识符：Unicode 字母/下划线开头，后面可以跟字母数字下划线，可选类型后缀。
+        // ★必须用 \p{L} 而不是 [A-Za-z]：VBA 允许中文变量名/过程名
+        //   （`Sub 汇总()` / `学生 = Split(...)`），旧正则把它们整段跳过，
+        //   于是"中文名永远不提示"。
+        private const string IDENT = @"[\p{L}_][\p{L}\p{N}_]*[\%\&\#\@\$]?";
 
         private static readonly Regex ReIdent = new Regex(IDENT, RegexOptions.Compiled);
 

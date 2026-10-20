@@ -46,6 +46,7 @@ namespace VbeComplete
                 TestEngine();
                 TestFuzzy();
                 TestScope();
+                TestChineseAndExplicit();
                 TestMember();
                 TestEditing();
                 TestSnippets();
@@ -129,10 +130,27 @@ namespace VbeComplete
             Ok("member-position/空格后点号", Rules.InMemberPosition("a = b. ", 8));
 
             Ok("decl-position/Dim 名字", Rules.InDeclarationPosition("Dim cus", 8));
-            Ok("decl-position/As 后是类型位置", !Rules.InDeclarationPosition("Dim x As Inte", 13));
+            // ★v133：`As` 后面一律不弹（用户明确要求）—— 那里只可能是类型名
+            Ok("decl-position/As 后不弹", Rules.InDeclarationPosition("Dim x As Inte", 13));
+            Ok("decl-position/As 后空词也不弹", Rules.InDeclarationPosition("Dim x As ", 11));
             Ok("decl-position/Sub 名字", Rules.InDeclarationPosition("Sub Do", 7));
             Ok("decl-position/普通语句不是", !Rules.InDeclarationPosition("x = cus", 8));
             Ok("decl-position/Const 值位置", !Rules.InDeclarationPosition("Const PI = 3", 13));
+            // ★v133：不带 Dim 的裸声明 —— 旧正则漏了这几条，于是 `Public glo|`
+            //   被当成普通表达式，弹窗把"正在定义的那个名字自己"提示出来。
+            Ok("decl-position/裸 Public", Rules.InDeclarationPosition("Public gCount", 13));
+            Ok("decl-position/裸 Private", Rules.InDeclarationPosition("Private m_arr", 13));
+            Ok("decl-position/裸 Global", Rules.InDeclarationPosition("Global g", 8));
+            Ok("decl-position/裸 Public As", Rules.InDeclarationPosition("Public g As Long", 16));
+            Ok("decl-position/Public Sub 不算裸声明误判", Rules.InDeclarationPosition("Public Sub DoIt(", 16));
+
+            // 把"正在输入的词"挖掉（自我提示的根治办法）
+            Eq("blank-token/挖掉当前词",
+                Rules.BlankToken("Public glo\r\nx = 1", 1, 8, "glo"), "Public    \nx = 1");
+            Eq("blank-token/位置对不上就不动",
+                Rules.BlankToken("Public abc\r\nx = 1", 1, 8, "glo"), "Public abc\r\nx = 1");
+            Eq("blank-token/中文词",
+                Rules.BlankToken("    学生 = 1", 1, 5, "学生"), "      " + " = 1");
 
             Ok("comment/注释里", Rules.InCommentOrString("' abc", 5));
             Ok("comment/字符串里", Rules.InCommentOrString("x = \"ab\"", 8));
@@ -232,7 +250,6 @@ End Type
             var eng = new Engine
             {
                 Recent = new Recent(),
-                Bank = new WordBank(),
             };
             eng.PrimePool(Sample, "Module1");
 
@@ -465,7 +482,7 @@ End Sub
             Ok("scope/局部一律不导出", !ex.ContainsKey("tmpA") && !ex.ContainsKey("p1"));
 
             // 引擎层面：池子里有 shared，但在 B 的位置不该出现在候选里
-            var eng = new Engine { Recent = new Recent(), Bank = new WordBank() };
+            var eng = new Engine { Recent = new Recent() };
             eng.PrimePool(ScopedSample, "Mod1");
             var items = enginesTrigger(eng, "    sha", 8);
             Ok("scope/引擎在 B 里不提示 A 的局部",
@@ -536,6 +553,111 @@ End Sub
 Public Name As String
 ";
 
+        // ------------------------------------------------------------------
+        // 中文标识符 + Option Explicit（v133）
+        // ------------------------------------------------------------------
+        private const string ChineseSample = @"Option Explicit
+Private 模块计数 As Long
+
+Public Sub 汇总(ByVal 起始行 As Long)
+    Dim 合计 As Long
+    合计 = 1
+End Sub
+
+Public Function 取总分() As Long
+    取总分 = 0
+End Function
+";
+
+        private const string NoExplicitSample = @"Private Sub 测试()
+    学生 = 1
+    总分 = 学生 + 2
+End Sub
+";
+
+        private const string HostObjSample = @"Option Explicit
+Private Sub 点击()
+    CommandButton1.Caption = ""确定""
+    Set 按钮 = Me.Controls.Add(""Forms.CommandButton.1"")
+End Sub
+";
+
+        private static void TestChineseAndExplicit()
+        {
+            // ---- 中文过程名 / 变量名必须解析出来 ----
+            var ms = Scope.Analyze("模块1", ChineseSample);
+            Ok("cn/中文过程名是声明", ms.Decls.Any(d => d.Name == "汇总" && d.KindHint == "sub"),
+                string.Join(",", ms.Decls.Select(d => d.Name)));
+            Ok("cn/中文函数名", ms.Decls.Any(d => d.Name == "取总分" && d.KindHint == "function"));
+            Ok("cn/中文模块变量", ms.Decls.Any(d => d.Name == "模块计数" && d.Proc == null));
+            Ok("cn/中文参数是局部", ms.Decls.Any(d => d.Name == "起始行" && d.Proc != null));
+
+            var vis = ms.Visible("汇总");
+            Ok("cn/中文局部可见", vis.ContainsKey("合计"));
+            Ok("cn/中文参数可见", vis.ContainsKey("起始行"));
+
+            // 中文名要能进候选池并被模糊命中
+            var cnSnap = new Snapshot
+            {
+                // ★CaretCol 是**显示列**：4 个空格 + 一个汉字 = 宽 6，光标落在 7
+                Line = 6, Text = "    合", Module = "模块1", CaretCol = 7,
+            };
+            var cnBe = new FakeBackend { Text = ChineseSample, Snap = cnSnap };
+            var eng = new Engine { Recent = new Recent(), Backend = cnBe };
+            var items = eng.Trigger(false, cnSnap) ? eng.Items.ToList() : new List<Candidate>();
+            Ok("cn/打中文首字能提示", items.Any(c => c.Name == "合计"),
+                string.Join(",", items.Select(c => c.Name)));
+
+            // ---- Option Explicit ----
+            Ok("explicit/认出来了", Scope.Analyze("M", ChineseSample).OptionExplicit);
+            Ok("explicit/没写就不算", !Scope.Analyze("M", NoExplicitSample).OptionExplicit);
+
+            var noExp = Scope.Analyze("M", NoExplicitSample);
+            Ok("explicit/无该选项时未声明名字进池",
+                noExp.FreeIdents.Contains("学生") && noExp.FreeIdents.Contains("总分"),
+                string.Join(",", noExp.FreeIdents));
+
+            var expSample = "Option Explicit\r\nPrivate Sub T()\r\n    未定义 = 1\r\nEnd Sub\r\n";
+            var exp = Scope.Analyze("M", expSample);
+            Ok("explicit/有该选项时未声明名字不进池", !exp.FreeIdents.Contains("未定义"),
+                string.Join(",", exp.FreeIdents));
+
+            // ---- 自我提示：正在打的这个词本身不该进候选池 ----
+            // ★旧版症状：定义全局/模块变量时（`Public glo|`），解析把半截名当成了
+            //   已声明的名字，于是候选第一条就是"你正在打的这个词"，一弹一收像闪烁。
+            const string selfSample = "Sub T()\r\n    myNewVar = 1\r\nEnd Sub\r\n";
+            var selfBe = new FakeBackend
+            {
+                Text = selfSample,
+                Snap = new Snapshot { Line = 2, Text = "    myNewVa", Module = "M", CaretCol = 13 },
+            };
+            var selfEng = new Engine { Recent = new Recent(), Backend = selfBe };
+            bool selfShown = selfEng.Trigger(false, selfBe.Snap);
+            Ok("self/正在输入的名字不提示自己",
+                !selfShown || !selfEng.Items.Any(c => c.Name == "myNewVar"),
+                selfShown ? string.Join(",", selfEng.Items.Select(c => c.Name)) : "(不弹)");
+
+            // 宿主对象（点了点号的 / Set 的）在 Option Explicit 下仍要留
+            var host = Scope.Analyze("M", HostObjSample);
+            Ok("explicit/控件名（带点号）保留", host.FreeIdents.Contains("CommandButton1"),
+                string.Join(",", host.FreeIdents));
+            Ok("explicit/Set 的对象名保留", host.FreeIdents.Contains("按钮"),
+                string.Join(",", host.FreeIdents));
+
+            // ---- 引擎层面：Option Explicit 的模块里，未声明名字不该出现在候选 ----
+            var eng2 = new Engine { Recent = new Recent() };
+            var be = new FakeBackend
+            {
+                Text = expSample,
+                Snap = new Snapshot { Line = 3, Text = "    未定", Module = "M", CaretCol = 7 },
+            };
+            eng2.Backend = be;
+            bool shown = eng2.Trigger(false, be.Snap);
+            Ok("explicit/候选里没有未声明名字",
+                !shown || !eng2.Items.Any(c => c.Name == "未定义" || c.Name == "未定"),
+                shown ? string.Join(",", eng2.Items.Select(c => c.Name)) : "(不弹)");
+        }
+
         private static void TestMember()
         {
             var cls = Scope.Analyze("Cls1", Cls1Sample);
@@ -543,7 +665,7 @@ Public Name As String
             var mod = Scope.Analyze("Mod1", MemberSample);
             Eq("member/Dim As 收类型", mod.TypeOf("c", "Main"), "Cls1");
 
-            var eng = new Engine { Recent = new Recent(), Bank = new WordBank() };
+            var eng = new Engine { Recent = new Recent() };
             var be = new FakeBackend
             {
                 Text = MemberSample,

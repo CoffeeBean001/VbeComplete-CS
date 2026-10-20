@@ -2,6 +2,7 @@
 // 桌面的环境里验证全部纯逻辑）。
 
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -46,6 +47,9 @@ namespace VbeComplete
         private static int RunMain(string[] args)
         {
             Settings.Load();
+            // 诊断命令把中文打到控制台时，默认代码页（936）会吐一串乱码 ——
+            // 这些输出同时会落盘成 UTF-8 日志，能对上才不会看错。
+            try { Console.OutputEncoding = Encoding.UTF8; } catch { }
 
             if (args.Length > 0 && args[0] == "--selftest")
             {
@@ -74,6 +78,18 @@ namespace VbeComplete
             if (args.Length > 0 && args[0] == "--snipetest")
             {
                 return SnippetTest();
+            }
+            if (args.Length > 0 && args[0] == "--dbtest")
+            {
+                return DbTest();
+            }
+            if (args.Length > 0 && args[0] == "--dump")
+            {
+                return DumpModule();
+            }
+            if (args.Length > 0 && args[0] == "--enginetest")
+            {
+                return EngineTest();
             }
 
             // 单实例：同名互斥体已经存在就说明有一份在跑。
@@ -118,6 +134,26 @@ namespace VbeComplete
         /// 全程可逆，最后逐字节比对原文；比对失败会把原文整段写进日志。
         /// ★只由用户显式运行 `--writetest` 触发，正常运行一次都不会动用户代码。
         /// </summary>
+        /// <summary>
+        /// 把当前代码窗模块的全文写到 moddump.txt（只读，一个字节都不改）。
+        /// 真机跑 --writetest / --hktest / --carettest 之前先 dump 一份，
+        /// 跑完再 dump 一份 diff —— 那几条用例都会"改完再删"，这是唯一的核对手段。
+        /// </summary>
+        private static int DumpModule()
+        {
+            var be = new VbeBackend();
+            string text = be.ModuleText();
+            var snap = be.Snapshot();
+            var sb = new StringBuilder();
+            sb.AppendLine("module = " + (snap == null ? "?" : snap.Module) +
+                          "  lines = " + be.LineCount() +
+                          "  caret = " + (snap == null ? "?" : snap.Line + ":" + snap.CaretCol));
+            sb.AppendLine("----");
+            sb.Append(text ?? "(null)");
+            File.WriteAllText(Path.Combine(Settings.Home, "moddump.txt"), sb.ToString(), Encoding.UTF8);
+            return 0;
+        }
+
         private static int WriteTest()
         {
             var sb = new StringBuilder();
@@ -617,6 +653,243 @@ namespace VbeComplete
             return ok ? 0 : 1;
         }
 
+        /// <summary>
+        /// 词库自检（不需要 Excel、不需要桌面）：在**临时库**上验证
+        /// "第一次自动建库并灌种子 → 载入内存 → 用户加一行也能生效"。
+        /// ★刻意不碰真实的关键字/函数库 —— 自检绝不允许改坏用户自己维护的词库。
+        /// </summary>
+        private static int DbTest()
+        {
+            var sb = new StringBuilder();
+            bool ok = true;
+            string tmpKw = Path.Combine(Path.GetTempPath(),
+                "vbecomplete-kw-" + Guid.NewGuid().ToString("N") + ".db");
+            string tmpFn = Path.Combine(Path.GetTempPath(),
+                "vbecomplete-fn-" + Guid.NewGuid().ToString("N") + ".db");
+
+            sb.AppendLine("=== word db test ===");
+            sb.AppendLine("真实关键字库 = " + WordLibrary.KeywordPath() +
+                          "（存在=" + File.Exists(WordLibrary.KeywordPath()) + "）");
+            sb.AppendLine("真实函数库   = " + WordLibrary.FunctionPath() +
+                          "（存在=" + File.Exists(WordLibrary.FunctionPath()) + "）");
+            sb.AppendLine("临时关键字库 = " + tmpKw);
+            sb.AppendLine("临时函数库   = " + tmpFn);
+
+            Action<string, bool, string> check = (name, pass, detail) =>
+            {
+                if (!pass) ok = false;
+                sb.AppendLine((pass ? "  PASS  " : "  FAIL  ") + name +
+                              (string.IsNullOrEmpty(detail) ? "" : "   " + detail));
+            };
+
+            string oldKw = Environment.GetEnvironmentVariable("VBECOMPLETE_KEYWORD_DB");
+            string oldFn = Environment.GetEnvironmentVariable("VBECOMPLETE_FUNCTION_DB");
+            Environment.SetEnvironmentVariable("VBECOMPLETE_KEYWORD_DB", tmpKw);
+            Environment.SetEnvironmentVariable("VBECOMPLETE_FUNCTION_DB", tmpFn);
+            try
+            {
+                var lib = new WordLibrary();
+                lib.Load();
+                sb.AppendLine("载入结果：关键字 " + lib.KeywordCount + " 条，函数/类型 " +
+                              lib.FunctionCount + " 条，" + lib.LastError);
+                check("第一次运行自动建库", File.Exists(tmpKw) && File.Exists(tmpFn), "");
+                check("关键字灌了种子", lib.KeywordCount >= 70, "count=" + lib.KeywordCount);
+                check("函数灌了种子", lib.FunctionCount >= 150, "count=" + lib.FunctionCount);
+                check("能查到 Dim", VbaBuiltins.IsKeyword("Dim"), "");
+                check("能查到 MsgBox", VbaBuiltins.IsBuiltinFunction("MsgBox"), "");
+                check("能查到 String（类型）", VbaBuiltins.IsBuiltinType("String"), "");
+                check("枚举一律不收（vbRed）", !VbaBuiltins.IsBuiltin("vbRed"), "");
+                check("枚举一律不收（xlUp）", !VbaBuiltins.IsBuiltin("xlUp"), "");
+                check("类型名不补括号", !VbaBuiltins.IsCallableBuiltin("String"), "");
+                check("函数补括号", VbaBuiltins.IsCallableBuiltin("Split"), "");
+                check("Me 不补空格", !VbaBuiltins.KeywordWantsSpace("Me"), "");
+                check("Dim 补空格", VbaBuiltins.KeywordWantsSpace("Dim"), "");
+                check("Next 不补空格", !VbaBuiltins.KeywordWantsSpace("Next"), "");
+
+                // 用户自己往里加一行 —— 重启后必须能进候选池
+                bool inserted;
+                using (var db = new SqliteDb())
+                {
+                    inserted = db.Open(tmpFn) &&
+                               db.Write("INSERT OR REPLACE INTO functions " +
+                                        "(word, kind, wants_parens, enabled) " +
+                                        "VALUES ('我的函数', 'function', 1, 1)");
+                }
+                check("往库里插一行", inserted, "");
+                new WordLibrary().Load();
+                check("自定义词条生效", VbaBuiltins.IsBuiltinFunction("我的函数"), "");
+                check("自定义词条补括号", VbaBuiltins.IsCallableBuiltin("我的函数"), "");
+
+                // enabled=0 的条目必须消失
+                using (var db = new SqliteDb())
+                {
+                    if (db.Open(tmpFn))
+                        db.Write("UPDATE functions SET enabled=0 WHERE word='我的函数'");
+                }
+                new WordLibrary().Load();
+                check("enabled=0 的词条不提示", !VbaBuiltins.IsBuiltinFunction("我的函数"), "");
+            }
+            catch (Exception e)
+            {
+                ok = false;
+                sb.AppendLine("EXCEPTION " + e);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("VBECOMPLETE_KEYWORD_DB", oldKw);
+                Environment.SetEnvironmentVariable("VBECOMPLETE_FUNCTION_DB", oldFn);
+                VbaBuiltins.ResetToSeed();
+                try { if (File.Exists(tmpKw)) File.Delete(tmpKw); } catch { }
+                try { if (File.Exists(tmpFn)) File.Delete(tmpFn); } catch { }
+            }
+
+            sb.AppendLine(ok ? "RESULT: PASS" : "RESULT: FAIL");
+            File.WriteAllText(Path.Combine(Settings.Home, "dbtest.log"), sb.ToString(), Encoding.UTF8);
+            return ok ? 0 : 1;
+        }
+
+        /// <summary>
+        /// 候选判定的**真机**回归：拿真实模块文本 + 人造快照跑 Trigger，
+        /// 逐条验证"这个位置到底弹不弹、弹出的第一条是什么"。
+        ///
+        /// ★为什么不直接敲键盘：钩子按设计不理注入键，没法在这里模拟打字。
+        ///   但 Trigger 的全部输入就是 (模块文本, 行, 列)，人造快照与真打字
+        ///   走的是同一条代码路径 —— 判定逻辑 100% 覆盖，只有"按键有没有送到
+        ///   钩子"覆盖不到（那部分由 --hktest 的命令级用例兜）。
+        ///
+        /// 本命令纯读，一个字符都不写模块。
+        /// </summary>
+        private static int EngineTest()
+        {
+            var sb = new StringBuilder();
+            var be = new VbeBackend();
+            string text = be.ModuleText();
+            int lines = be.LineCount();
+            bool ok = true;
+
+            sb.AppendLine("=== engine test (真机模块文本) ===");
+            sb.AppendLine("module lines = " + lines + " len = " + (text == null ? -1 : text.Length));
+            if (text == null || lines <= 0)
+            {
+                sb.AppendLine("no code module, skip");
+                File.WriteAllText(Path.Combine(Settings.Home, "enginetest.log"), sb.ToString(), Encoding.UTF8);
+                return 1;
+            }
+
+            Console.WriteLine();
+            var eng = new Engine { Recent = new Recent(), Backend = be };
+            string modName = be.Snapshot()?.Module;
+
+            // 说明, 行, 行文本, 光标显示列, 期望该弹?, 期望第一条, 期望"不许出现"的名字
+            Action<string, int, string, int, bool?, string, string[]> probe =
+                (name, line, lineText, col, wantShow, wantFirst, mustNot) =>
+                {
+                    var snap = new Snapshot { Line = line, Text = lineText, Module = modName, CaretCol = col };
+                    eng.InvalidatePool();
+                    bool shown = eng.Trigger(false, snap);
+                    var items = shown ? eng.Items.ToList() : new List<Candidate>();
+                    string first = items.Count > 0 ? items[0].Name : "";
+                    string names = shown ? string.Join(",", items.Take(8).Select(x => x.Name)) : "(不弹)";
+
+                    bool pass = true;
+                    if (wantShow.HasValue && shown != wantShow.Value) pass = false;
+                    if (wantFirst != null && !string.Equals(first, wantFirst, StringComparison.OrdinalIgnoreCase)) pass = false;
+                    foreach (var bad in mustNot ?? Array.Empty<string>())
+                        if (items.Any(x => string.Equals(x.Name, bad, StringComparison.OrdinalIgnoreCase))) pass = false;
+                    if (!pass) ok = false;
+
+                    sb.AppendLine((pass ? "  PASS  " : "  FAIL  ") + name);
+                    sb.AppendLine("         行[" + (lineText ?? "") + "] 列=" + col + " -> " + names +
+                                  (wantFirst != null ? "   want first=" + wantFirst : "") +
+                                  (mustNot != null && mustNot.Length > 0 ? "   不许有=" + string.Join("/", mustNot) : ""));
+                    if (shown) eng.Hide();
+                };
+
+            // ---- 1. `As` 之后不弹（用户报的第 3 条）----
+            // 模块里就有 `    Dim student2 As String`
+            probe("As 后不弹（Dim student2 As Str|）", 8, LineOf(text, 8), 24, false, null, null);
+            // 裸声明 `Private okkk2` 后面
+            probe("裸声明不弹（Private okkk2|）", 4, LineOf(text, 4), 13, false, null, null);
+            // `Public 我们 As String`
+            probe("裸声明 + As 不弹（Public 我们 As Str|）", 3, LineOf(text, 3), 18, false, null, null);
+            probe("裸声明名字位不弹（Public 我|）", 3, LineOf(text, 3), 9, false, null, null);
+
+            // ---- 2. Option Explicit：未声明的名字不进候选（用户报的第 4 条）----
+            // ★必须在**别的行**上下手：光标所在行会被"挖掉半截词"，那条路本来就
+            //   收集不到当前词，验不出 Option Explicit 的作用。这里把光标放在
+            //   `student2 = getOne()` 那一行，但搜索词是 `stud` —— 池子里若混进
+            //   了第 9/11 行的 `student`，它就会冒出来。
+            probe("未声明 student 不进候选（stud|）", 10, "    stud", 9, null, "student2", new[] { "student" });
+            probe("未声明 ok 不进候选（ok|）", 13, "    ok", 7, null, "okkk2", new[] { "ok" });
+
+            // ---- 3. 中文名字要提示（用户报的第 6 条）----
+            probe("中文变量名能提示（他|）", 13, "    他", 7, true, "他们", null);
+
+            // ---- 4. A/B 对照：把 Option Explicit 去掉，同一个探针就该收进来 ----
+            //   证明"未声明的不提示"确实是 Option Explicit 在起作用，不是别的原因。
+            var noExp = text.Replace("Option Explicit", "              ");
+            var be2 = new RealTextBackend(noExp, modName);
+            var eng2 = new Engine { Recent = new Recent(), Backend = be2 };
+            var snap2 = new Snapshot { Line = 10, Text = "    stud", Module = modName, CaretCol = 9 };
+            bool shown2 = eng2.Trigger(false, snap2);
+            bool leaked = shown2 && eng2.Items.Any(x => string.Equals(x.Name, "student", StringComparison.OrdinalIgnoreCase));
+            if (!leaked) ok = false;
+            sb.AppendLine((leaked ? "  PASS  " : "  FAIL  ") +
+                          "对照：没有 Option Explicit 时 student 会被收进来");
+            sb.AppendLine("         -> " + (shown2 ? string.Join(",", eng2.Items.Take(8).Select(x => x.Name)) : "(不弹)"));
+            if (shown2) eng2.Hide();
+
+            sb.AppendLine(ok ? "RESULT: PASS" : "RESULT: FAIL");
+            File.WriteAllText(Path.Combine(Settings.Home, "enginetest.log"), sb.ToString(), Encoding.UTF8);
+            Console.WriteLine(sb.ToString());
+            return ok ? 0 : 1;
+        }
+
+        /// <summary>
+        /// 只换"模块全文"的假后端：其余能力全部委托给真实的 VbeBackend。
+        /// 用来做 A/B 对照（同一台机器、同一份工程，只改一处文本）。
+        /// </summary>
+        private sealed class RealTextBackend : IVbeSource
+        {
+            private readonly string _text;
+            private readonly VbeBackend _real = new VbeBackend();
+            private readonly string _module;
+            public RealTextBackend(string text, string module) { _text = text; _module = module; }
+
+            public Snapshot Snapshot(bool verify = true) => _real.Snapshot(verify);
+            public string ModuleText() => _text;
+            public List<string> ComponentNames() => _real.ComponentNames();
+            public bool ApplyCompletion(int lineNo, int wordStartCol, int endCol,
+                string completion, bool wantParens, bool wantSpace, string enclosingProc) => false;
+            public string EnclosingProcName() => _real.EnclosingProcName();
+
+            /// <summary>本项目的作用域换成"改过的文本"，别的模块照旧。</summary>
+            public List<ModuleScope> ProjectScopes(out int signature)
+            {
+                var list = _real.ProjectScopes(out signature);
+                var outp = new List<ModuleScope>();
+                bool replaced = false;
+                foreach (var ms in list)
+                {
+                    if (!replaced && string.Equals(ms.Module, _module, StringComparison.OrdinalIgnoreCase))
+                    {
+                        outp.Add(Scope.Analyze(_module, _text));
+                        replaced = true;
+                    }
+                    else outp.Add(ms);
+                }
+                if (!replaced) outp.Add(Scope.Analyze(_module, _text));
+                return outp;
+            }
+        }
+
+        private static string LineOf(string text, int line1)
+        {
+            if (text == null || line1 < 1) return "";
+            var all = Parser.SplitLines(text);
+            return line1 <= all.Length ? all[line1 - 1] : "";
+        }
+
         private static int CaretTest()
         {
             var sb = new StringBuilder();
@@ -774,7 +1047,14 @@ namespace VbeComplete
                 // 用**真实匹配 + 真实排序**造数据：预览图里看到的高亮位置、
                 // 图标档位、行序，都与用户在 VBE 里看到的一致。
                 // 手写 Pos/Span 的那种预览图，改了算法它也不会跟着变。
-                var eng = new Engine { Recent = new Recent(), Bank = new WordBank() };
+                // ★词库也要真的载入：否则预览图里的内建名字全变成"var"图标。
+                var wl = new WordLibrary();
+                wl.Load();
+                sb.AppendLine("word db: kw=" + wl.KeywordCount + " fn=" + wl.FunctionCount +
+                              " kwPath=" + WordLibrary.KeywordPath() +
+                              "(exists=" + File.Exists(WordLibrary.KeywordPath()) + ")" +
+                              " err=" + wl.LastError);
+                var eng = new Engine { Recent = new Recent() };
                 eng.PrimePool("", "Module1");
                 const string word = "se";
                 var cands = new System.Collections.Generic.List<Candidate>();

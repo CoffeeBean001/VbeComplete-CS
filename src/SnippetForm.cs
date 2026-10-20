@@ -1,44 +1,54 @@
-// 代码片段窗（Ctrl+Q）。移植自 Python 版 snippet_ui.py，界面口径逐条对齐：
-//   * 搜索框 —— 按标题模糊匹配（多词 AND，见 SnippetMatch）；
-//   * 左边列表 = 全部片段标题，点一下右边就显示它的代码；
-//   * 右边：标题框 + 代码框（Ctrl+Enter 直接插入、Tab 是缩进不是换焦点）；
-//   * 底部：新增 / 保存修改 / 删除 / 关闭 / 插入到光标处；
-//   * 开窗位置 = VBE 里光标处（下方放不下就翻到上方，再夹进屏幕）。
+// 代码片段窗（Ctrl+Q）—— C# 版自己的界面，重新做的一版。
 //
-// ★与补全弹窗（PopupForm）的取向**刻意相反**：
-//   补全窗是"只显示、不接收输入"的 NOACTIVATE 浮窗；这个窗要收键盘（搜索框里
-//   要打字、代码框里要改代码），所以是普通窗口，会抢焦点、有标题栏、可拖动。
-//   代价是"打开期间焦点不在 VBE"，全局钩子的焦点判据会把按键全部放行 —— 于是
-//   窗内的 Esc / Ctrl+Q 必须由本窗自己绑（ProcessCmdKey）。
+// ★这一版与 Python 版**没有任何视觉/布局继承关系**，刻意长得不一样：
+//     · 顶部深色标题栏（片段总数 / 命中数常驻右上）
+//     · 左侧自绘列表：每条两行 —— 标题（搜索命中逐字符高亮）+ 代码首行预览
+//     · 右侧：标题输入框 + 代码编辑区（等宽字体、Tab 缩进、Ctrl+Enter 插入）
+//     · 底部状态条 + 主次分明的按钮（"插入"是唯一的高亮主按钮）
+//
+// ★为什么列表要自绘而不是用 ListBox：
+//   1) 搜索命中要高亮到**逐字符**（与候选窗同一套观感）；
+//   2) ListBox 的 DrawToBitmap 在离屏渲染时经常画不出条目 —— --uitest 就废了。
+//   自绘一个 Control 之后，OnPaint 里画什么、截图里就是什么。
+//
+// ★窗口形态与补全弹窗（PopupForm）刻意相反：补全窗是 NOACTIVATE 的浮窗、
+//   一个键都不收；这个窗要收键盘（搜索框打字、代码框改代码），所以是普通窗口，
+//   会抢焦点、可拖动、可缩放。代价是"打开期间焦点不在 VBE"，全局钩子的焦点
+//   判据会把按键全部放行 —— 于是窗内的 Esc / Ctrl+Q 必须由本窗自己绑。
 //
 // 数据在 SnippetStore，插入动作由 App 注入（onInsert），本文件**不碰 COM**。
 
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Windows.Forms;
 
 namespace VbeComplete
 {
     internal sealed class SnippetForm : Form
     {
-        // ---- 配色（与 Python 版 snippet_ui.py 顶部常量逐项对应） ----
-        private static readonly Color CBg = ColorTranslator.FromHtml("#F7F6EF");
-        private static readonly Color CPanel = ColorTranslator.FromHtml("#FFFFFF");
-        private static readonly Color CFg = ColorTranslator.FromHtml("#202020");
-        private static readonly Color CMuted = ColorTranslator.FromHtml("#6B6B6B");
-        private static readonly Color CAccent = ColorTranslator.FromHtml("#2A5CAA");
-        private static readonly Color CErr = ColorTranslator.FromHtml("#C00000");
+        // ---- 配色 ----
+        private static readonly Color CBody = ColorTranslator.FromHtml("#F5F7FA");
+        private static readonly Color CCard = ColorTranslator.FromHtml("#FFFFFF");
+        private static readonly Color CLine = ColorTranslator.FromHtml("#DCE3EC");
+        private static readonly Color CText = ColorTranslator.FromHtml("#1F2937");
+        private static readonly Color CMuted = ColorTranslator.FromHtml("#6B7280");
+        private static readonly Color CAccent = ColorTranslator.FromHtml("#2563EB");
+        private static readonly Color CAccentDark = ColorTranslator.FromHtml("#1D4ED8");
+        private static readonly Color CSelectBg = ColorTranslator.FromHtml("#E8F0FE");
+        private static readonly Color CErr = ColorTranslator.FromHtml("#B91C1C");
 
-        private const int DefaultW = 780;
-        private const int DefaultH = 470;
+        private const int DefaultW = 820;
+        private const int DefaultH = 520;
+        private const int RowH = 44;
 
         private readonly SnippetStore _store;
-        private readonly Func<string, bool> _onInsert;     // (code) -> 是否插进去了
-        public Action OnClosedCallback;                             // 收起之后（把焦点还给 VBE）
+        private readonly Func<string, bool> _onInsert;
+        public Action OnClosedCallback;                  // 收起之后（把焦点还给 VBE）
 
         private TextBox _search;
-        private ListBox _list;
+        private SnippetList _list;
         private TextBox _title;
         private TextBox _code;
         private Label _status;
@@ -48,7 +58,7 @@ namespace VbeComplete
         private List<SnippetHit> _view = new List<SnippetHit>();
         private string _shownTitle;
         private string _shownCode;
-        private bool _bulk;                                 // 程序性改选中，别当用户点击
+        private bool _bulk;                              // 程序性改选中，别当用户点击
 
         public SnippetForm(SnippetStore store, Func<string, bool> onInsert)
         {
@@ -59,20 +69,24 @@ namespace VbeComplete
             StartPosition = FormStartPosition.Manual;
             ShowInTaskbar = false;
             TopMost = true;
-            BackColor = CBg;
+            BackColor = CBody;
             Font = new Font("Microsoft YaHei UI", 9f);
             AutoScaleMode = AutoScaleMode.Font;
-            MinimumSize = new Size(560, 300);
+            MinimumSize = new Size(640, 360);
             Size = new Size(DefaultW, DefaultH);
             KeyPreview = true;
+            DoubleBuffered = true;
 
             BuildUi();
-            FormClosing += (s, e) => { if (e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Close_(); } };
+            FormClosing += (s, e) =>
+            {
+                if (e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Close_(); }
+            };
         }
 
-        // ------------------------------------------------------------------
+        // ==================================================================
         // 建界面
-        // ------------------------------------------------------------------
+        // ==================================================================
 
         private void BuildUi()
         {
@@ -81,82 +95,131 @@ namespace VbeComplete
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
                 RowCount = 3,
-                BackColor = CBg,
-                Padding = new Padding(8, 8, 8, 8),
+                BackColor = CBody,
+                Margin = new Padding(0),
+                Padding = new Padding(0),
             };
-            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
-            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            // ★工具栏 / 底部固定高度：给 AutoSize 行配 Dock=Fill 的子面板时，
+            //   TableLayoutPanel 会算出一个荒唐的高度（实测把搜索框撑到 110px 高）。
+            //   固定高度是最省事、也最不会随 DPI 崩掉的做法。
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));        // 工具栏
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));       // 主体
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));        // 状态 + 按钮
 
-            // ---- 第一行：搜索 ----
+            root.Controls.Add(BuildToolbar(), 0, 0);
+            root.Controls.Add(BuildMain(), 0, 1);
+            root.Controls.Add(BuildFooter(), 0, 2);
+
+            Controls.Add(root);
+        }
+
+        /// <summary>
+        /// 顶部工具栏：左边"片段库"标签（带强调色竖条）+ 搜索框（占满剩余）+ 右边计数。
+        /// ★刻意不再写"代码片段"四个字 —— 那是窗口标题，重复一遍只是噪音。
+        /// </summary>
+        private Control BuildToolbar()
+        {
             var bar = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                ColumnCount = 2,
+                ColumnCount = 3,
                 RowCount = 1,
-                AutoSize = true,
-                Margin = new Padding(0, 0, 0, 6),
+                BackColor = CBody,
+                Padding = new Padding(12, 0, 12, 0),
+                Margin = new Padding(0),
             };
             bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             bar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            bar.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
 
-            var lblSearch = new Label
+            var lblMark = new Label
             {
-                Text = "搜索",
+                Text = "片段库",
                 AutoSize = true,
-                ForeColor = CMuted,
+                Font = new Font("Microsoft YaHei UI", 10f, FontStyle.Bold),
+                ForeColor = CText,
                 Anchor = AnchorStyles.Left,
-                Margin = new Padding(0, 0, 6, 0),
+                Margin = new Padding(9, 0, 14, 0),
             };
+            lblMark.Paint += (s, e) =>
+            {
+                using (var b = new SolidBrush(CAccent))
+                    e.Graphics.FillRectangle(b, new Rectangle(0, 3, 3, Math.Max(6, lblMark.Height - 6)));
+            };
+
             _search = new TextBox
             {
                 Dock = DockStyle.Fill,
                 BorderStyle = BorderStyle.FixedSingle,
-                BackColor = CPanel,
-                ForeColor = CFg,
-                Margin = new Padding(0, 0, 0, 0),
+                BackColor = CCard,
+                ForeColor = CText,
+                PlaceholderText = "搜索标题…（多个词用空格分开，↓ 进列表，Enter 插入）",
+                Margin = new Padding(0, 15, 0, 15),
             };
             _search.TextChanged += (s, e) => Refilter(_shownTitle);
-            // 搜索框里按 ↓ = 把焦点交给列表（并选中第一条）。Python 版（Tk）没有
-            // 这一条，用户只能拿鼠标点列表；这里补上不影响任何既有行为 ——
-            // TextBox 本来就不处理 ↓。
             _search.KeyDown += (s, e) =>
             {
-                if (e.KeyCode != Keys.Down) return;
-                if (_list.Items.Count == 0) return;
-                if (_list.SelectedIndex < 0) _list.SelectedIndex = 0;
-                _list.Focus();
-                e.Handled = true;
-                e.SuppressKeyPress = true;
+                if (e.KeyCode == Keys.Down)
+                {
+                    if (_view.Count == 0) return;
+                    if (_list.SelectedIndex < 0) _list.SelectedIndex = 0;
+                    _list.Focus();
+                    e.Handled = true; e.SuppressKeyPress = true;
+                }
+                else if (e.KeyCode == Keys.Enter && !e.Control)
+                {
+                    DoInsert();
+                    e.Handled = true; e.SuppressKeyPress = true;
+                }
+            };
+            _lblCount = new Label
+            {
+                AutoSize = true,
+                ForeColor = CMuted,
+                Anchor = AnchorStyles.Left,
+                Margin = new Padding(14, 0, 0, 0),
+                Text = "",
             };
 
-            bar.Controls.Add(lblSearch, 0, 0);
+            bar.Controls.Add(lblMark, 0, 0);
             bar.Controls.Add(_search, 1, 0);
-            root.Controls.Add(bar, 0, 0);
+            bar.Controls.Add(_lblCount, 2, 0);
+            return bar;
+        }
 
-            // ---- 第二行：左列表 + 右（标题 + 代码） ----
+        private Label _lblCount;
+
+        private void SetCountText(string text)
+        {
+            if (_lblCount != null) _lblCount.Text = text ?? "";
+        }
+
+        /// <summary>主体：左列表 + 右编辑区。</summary>
+        private Control BuildMain()
+        {
             var main = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 2,
                 RowCount = 1,
                 Margin = new Padding(0),
+                Padding = new Padding(12, 0, 12, 0),
+                BackColor = CBody,
             };
-            main.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 226f));
+            main.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 250f));
             main.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
 
-            _list = new ListBox
-            {
-                Dock = DockStyle.Fill,
-                BorderStyle = BorderStyle.FixedSingle,
-                BackColor = CPanel,
-                ForeColor = CFg,
-                IntegralHeight = false,
-                Margin = new Padding(0, 0, 6, 0),
-            };
+            _list = new SnippetList { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 10, 0) };
             _list.SelectedIndexChanged += (s, e) => OnPick();
-            _list.KeyDown += ListKeyDown;
-            _list.KeyPress += ListKeyPress;
+            _list.Activate += () => DoInsert();
+            _list.TypeToSearch += ch =>
+            {
+                _search.Focus();
+                _search.Text += ch;
+                _search.SelectionStart = _search.Text.Length;
+            };
             main.Controls.Add(_list, 0, 0);
 
             var right = new TableLayoutPanel
@@ -165,6 +228,7 @@ namespace VbeComplete
                 ColumnCount = 2,
                 RowCount = 2,
                 Margin = new Padding(0),
+                BackColor = CBody,
             };
             right.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             right.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
@@ -177,15 +241,15 @@ namespace VbeComplete
                 AutoSize = true,
                 ForeColor = CMuted,
                 Anchor = AnchorStyles.Left,
-                Margin = new Padding(0, 0, 6, 4),
+                Margin = new Padding(0, 6, 8, 8),
             };
             _title = new TextBox
             {
                 Dock = DockStyle.Fill,
                 BorderStyle = BorderStyle.FixedSingle,
-                BackColor = CPanel,
-                ForeColor = CFg,
-                Margin = new Padding(0, 0, 0, 4),
+                BackColor = CCard,
+                ForeColor = CText,
+                Margin = new Padding(0, 2, 0, 8),
             };
             right.Controls.Add(lblTitle, 0, 0);
             right.Controls.Add(_title, 1, 0);
@@ -198,99 +262,102 @@ namespace VbeComplete
                 ScrollBars = ScrollBars.Both,
                 WordWrap = false,
                 BorderStyle = BorderStyle.FixedSingle,
-                BackColor = CPanel,
-                ForeColor = CFg,
-                Font = new Font("Consolas", 10f),
+                BackColor = CCard,
+                ForeColor = CText,
+                Font = new Font("Consolas", 10.5f),
                 Margin = new Padding(0),
             };
             _code.KeyDown += CodeKeyDown;
             right.Controls.Add(_code, 0, 1);
             right.SetColumnSpan(_code, 2);
-            main.Controls.Add(right, 1, 0);
-            root.Controls.Add(main, 0, 1);
 
-            // ---- 第三行：状态 + 按钮 ----
+            main.Controls.Add(right, 1, 0);
+            return main;
+        }
+
+        /// <summary>底部：状态文字在左，按钮在右（"插入"是唯一的主按钮）。</summary>
+        private Control BuildFooter()
+        {
+            // ★用表格布局而不是 Panel+Dock：Dock 与 AutoSize 混用时，
+            //   "靠右停靠 + 自动宽度"的容器会被 Fill 的兄弟抢成 0 宽 —— 按钮
+            //   就是这么整排消失的（截图里只剩状态文字）。
             var foot = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 2,
                 RowCount = 1,
-                AutoSize = true,
-                Margin = new Padding(0, 6, 0, 0),
+                BackColor = CBody,
+                Padding = new Padding(12, 0, 12, 0),
+                Margin = new Padding(0),
             };
             foot.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
             foot.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            foot.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+
+            var btnRow = new FlowLayoutPanel
+            {
+                FlowDirection = FlowDirection.LeftToRight,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                WrapContents = false,
+                Anchor = AnchorStyles.Right,
+                Margin = new Padding(0),
+                BackColor = CBody,
+            };
+
+            btnRow.Controls.Add(MakeButton("关闭", Close_, false));
+            btnRow.Controls.Add(MakeButton("删除", DoDelete, false));
+            btnRow.Controls.Add(MakeButton("保存", DoSave, false));
+            btnRow.Controls.Add(MakeButton("新建", DoAdd, false));
+
+            _btnInsert = MakeButton("插入到光标处", DoInsert, true);
+            _btnInsert.Margin = new Padding(12, 0, 0, 0);
+            btnRow.Controls.Add(_btnInsert);
 
             _status = new Label
             {
-                Text = "",
-                AutoSize = false,
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleLeft,
                 ForeColor = CMuted,
+                AutoSize = false,
                 Margin = new Padding(0),
+                Text = "",
             };
+
             foot.Controls.Add(_status, 0, 0);
-
-            // ★FlowDirection=RightToLeft + 按"从右往左"的顺序加控件：
-            //   第一个加进去的落在最右边 —— 与 Python 版 pack(side="right") 逐项一致。
-            var btns = new FlowLayoutPanel
-            {
-                FlowDirection = FlowDirection.RightToLeft,
-                AutoSize = true,
-                WrapContents = false,
-                Margin = new Padding(0),
-            };
-
-            _btnInsert = new Button
-            {
-                Text = "插入到光标处",
-                AutoSize = true,
-                FlatStyle = FlatStyle.Flat,
-                BackColor = CAccent,
-                ForeColor = Color.White,
-                Padding = new Padding(8, 3, 8, 3),
-                Margin = new Padding(6, 0, 0, 0),
-            };
-            _btnInsert.FlatAppearance.BorderSize = 0;
-            _btnInsert.Click += (s, e) => DoInsert();
-            btns.Controls.Add(_btnInsert);
-
-            btns.Controls.Add(MakeButton("新增", DoAdd));
-            btns.Controls.Add(MakeButton("保存修改", DoSave));
-            btns.Controls.Add(MakeButton("删除", DoDelete));
-            btns.Controls.Add(MakeButton("关闭", Close_));
-
-            foot.Controls.Add(btns, 1, 0);
-            root.Controls.Add(foot, 0, 2);
-
-            Controls.Add(root);
+            foot.Controls.Add(btnRow, 1, 0);
+            return foot;
         }
 
-        private static Button MakeButton(string text, Action onClick)
+        private static Button MakeButton(string text, Action onClick, bool primary)
         {
             var b = new Button
             {
                 Text = text,
                 AutoSize = true,
                 FlatStyle = FlatStyle.Flat,
-                BackColor = Color.White,
-                ForeColor = ColorTranslator.FromHtml("#202020"),
-                Padding = new Padding(6, 3, 6, 3),
-                Margin = new Padding(6, 0, 0, 0),
+                BackColor = primary ? CAccent : CCard,
+                ForeColor = primary ? Color.White : CText,
+                Padding = new Padding(10, 5, 10, 5),
+                Margin = new Padding(8, 0, 0, 0),
+                Cursor = Cursors.Hand,
             };
-            b.FlatAppearance.BorderColor = ColorTranslator.FromHtml("#C8C8C8");
+            b.FlatAppearance.BorderSize = primary ? 0 : 1;
+            b.FlatAppearance.BorderColor = CLine;
+            if (primary)
+            {
+                b.FlatAppearance.MouseOverBackColor = CAccentDark;
+                b.FlatAppearance.MouseDownBackColor = CAccentDark;
+            }
             b.Click += (s, e) => onClick();
             return b;
         }
 
-        // ------------------------------------------------------------------
+        // ==================================================================
         // 显示 / 收起
-        // ------------------------------------------------------------------
+        // ==================================================================
 
-        /// <summary>
-        /// 弹出并定位。`rect` = 光标屏幕坐标 (x, 上, 下)；拿不到就传 false。
-        /// </summary>
+        /// <summary>弹出并定位。rect = 光标屏幕坐标 (x, 上, 下)；拿不到就传 false。</summary>
         public void OpenAtCaret(bool hasRect, int x, int top, int bottom)
         {
             _bulk = true;
@@ -305,7 +372,6 @@ namespace VbeComplete
             Activate();
             BringToFront();
 
-            // 搜索框拿到焦点并全选 —— 打开就能直接打字过滤
             _search.Focus();
             _search.SelectAll();
         }
@@ -316,7 +382,6 @@ namespace VbeComplete
             int h = Math.Max(MinimumSize.Height, Height);
             if (!hasRect)
             {
-                // 拿不到光标：落在鼠标附近，别飞到屏幕角落去
                 Native.POINT p;
                 if (Native.GetCursorPos(out p)) { x = p.X; top = p.Y; bottom = p.Y + 16; }
                 else { x = 120; top = 120; bottom = 136; }
@@ -352,27 +417,33 @@ namespace VbeComplete
             // 打开期间全局钩子不接管（焦点不在 VBE），所以这两个键必须自己处理
             if (keyData == Keys.Escape || keyData == (Keys.Control | Keys.Q))
             {
-                // ★有未保存改动先问一句：直接关会让刚敲的代码静默消失
-                //   （切到别的片段时反倒会问，关窗时却不问，说不过去）。
                 if (IsDirty() && !Confirm("代码还没保存，确定关掉吗？")) return true;
                 Close_();
                 return true;
             }
+            if (keyData == (Keys.Control | Keys.N)) { DoAdd(); return true; }
+            if (keyData == (Keys.Control | Keys.S)) { DoSave(); return true; }
+            if (keyData == (Keys.Control | Keys.Enter)) { DoInsert(); return true; }
             return base.ProcessCmdKey(ref msg, keyData);
         }
 
-        // ------------------------------------------------------------------
+        // ==================================================================
         // 列表 / 内容
-        // ------------------------------------------------------------------
+        // ==================================================================
 
         /// <summary>从库里重读全部片段，再按当前搜索词过滤。</summary>
         public void Reload(string keep = null)
         {
             try { _rows = _store.All(); }
-            catch (Exception e) { _rows = new List<KeyValuePair<string, string>>(); Log.Write("读片段库失败：{0}", e.Message); }
+            catch (Exception e)
+            {
+                _rows = new List<KeyValuePair<string, string>>();
+                Log.Write("读片段库失败：{0}", e.Message);
+            }
             Refilter(keep ?? _shownTitle);
+
             // ★库打不开时 All() 只回一张空表，界面上就是"共 0 条"、列表全空 ——
-            //   用户会以为片段全丢了。把真正的原因摆到状态栏上（覆盖掉条数提示）。
+            //   用户会以为片段全丢了。把真正的原因摆到状态条上（覆盖掉条数提示）。
             string err = _store.LastError();
             if (!string.IsNullOrEmpty(err)) SetStatus("片段库打不开：" + err, true);
         }
@@ -385,15 +456,9 @@ namespace VbeComplete
             _bulk = true;
             try
             {
-                _list.BeginUpdate();
-                _list.Items.Clear();
-                foreach (var h in _view) _list.Items.Add(h.Title ?? "");
+                _list.SetItems(_view);
             }
-            finally
-            {
-                _list.EndUpdate();
-                _bulk = false;
-            }
+            finally { _bulk = false; }
 
             int target = -1;
             if (!string.IsNullOrEmpty(keep))
@@ -405,24 +470,20 @@ namespace VbeComplete
 
             if (target >= 0)
             {
-                SelectRow(target);
+                _list.SelectedIndex = target;
                 // ★文本框里有未保存的改动时**不要**被搜索刷新覆盖掉
                 if (!IsDirty()) ShowSnippet(_view[target].Title);
             }
-
-            SetStatus(string.Format("共 {0} 条，命中 {1} 条", _rows.Count, _view.Count));
-        }
-
-        private void SelectRow(int index)
-        {
-            if (index < 0 || index >= _list.Items.Count) return;
-            _bulk = true;
-            try
+            else
             {
-                _list.ClearSelected();
-                _list.SelectedIndex = index;
+                _shownTitle = null;
+                _shownCode = null;
+                _title.Text = "";
+                _code.Text = "";
             }
-            finally { _bulk = false; }
+
+            SetCountText("共 " + _rows.Count + " 条 · 命中 " + _view.Count);
+            SetStatus("共 " + _rows.Count + " 条，命中 " + _view.Count + " 条");
         }
 
         private void OnPick()
@@ -453,7 +514,7 @@ namespace VbeComplete
             {
                 if (string.Equals(_view[i].Title, _shownTitle, StringComparison.Ordinal))
                 {
-                    SelectRow(i);
+                    _list.SelectedIndex = i;
                     return;
                 }
             }
@@ -469,9 +530,8 @@ namespace VbeComplete
         private string CodeText() => _code == null ? "" : (_code.Text ?? "");
 
         /// <summary>
-        /// 库存内容一律是 LF（Python 版 Tk 存进去的就是 LF），而 WinForms 的多行
-        /// TextBox 只认 CRLF —— 不换算的话整段代码会挤成一行（真机就踩到了）。
-        /// 存/插之前再换回 LF，两边读到的字节形态保持一致。
+        /// 库存内容一律是 LF，而 WinForms 的多行 TextBox 只认 CRLF —— 不换算的话
+        /// 整段代码会挤成一行。存 / 插之前再换回 LF，两边字节形态保持一致。
         /// </summary>
         private static string ToCrlf(string s) =>
             (s ?? "").Replace("\r\n", "\n").Replace("\n", "\r\n");
@@ -503,35 +563,12 @@ namespace VbeComplete
                 MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) == DialogResult.Yes;
         }
 
-        private void ListKeyPress(object sender, KeyPressEventArgs e)
-        {
-            // 在列表框里直接打字 -> 把这一下送进搜索框（别让 Listbox 自己跳字）
-            if (!char.IsControl(e.KeyChar) && !char.IsWhiteSpace(e.KeyChar))
-            {
-                _search.Focus();
-                _search.Text += e.KeyChar;
-                _search.SelectionStart = _search.Text.Length;
-                e.Handled = true;
-            }
-        }
-
-        private void ListKeyDown(object sender, KeyEventArgs e)
-        {
-            if (e.KeyCode == Keys.Enter && !e.Shift && !e.Control)
-            {
-                DoInsert();
-                e.Handled = true;
-                e.SuppressKeyPress = true;
-            }
-        }
-
         private void CodeKeyDown(object sender, KeyEventArgs e)
         {
             if (e.Control && e.KeyCode == Keys.Enter)
             {
                 DoInsert();
-                e.Handled = true;
-                e.SuppressKeyPress = true;
+                e.Handled = true; e.SuppressKeyPress = true;
                 return;
             }
             if (e.KeyCode == Keys.Tab && !e.Control && !e.Alt)
@@ -540,14 +577,13 @@ namespace VbeComplete
                 int at = _code.SelectionStart;
                 _code.SelectedText = "    ";
                 _code.SelectionStart = at + 4;
-                e.Handled = true;
-                e.SuppressKeyPress = true;
+                e.Handled = true; e.SuppressKeyPress = true;
             }
         }
 
-        // ------------------------------------------------------------------
+        // ==================================================================
         // 四个动作
-        // ------------------------------------------------------------------
+        // ==================================================================
 
         private void DoAdd()
         {
@@ -555,7 +591,7 @@ namespace VbeComplete
             string code = CodeText();
             if (title.Length == 0)
             {
-                SetStatus("先填标题，再点「新增」", true);
+                SetStatus("先填标题，再点「新建」", true);
                 _title.Focus();
                 return;
             }
@@ -567,15 +603,12 @@ namespace VbeComplete
             if (_store.Add(title, ToLf(code)))
             {
                 Reload(title);
-                // 刚存进去的内容与文本框里一模一样 —— 显式 ShowSnippet 一次，让
-                // "当前展示项"认到这条新记录上（否则 IsDirty 会一直认为有改动，
-                // 之后搜索 / 切换都不敢动文本框）。
                 ShowSnippet(title);
                 SetStatus("已新增「" + title + "」");
             }
             else
             {
-                SetStatus("标题「" + title + "」已存在 —— 想改它请用「保存修改」", true);
+                SetStatus("标题「" + title + "」已存在 —— 想改它请用「保存」", true);
             }
         }
 
@@ -608,7 +641,7 @@ namespace VbeComplete
                 }
                 _store.Update(title, ToLf(code));
                 Reload(title);
-                ShowSnippet(title);          // 认到新标题上（见 DoAdd 里的说明）
+                ShowSnippet(title);
                 SetStatus("已保存（标题改为「" + title + "」）");
                 return;
             }
@@ -668,14 +701,265 @@ namespace VbeComplete
             Close_();                       // 收起（OnClosed 里把焦点交回 VBE）
         }
 
-        // ------------------------------------------------------------------
+        // ==================================================================
         // 给 --uitest 用：把窗子离屏画成一张图，用来核对布局配色
-        // ------------------------------------------------------------------
+        // ==================================================================
         public void PreviewOnly(List<KeyValuePair<string, string>> rows)
         {
             _rows = rows ?? new List<KeyValuePair<string, string>>();
             _search.Text = "";
             Refilter(null);
+        }
+
+        // ==================================================================
+        // 自绘列表：两行一条（标题 + 代码首行），搜索命中逐字符高亮
+        // ==================================================================
+        private sealed class SnippetList : Control
+        {
+            private readonly List<SnippetHit> _items = new List<SnippetHit>();
+            private int _sel = -1;
+            private int _top;
+            private int _hover = -1;
+
+            public event EventHandler SelectedIndexChanged;
+            public event Action Activate;
+            public event Action<char> TypeToSearch;
+
+            public SnippetList()
+            {
+                SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
+                         ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+                BackColor = CCard;
+                ForeColor = CText;
+                TabStop = true;
+            }
+
+            // ★这个特性不是装饰：自绘控件上的属性会被 WinForms 的**设计器序列化**
+            //   分析器检查（WFO1000），缺了它整次 publish 直接失败（error，不是 warning），
+            //   而失败日志里那条错又很容易被 --uitest 的"看起来正常"掩盖过去。
+            [System.ComponentModel.DesignerSerializationVisibility(
+                System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+            public int SelectedIndex
+            {
+                get => _sel;
+                set
+                {
+                    int v = _items.Count == 0 ? -1 : Math.Max(0, Math.Min(_items.Count - 1, value));
+                    if (v == _sel) return;
+                    _sel = v;
+                    EnsureVisible();
+                    Invalidate();
+                    SelectedIndexChanged?.Invoke(this, EventArgs.Empty);
+                }
+            }
+
+            public void SetItems(List<SnippetHit> items)
+            {
+                _items.Clear();
+                if (items != null) _items.AddRange(items);
+                _sel = -1;
+                _top = 0;
+                Invalidate();
+            }
+
+            private int VisibleRows => Math.Max(1, (Height - 2) / RowH);
+
+            private void EnsureVisible()
+            {
+                if (_sel < 0) return;
+                if (_sel < _top) _top = _sel;
+                else if (_sel >= _top + VisibleRows) _top = _sel - VisibleRows + 1;
+                int maxTop = Math.Max(0, _items.Count - VisibleRows);
+                if (_top > maxTop) _top = maxTop;
+                if (_top < 0) _top = 0;
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                var g = e.Graphics;
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                using (var bg = new SolidBrush(CCard)) g.FillRectangle(bg, ClientRectangle);
+
+                if (_items.Count == 0)
+                {
+                    using (var b = new SolidBrush(CMuted))
+                    using (var f = new Font("Microsoft YaHei UI", 9f))
+                    {
+                        string t = "还没有片段 —— 在右边写好代码，点「新建」";
+                        var sz = g.MeasureString(t, f);
+                        g.DrawString(t, f, b, (Width - sz.Width) / 2, (Height - sz.Height) / 2);
+                    }
+                    using (var pen = new Pen(CLine)) g.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
+                    return;
+                }
+
+                int rows = VisibleRows;
+                int last = Math.Min(_items.Count, _top + rows);
+                using (var titleFont = new Font("Microsoft YaHei UI", 9.5f))
+                using (var titleBold = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold))
+                using (var subFont = new Font("Consolas", 8.5f))
+                using (var textBrush = new SolidBrush(CText))
+                using (var mutBrush = new SolidBrush(CMuted))
+                using (var hitBrush = new SolidBrush(CAccentDark))
+                using (var selBrush = new SolidBrush(CSelectBg))
+                using (var barBrush = new SolidBrush(CAccent))
+                using (var hovBrush = new SolidBrush(ColorTranslator.FromHtml("#F3F6FB")))
+                using (var linePen = new Pen(ColorTranslator.FromHtml("#EEF1F5")))
+                {
+                    for (int i = _top; i < last; i++)
+                    {
+                        int y = (i - _top) * RowH;
+                        bool sel = i == _sel;
+
+                        if (sel) g.FillRectangle(selBrush, new Rectangle(0, y, Width, RowH));
+                        else if (i == _hover) g.FillRectangle(hovBrush, new Rectangle(0, y, Width, RowH));
+                        if (sel) g.FillRectangle(barBrush, new Rectangle(0, y, 3, RowH));
+
+                        var it = _items[i];
+                        string title = it.Title ?? "";
+                        float ty = y + 6f;
+
+                        // ---- 标题：逐字符高亮（命中的字符单独用强调色画） ----
+                        var hits = it.Hits;
+                        if (hits == null || hits.Count == 0)
+                        {
+                            g.DrawString(title, sel ? titleBold : titleFont, textBrush, 12f, ty);
+                        }
+                        else
+                        {
+                            float x = 12f;
+                            for (int k = 0; k < title.Length; k++)
+                            {
+                                string ch = title.Substring(k, 1);
+                                bool on = hits.Contains(k);
+                                var f = on ? titleBold : titleFont;
+                                var br = on ? hitBrush : textBrush;
+                                g.DrawString(ch, f, br, x, ty);
+                                x += g.MeasureString(ch, f).Width - 1.2f;   // 逐字拼接收紧一点
+                            }
+                        }
+
+                        // ---- 副行：代码第一行，等宽、灰色 ----
+                        string first = FirstLine(it.Code);
+                        if (first.Length > 0)
+                        {
+                            var sz = g.MeasureString(first, subFont);
+                            if (sz.Width > Width - 20)
+                            {
+                                // 超宽就按比例截断加省略号（不做逐字裁剪，够用且快）
+                                int keep = Math.Max(1, (int)(first.Length * (Width - 30) / sz.Width));
+                                first = first.Substring(0, Math.Min(keep, first.Length)) + "…";
+                            }
+                            g.DrawString(first, subFont, mutBrush, 12f, y + 24f);
+                        }
+
+                        if (i < last - 1)
+                            g.DrawLine(linePen, 12, y + RowH - 1, Width - 4, y + RowH - 1);
+                    }
+
+                    // 右侧滚动条（只在需要时出现）
+                    if (_items.Count > rows)
+                    {
+                        int trackH = Height - 4;
+                        int thumbH = Math.Max(24, trackH * rows / _items.Count);
+                        int maxTop = Math.Max(1, _items.Count - rows);
+                        int thumbY = 2 + (trackH - thumbH) * _top / maxTop;
+                        using (var tb = new SolidBrush(ColorTranslator.FromHtml("#D8DEE8")))
+                            g.FillRectangle(tb, new Rectangle(Width - 6, thumbY, 4, thumbH));
+                    }
+                }
+
+                using (var pen = new Pen(CLine)) g.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
+            }
+
+            private static string FirstLine(string code)
+            {
+                if (string.IsNullOrEmpty(code)) return "";
+                int i = code.IndexOfAny(new[] { '\r', '\n' });
+                string s = i < 0 ? code : code.Substring(0, i);
+                return s.Trim();
+            }
+
+            private int RowAt(int y) => _top + y / RowH;
+
+            protected override void OnMouseMove(MouseEventArgs e)
+            {
+                base.OnMouseMove(e);
+                int r = RowAt(e.Y);
+                if (r >= _items.Count) r = -1;
+                if (r != _hover) { _hover = r; Invalidate(); }
+            }
+
+            protected override void OnMouseLeave(EventArgs e)
+            {
+                base.OnMouseLeave(e);
+                if (_hover != -1) { _hover = -1; Invalidate(); }
+            }
+
+            protected override void OnMouseDown(MouseEventArgs e)
+            {
+                base.OnMouseDown(e);
+                Focus();
+                int r = RowAt(e.Y);
+                if (r >= 0 && r < _items.Count)
+                {
+                    SelectedIndex = r;
+                    if (e.Clicks >= 2) Activate?.Invoke();
+                }
+            }
+
+            protected override void OnMouseWheel(MouseEventArgs e)
+            {
+                base.OnMouseWheel(e);
+                int maxTop = Math.Max(0, _items.Count - VisibleRows);
+                int nt = Math.Max(0, Math.Min(maxTop, _top - Math.Sign(e.Delta) * 3));
+                if (nt != _top) { _top = nt; Invalidate(); }
+            }
+
+            protected override bool IsInputKey(Keys keyData)
+            {
+                // 让上下键 / 回车进到 OnKeyDown，而不是被父容器当成"切换焦点"
+                switch (keyData)
+                {
+                    case Keys.Up:
+                    case Keys.Down:
+                    case Keys.PageUp:
+                    case Keys.PageDown:
+                    case Keys.Home:
+                    case Keys.End:
+                    case Keys.Enter:
+                        return true;
+                }
+                return base.IsInputKey(keyData);
+            }
+
+            protected override void OnKeyDown(KeyEventArgs e)
+            {
+                base.OnKeyDown(e);
+                switch (e.KeyCode)
+                {
+                    case Keys.Up: SelectedIndex = _sel - 1; e.Handled = true; break;
+                    case Keys.Down: SelectedIndex = _sel + 1; e.Handled = true; break;
+                    case Keys.PageUp: SelectedIndex = _sel - VisibleRows; e.Handled = true; break;
+                    case Keys.PageDown: SelectedIndex = _sel + VisibleRows; e.Handled = true; break;
+                    case Keys.Home: SelectedIndex = 0; e.Handled = true; break;
+                    case Keys.End: SelectedIndex = _items.Count - 1; e.Handled = true; break;
+                    case Keys.Enter:
+                        if (!e.Shift && !e.Control) { Activate?.Invoke(); e.Handled = true; e.SuppressKeyPress = true; }
+                        break;
+                }
+            }
+
+            protected override void OnKeyPress(KeyPressEventArgs e)
+            {
+                base.OnKeyPress(e);
+                // 在列表里直接打字 -> 把这一下送进搜索框（别让列表自己跳字）
+                if (!char.IsControl(e.KeyChar) && !char.IsWhiteSpace(e.KeyChar))
+                {
+                    TypeToSearch?.Invoke(e.KeyChar);
+                    e.Handled = true;
+                }
+            }
         }
     }
 }

@@ -136,15 +136,33 @@ namespace VbeComplete
         // 位置判据：这个位置该不该弹
         // ------------------------------------------------------------------
 
+        /// <summary>
+        /// 声明语句的"头"：带 Dim 的常规声明，以及**不带 Dim 的裸声明**。
+        ///
+        /// ★v133 补上裸声明这一支：`Public gCount` / `Private m_arr` / `Global g`
+        ///   是模块级变量的常见写法，旧正则只认 `Public Sub` 这种"修饰符 + 关键字"，
+        ///   于是 `Public g|` 被判成普通表达式 —— 弹窗照弹，而候选池里刚好有
+        ///   它自己（解析时把 `Public g` 当成了已声明的名字），用户看到的就是
+        ///   "定义全局变量时提示它自己"。
+        /// </summary>
         private static readonly Regex ReDeclHead = new Regex(
-            @"^[ \t]*(?:(?:Public|Private|Friend|Global|Static)[ \t]+)*" +
-            @"(?:Dim|Const|ReDim|WithEvents|Sub|Function|Property|Declare|Event|Enum|Type)\b",
+            @"^[ \t]*(?:" +
+            @"(?:(?:Public|Private|Friend|Global|Static)[ \t]+)*" +
+            @"(?:Dim|Const|ReDim|WithEvents|Sub|Function|Property|Declare|Event|Enum|Type)\b" +
+            @"|(?:Public|Private|Friend|Global|Static)[ \t]+" +
+            @"(?!(?:Sub|Function|Property|Declare|Event|Enum|Type|Const|Dim|ReDim|WithEvents)\b)" +
+            @")",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-        private static readonly Regex ReAsTail = new Regex(
-            @"\bAs[ \t]+(?:New[ \t]+)?[\w\.]*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
-        /// <summary>光标是不是停在"造一个新名字"的位置（`Dim cus|` / `Sub Do|`）。</summary>
+        /// <summary>
+        /// 光标是不是停在"造一个新名字 / 写一个类型"的位置 —— 这类位置一律不弹候选。
+        ///
+        /// ★v133 起语义变了（用户口径）：
+        ///   * `As` 后面【不弹】。那里只可能是类型名，VBE 自己的处理更准，
+        ///     我们弹一层上去只会挡住它、打断打字节奏。
+        ///   * 裸声明的名字位置【不弹】（见 ReDeclHead 的说明）。
+        ///   例外：`Const PI = 3.14` 的等号右边是**表达式**，那里要照常提示。
+        /// </summary>
         public static bool InDeclarationPosition(string line, int caretCol)
         {
             if (string.IsNullOrEmpty(line)) return false;
@@ -152,19 +170,40 @@ namespace VbeComplete
             string before = line.Substring(0, end);
             if (!ReDeclHead.IsMatch(line)) return false;
 
-            // `Dim x As Inte|` —— 类型位置，要提示类型名，不算"造名字"
-            if (ReAsTail.IsMatch(before)) return false;
-
-            // `Dim a As Long, b As Str|` —— 最后一个逗号之后含 As 就是类型位置
-            int comma = before.LastIndexOf(',');
-            if (comma >= 0)
-            {
-                string tail = before.Substring(comma + 1);
-                if (Regex.IsMatch(tail, @"\bAs\b", RegexOptions.IgnoreCase)) return false;
-            }
-            // `Const PI = 3.14` 的值位置不是名字位置
+            // `Const PI = 3.14` 的值位置不是名字位置，也不是类型位置
             if (Regex.IsMatch(before, @"\bConst\b.*=", RegexOptions.IgnoreCase)) return false;
             return true;
+        }
+
+        /// <summary>
+        /// 把模块全文里"正在输入的那个词"挖成空格。
+        ///
+        /// ★为什么要这一步：作用域分析看到的是**当前**文本，而用户打到一半的
+        ///   名字（`Dim glo` / `Public g`）本身会被解析成一个声明。于是候选池里
+        ///   出现了"这个词自己"，弹出来就是自我提示。挖掉之后池子里只剩
+        ///   "已经写完的名字"，自我提示从根上没了。
+        ///
+        /// ★先核对"模块全文那一行那一列确实就是这个词"，对不上就原样返回：
+        ///   模块全文有 1.5 秒缓存，偶尔会比光标慢一拍；那时宁可这一次不挖，
+        ///   也绝不能拿错位的位置去把别人挖掉（挖坏 `Dim` 会让整个模块的过程
+        ///   解析失败）。
+        /// </summary>
+        public static string BlankToken(string moduleText, int line1, int startCol1, string token)
+        {
+            if (string.IsNullOrEmpty(moduleText) || string.IsNullOrEmpty(token) ||
+                line1 < 1 || startCol1 < 1)
+                return moduleText;
+            string unified = moduleText.Replace("\r\n", "\n").Replace('\r', '\n');
+            var lines = unified.Split('\n');
+            if (line1 > lines.Length) return moduleText;
+            string ln = lines[line1 - 1];
+            int s = startCol1 - 1;
+            int n = token.Length;
+            if (s < 0 || n <= 0 || s + n > ln.Length) return moduleText;
+            if (string.Compare(ln, s, token, 0, n, StringComparison.OrdinalIgnoreCase) != 0)
+                return moduleText;
+            lines[line1 - 1] = ln.Substring(0, s) + new string(' ', n) + ln.Substring(s + n);
+            return string.Join("\n", lines);
         }
 
         /// <summary>

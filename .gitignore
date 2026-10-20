@@ -10,7 +10,11 @@ carettest.log
 hktest.log
 writetest.log
 uitest.log
+dbtest.log
+enginetest.log
 probe-cs.log
+moddump.txt
+moddump.before.txt
 popup-preview.png
 snippet-preview.png
 
@@ -21,12 +25,29 @@ recent.json
 recent.json.tmp
 
 # ---- 用户数据：代码片段库（Ctrl+Q）----
-# 里面是你自己一条条攒的片段，与 Python 版同一格式；不进仓库。
-# 想连库一起带走，直接拷 snippets.db 即可。
+# 里面是你自己一条条攒的片段。程序首次运行会自动建库；旧 snippets.db 会被
+# 一次性导入过来（只读，不改旧文件）。不进仓库。
 snippets.db
 snippets.db-journal
 snippets.db-wal
 snippets.db-shm
+snippets-cs.db
+snippets-cs.db-journal
+snippets-cs.db-wal
+snippets-cs.db-shm
+
+# ---- 用户数据：两个词库（关键字 / 函数）----
+# 首次运行用内置种子自动生成，之后由你自己编辑；各自独立，与 Python 版无关。
+# 不放进仓库，免得 pull 的时候把用户的词条覆盖掉。
+keywords-cs.db
+keywords-cs.db-journal
+keywords-cs.db-wal
+keywords-cs.db-shm
+functions-cs.db
+functions-cs.db-journal
+functions-cs.db-wal
+functions-cs.db-shm
+词库说明.txt
 
 # ---- 编辑器 / 系统 ----
 .vscode/

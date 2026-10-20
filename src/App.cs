@@ -29,7 +29,6 @@ namespace VbeComplete
 
         private readonly VbeBackend _be = new VbeBackend();
         private readonly Recent _recent = new Recent();
-        private readonly WordBank _bank = new WordBank();
         private readonly Engine _eng;
         private readonly PopupForm _popup = new PopupForm();
         private readonly Control _disp = new Control();
@@ -101,11 +100,14 @@ namespace VbeComplete
             _be.SendChar = ch => Native.SendUnicodeChar(ch);
             _be.SendVk = (vk, ctrl, shift) => Native.SendVk(vk, ctrl, shift);
 
+            // ★词库必须在这里、在引擎干活之前载入：两个 SQLite 库（关键字 / 函数）
+            //   一次性读进内存，之后每一次按键都是纯内存匹配。
+            new WordLibrary().Load();
+
             _eng = new Engine
             {
                 Backend = _be,
                 Recent = _recent,
-                Bank = _bank,
             };
             _eng.OnShow = (items, sel, top) =>
             {

@@ -1,15 +1,11 @@
 // 代码片段库：SQLite 两列表（title 主键 + code），外加标题模糊匹配。
 //
-// ★为什么不用 Microsoft.Data.Sqlite：那是个 NuGet 包，会把一坨原生 sqlite
-//   二进制塞进单文件产物里；而这个程序一直靠"一个 exe 就能跑"。
-//   Windows 10 起系统自带 `winsqlite3.dll`（System32），导出的就是标准 SQLite
-//   API —— 直接 P/Invoke 它，零依赖、零安装，而且写出来的是**真·SQLite 文件**，
-//   与 Python 版的 `snippets.db` 格式完全一致（改天想搬回去也不用转换）。
+// ★这是 C# 版**自己的**库：`snippets-cs.db`。与 Python 版的 `snippets.db`
+//   不是同一个文件、也不互相读写 —— 两个是独立项目，谁也别指望对方的字段布局。
+//   首次运行若发现旧的 `snippets.db`（历史遗留 / 从 PY 拷过来的），会做**一次性**
+//   导入，之后两个文件再无关系。
 //
-//   ⚠️ 别改成自己造一个 JSON 格式：Python 版那 20KB 的 snippets.db 是用户一条条
-//      攒出来的，格式一变就得写迁移，迁移写错就是丢片段。
-//
-// 表结构与 Python 版逐字一致（snippets.py 顶部 SCHEMA）：
+// 表结构：
 //     CREATE TABLE IF NOT EXISTS snippets (title TEXT PRIMARY KEY, code TEXT NOT NULL)
 //   刻意不加 id：标题天然唯一、足以当主键，重命名走 UPDATE ... WHERE title=?。
 //
@@ -18,7 +14,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Runtime.InteropServices;
 
 namespace VbeComplete
 {
@@ -32,208 +27,89 @@ namespace VbeComplete
 
     internal sealed class SnippetStore : IDisposable
     {
-        // ---- SQLite 常量 ----
-        private const int SQLITE_OK = 0;
-        private const int SQLITE_ROW = 100;
-        private const int SQLITE_DONE = 101;
-        private static readonly IntPtr SQLITE_TRANSIENT = new IntPtr(-1);
-
         private const string Schema =
             "CREATE TABLE IF NOT EXISTS snippets (title TEXT PRIMARY KEY, code TEXT NOT NULL)";
 
-        [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl,
-            CharSet = CharSet.Unicode)]
-        private static extern int sqlite3_open16(string filename, out IntPtr db);
-
-        [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl,
-            CharSet = CharSet.Unicode)]
-        private static extern int sqlite3_prepare16_v2(IntPtr db, string sql, int nBytes,
-            out IntPtr stmt, IntPtr pzTail);
-
-        [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl,
-            CharSet = CharSet.Unicode)]
-        private static extern int sqlite3_bind_text16(IntPtr stmt, int index, string value,
-            int nBytes, IntPtr destructor);
-
-        [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)]
-        private static extern IntPtr sqlite3_column_text16(IntPtr stmt, int col);
-
-        [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)]
-        private static extern int sqlite3_column_count(IntPtr stmt);
-
-        [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)]
-        private static extern int sqlite3_step(IntPtr stmt);
-
-        [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)]
-        private static extern int sqlite3_finalize(IntPtr stmt);
-
-        [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)]
-        private static extern int sqlite3_close(IntPtr db);
-
-        [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)]
-        private static extern IntPtr sqlite3_errmsg16(IntPtr db);
-
-        [DllImport("winsqlite3.dll", CallingConvention = CallingConvention.Cdecl)]
-        private static extern int sqlite3_changes(IntPtr db);
-
-        private IntPtr _db = IntPtr.Zero;
-        private string _path;
+        private readonly SqliteDb _db = new SqliteDb();
         private string _lastError = "";
 
-        public string LastError() => _lastError;
-        public string Path_ => _path ?? DbPath();
+        public string LastError() => string.IsNullOrEmpty(_lastError) ? _db.LastError() : _lastError;
+        public string Path_ => DbPath();
 
         /// <summary>
-        /// 库文件路径：`SNIPPET_DB`（settings.ini / 环境变量）优先，否则项目文件夹
-        /// 下的 `snippets.db` —— 与 Python 版同一套口径，一眼能找到、拷走就跟着走。
+        /// 库文件路径：`SNIPPET_DB`（settings.ini / 环境变量）优先，否则程序目录下的
+        /// `snippets-cs.db`。带 `-cs` 是为了永远不与 Python 版撞名。
         /// </summary>
         public static string DbPath()
         {
             string p = Settings.Raw("SNIPPET_DB");
             if (!string.IsNullOrEmpty(p)) return p;
-            return System.IO.Path.Combine(Settings.Home, "snippets.db");
+            return DefaultPath();
         }
+
+        /// <summary>库里认的默认文件名（带 `-cs`，永不与 Python 版的 `snippets.db` 撞名）。</summary>
+        private static string DefaultPath() => System.IO.Path.Combine(Settings.Home, "snippets-cs.db");
+
+        /// <summary>历史文件名（只用于第一次迁移，之后再也不碰）。</summary>
+        private static string LegacyPath() => System.IO.Path.Combine(Settings.Home, "snippets.db");
 
         private bool Open()
         {
-            if (_db != IntPtr.Zero) return true;
-            _path = DbPath();
-            try
+            if (_db.IsOpen) return true;
+            _lastError = "";
+            if (!_db.Open(DbPath()))
             {
-                string dir = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(_path));
-                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
-
-                IntPtr db;
-                int rc = sqlite3_open16(_path, out db);
-                if (rc != SQLITE_OK || db == IntPtr.Zero)
-                {
-                    _lastError = "打开片段库失败 rc=" + rc + " 路径=" + _path;
-                    Log.Write("{0}", _lastError);
-                    if (db != IntPtr.Zero) sqlite3_close(db);
-                    return false;
-                }
-                _db = db;
-                if (!Exec(Schema))
-                {
-                    Log.Write("建表失败：{0}", _lastError);
-                }
-                return true;
-            }
-            catch (Exception e)
-            {
-                // DllNotFound（老系统没有 winsqlite3.dll）也走这里，绝不抛给用户
-                _lastError = "片段库不可用：" + e.Message;
+                _lastError = _db.LastError();
                 Log.Write("{0}", _lastError);
                 return false;
             }
+            if (!_db.Exec(Schema))
+            {
+                _lastError = "建表失败：" + _db.LastError();
+                Log.Write("{0}", _lastError);
+            }
+            MigrateLegacy();
+            return true;
         }
 
-        private string ErrMsg()
+        /// <summary>
+        /// 一次性迁移：新库是空的、而同级目录还有旧的 `snippets.db` 时，把里面的
+        /// 片段拷过来。**只拷不改**，旧文件原样留着（那是用户攒了很久的东西）。
+        /// 迁移过一次之后 `snippets-cs.db` 里就有数据了，这里再也不会命中。
+        /// </summary>
+        private void MigrateLegacy()
         {
-            if (_db == IntPtr.Zero) return _lastError;
             try
             {
-                IntPtr p = sqlite3_errmsg16(_db);
-                return p == IntPtr.Zero ? _lastError : Marshal.PtrToStringUni(p);
-            }
-            catch { return _lastError; }
-        }
+                // ★只有"我们自己那个库文件"才做迁移。换成别的路径（SNIPPET_DB 指到别处、
+                //   --snipetest 用临时库）时一律不迁移 —— 否则临时库会被旧库的记录灌满，
+                //   测试里"刚建的库应该是 0 条"这条断言永远不成立。
+                if (!string.Equals(System.IO.Path.GetFullPath(DbPath()),
+                        System.IO.Path.GetFullPath(DefaultPath()), StringComparison.OrdinalIgnoreCase))
+                    return;
 
-        /// <summary>执行一条不带参数、也不读结果的 SQL。</summary>
-        private bool Exec(string sql)
-        {
-            if (_db == IntPtr.Zero) return false;
-            IntPtr stmt;
-            try
-            {
-                int rc = sqlite3_prepare16_v2(_db, sql, -1, out stmt, IntPtr.Zero);
-                if (rc != SQLITE_OK || stmt == IntPtr.Zero)
-                {
-                    _lastError = "SQL 准备失败：" + ErrMsg();
-                    return false;
-                }
-                try
-                {
-                    rc = sqlite3_step(stmt);
-                    bool ok = rc == SQLITE_DONE || rc == SQLITE_ROW;
-                    if (!ok) _lastError = "SQL 执行失败：" + ErrMsg();
-                    return ok;
-                }
-                finally { sqlite3_finalize(stmt); }
-            }
-            catch (Exception e)
-            {
-                _lastError = e.Message;
-                return false;
-            }
-        }
+                string legacy = LegacyPath();
+                if (string.Equals(System.IO.Path.GetFullPath(legacy),
+                        System.IO.Path.GetFullPath(DbPath()), StringComparison.OrdinalIgnoreCase))
+                    return;
+                if (!File.Exists(legacy)) return;
+                if (_db.Scalar("SELECT COUNT(*) FROM snippets") > 0) return;
 
-        /// <summary>执行一条带 N 个文本参数的写语句，返回是否真的改到了行。</summary>
-        private bool ExecWrite(string sql, params string[] args)
-        {
-            if (!Open()) return false;
-            IntPtr stmt;
-            try
-            {
-                int rc = sqlite3_prepare16_v2(_db, sql, -1, out stmt, IntPtr.Zero);
-                if (rc != SQLITE_OK || stmt == IntPtr.Zero)
+                using (var old = new SqliteDb())
                 {
-                    _lastError = "SQL 准备失败：" + ErrMsg();
-                    return false;
-                }
-                try
-                {
-                    for (int i = 0; i < args.Length; i++)
+                    if (!old.Open(legacy)) return;
+                    var rows = old.Query("SELECT title, code FROM snippets", 0);
+                    int n = 0;
+                    foreach (var r in rows)
                     {
-                        string v = args[i] ?? "";
-                        sqlite3_bind_text16(stmt, i + 1, v, v.Length * 2, SQLITE_TRANSIENT);
+                        if (r.Length < 2 || string.IsNullOrEmpty(r[0])) continue;
+                        if (_db.Write("INSERT OR IGNORE INTO snippets (title, code) VALUES (?, ?)",
+                                r[0], r[1])) n++;
                     }
-                    rc = sqlite3_step(stmt);
-                    if (rc != SQLITE_DONE && rc != SQLITE_ROW)
-                    {
-                        _lastError = "SQL 执行失败：" + ErrMsg();
-                        return false;
-                    }
-                    return sqlite3_changes(_db) > 0;
+                    if (n > 0) Log.Write("片段库迁移：从 {0} 导入 {1} 条到 {2}", legacy, n, DbPath());
                 }
-                finally { sqlite3_finalize(stmt); }
             }
-            catch (Exception e)
-            {
-                _lastError = e.Message;
-                return false;
-            }
-        }
-
-        private List<string> QueryOneColumn(string sql)
-        {
-            var list = new List<string>();
-            if (!Open()) return list;
-            IntPtr stmt;
-            try
-            {
-                int rc = sqlite3_prepare16_v2(_db, sql, -1, out stmt, IntPtr.Zero);
-                if (rc != SQLITE_OK || stmt == IntPtr.Zero)
-                {
-                    _lastError = "SQL 准备失败：" + ErrMsg();
-                    return list;
-                }
-                try
-                {
-                    while (sqlite3_step(stmt) == SQLITE_ROW)
-                    {
-                        IntPtr p = sqlite3_column_text16(stmt, 0);
-                        list.Add(p == IntPtr.Zero ? "" : (Marshal.PtrToStringUni(p) ?? ""));
-                    }
-                }
-                finally { sqlite3_finalize(stmt); }
-            }
-            catch (Exception e)
-            {
-                _lastError = e.Message;
-                Log.Write("查片段库失败：{0}", e.Message);
-            }
-            return list;
+            catch (Exception e) { Log.Write("片段库迁移失败（不影响使用）：{0}", e.Message); }
         }
 
         // ------------------------------------------------------------------
@@ -245,38 +121,15 @@ namespace VbeComplete
         {
             var rows = new List<KeyValuePair<string, string>>();
             if (!Open()) return rows;
-            // ★每次全量读都重新评估：清掉上一次的失败痕迹，本次若真出错会再写上。
-            //   不清的话状态栏会一直挂着"几天前"的旧错误。
+            // 每次全量读都重新评估：清掉上一次的失败痕迹，本次若真出错会再写上。
             _lastError = "";
-            IntPtr stmt;
-            try
-            {
-                const string sql = "SELECT title, code FROM snippets ORDER BY title COLLATE NOCASE";
-                int rc = sqlite3_prepare16_v2(_db, sql, -1, out stmt, IntPtr.Zero);
-                if (rc != SQLITE_OK || stmt == IntPtr.Zero) return rows;
-                try
-                {
-                    while (sqlite3_step(stmt) == SQLITE_ROW)
-                    {
-                        string t = ColText(stmt, 0);
-                        string c = ColText(stmt, 1);
-                        rows.Add(new KeyValuePair<string, string>(t, c));
-                    }
-                }
-                finally { sqlite3_finalize(stmt); }
-            }
-            catch (Exception e)
-            {
-                _lastError = e.Message;
-                Log.Write("读片段库失败：{0}", e.Message);
-            }
+            _db.ResetError();
+            const string sql = "SELECT title, code FROM snippets ORDER BY title COLLATE NOCASE";
+            foreach (var r in _db.Query(sql, 0))
+                rows.Add(new KeyValuePair<string, string>(
+                    r.Length > 0 ? r[0] : "", r.Length > 1 ? r[1] : ""));
+            if (!string.IsNullOrEmpty(_db.LastError())) _lastError = _db.LastError();
             return rows;
-        }
-
-        private static string ColText(IntPtr stmt, int col)
-        {
-            IntPtr p = sqlite3_column_text16(stmt, col);
-            return p == IntPtr.Zero ? "" : (Marshal.PtrToStringUni(p) ?? "");
         }
 
         /// <summary>取一条的代码；不存在返回 null。</summary>
@@ -284,34 +137,16 @@ namespace VbeComplete
         {
             if (string.IsNullOrEmpty(title)) return null;
             if (!Open()) return null;
-            IntPtr stmt;
-            try
-            {
-                const string sql = "SELECT code FROM snippets WHERE title=?";
-                int rc = sqlite3_prepare16_v2(_db, sql, -1, out stmt, IntPtr.Zero);
-                if (rc != SQLITE_OK || stmt == IntPtr.Zero) return null;
-                try
-                {
-                    sqlite3_bind_text16(stmt, 1, title, title.Length * 2, SQLITE_TRANSIENT);
-                    if (sqlite3_step(stmt) == SQLITE_ROW) return ColText(stmt, 0);
-                    return null;
-                }
-                finally { sqlite3_finalize(stmt); }
-            }
-            catch (Exception e)
-            {
-                _lastError = e.Message;
-                return null;
-            }
+            var rows = _db.Query("SELECT code FROM snippets WHERE title=?", 1, title);
+            return rows.Count == 0 ? null : (rows[0].Length > 0 ? rows[0][0] : "");
         }
 
         public bool Exists(string title) => Get(title) != null;
 
         public int Count()
         {
-            var list = QueryOneColumn("SELECT COUNT(*) FROM snippets");
-            int n;
-            return list.Count > 0 && int.TryParse(list[0], out n) ? n : 0;
+            if (!Open()) return 0;
+            return (int)_db.Scalar("SELECT COUNT(*) FROM snippets");
         }
 
         // ------------------------------------------------------------------
@@ -323,9 +158,9 @@ namespace VbeComplete
         {
             title = (title ?? "").Trim();
             if (title.Length == 0) return false;
-            // INSERT OR IGNORE：标题重复时 sqlite3_changes 为 0 -> 返回 false，
-            // 与 Python 版"捕获 IntegrityError 后返回 False"完全同口径。
-            return ExecWrite("INSERT OR IGNORE INTO snippets (title, code) VALUES (?, ?)",
+            if (!Open()) return false;
+            // INSERT OR IGNORE：标题重复时 sqlite3_changes 为 0 -> 返回 false
+            return _db.Write("INSERT OR IGNORE INTO snippets (title, code) VALUES (?, ?)",
                 title, code ?? "");
         }
 
@@ -334,7 +169,8 @@ namespace VbeComplete
         {
             title = (title ?? "").Trim();
             if (title.Length == 0) return false;
-            return ExecWrite("UPDATE snippets SET code=? WHERE title=?", code ?? "", title);
+            if (!Open()) return false;
+            return _db.Write("UPDATE snippets SET code=? WHERE title=?", code ?? "", title);
         }
 
         /// <summary>改标题。新标题已被占用时不动任何数据、返回 false。</summary>
@@ -344,8 +180,9 @@ namespace VbeComplete
             newTitle = (newTitle ?? "").Trim();
             if (oldTitle.Length == 0 || newTitle.Length == 0) return false;
             if (oldTitle == newTitle) return true;
+            if (!Open()) return false;
             if (Exists(newTitle)) return false;
-            return ExecWrite("UPDATE snippets SET title=? WHERE title=?", newTitle, oldTitle);
+            return _db.Write("UPDATE snippets SET title=? WHERE title=?", newTitle, oldTitle);
         }
 
         /// <summary>删除一条。返回是否真的删掉了。</summary>
@@ -353,27 +190,23 @@ namespace VbeComplete
         {
             title = (title ?? "").Trim();
             if (title.Length == 0) return false;
-            return ExecWrite("DELETE FROM snippets WHERE title=?", title);
+            if (!Open()) return false;
+            return _db.Write("DELETE FROM snippets WHERE title=?", title);
         }
 
-        public void Dispose()
-        {
-            if (_db != IntPtr.Zero)
-            {
-                try { sqlite3_close(_db); } catch { }
-                _db = IntPtr.Zero;
-            }
-        }
+        public void Dispose() => _db.Dispose();
     }
 
     // ----------------------------------------------------------------------
-    // 标题模糊匹配（纯函数；移植自 Python 版 snippets.py 的 match / search）
-    //
-    // 三档命中，强度递减：整标题相等 > 前缀 > 任意位置连续子串 > 子序列
-    // （`gc` 命中 `GetCode`）。多个词用空格分开，每个词都要命中（AND）。
+    // 标题模糊匹配（纯函数；三档命中，强度递减）：
+    //   整标题相等 > 前缀 > 任意位置连续子串 > 子序列（`gc` 命中 `GetCode`）。
+    // 多个词用空格分开，每个词都要命中（AND）。
     //
     // ⚠️ 大小写归一必须保持长度：`"İ".ToLower()` 会变成 2 个字符，一旦拿它当下标
     //    去切原串就整体错位。所以逐字符转小写、长度不变才采用。
+    //
+    // ⚠️ 中文标题：逐字符比较天然支持，`char.IsUpper/IsLower` 对汉字都是 false，
+    //    于是"词边界加 3 分"只在英文驼峰上生效 —— 正是想要的。
     // ----------------------------------------------------------------------
     internal static class SnippetMatch
     {

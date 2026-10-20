@@ -84,13 +84,15 @@ namespace VbeComplete
         /// <summary>取原始字符串；都没有就返回 null。</summary>
         public static string Raw(string key)
         {
-            string v;
-            if (_ini.TryGetValue(key, out v) && v.Length > 0) return v;
-            v = Environment.GetEnvironmentVariable(PREFIX + key);
+            // 顺序必须与文件头声明的一致：环境变量 > settings.ini > 默认值。
+            // （曾经写成 ini 先，env 就永远盖不住 ini —— 想临时换库根本换不动。）
+            string v = Environment.GetEnvironmentVariable(PREFIX + key);
             if (!string.IsNullOrEmpty(v)) return v;
             // 也认不带前缀的环境变量（老用户的 set AUTO_SPACE=1）
             v = Environment.GetEnvironmentVariable(key);
-            return string.IsNullOrEmpty(v) ? null : v;
+            if (!string.IsNullOrEmpty(v)) return v;
+            if (_ini.TryGetValue(key, out v) && v.Length > 0) return v;
+            return null;
         }
 
         private static bool? _boolOf(string s)

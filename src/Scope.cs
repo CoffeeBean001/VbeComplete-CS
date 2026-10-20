@@ -40,8 +40,21 @@ namespace VbeComplete
         public HashSet<string> TypeNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         public List<Decl> Decls = new List<Decl>();
         /// <summary>引用过、但没在本模块声明过的名字（隐式变量 / 宿主对象 / 控件）。
-        /// 档位给 2：能用，但不如真声明过的名字靠前。</summary>
+        /// 档位给 2：能用，但不如真声明过的名字靠前。
+        /// ★模块里有 `Option Explicit` 时这一组会大幅收窄（见 <see cref="HostObjects"/>）。</summary>
         public List<string> FreeIdents = new List<string>();
+
+        /// <summary>
+        /// 只有【像宿主对象的自由标识符】才留在这里：出现过 `名字.` 或 `Set 名字 =`。
+        /// 它们在 Option Explicit 的模块里也是合法的（窗体控件、Application、
+        /// 隐式声明的对象），凭"代码里没写 Dim"就剔除会把 UserForm 上的按钮名
+        /// 全删掉。
+        /// </summary>
+        public HashSet<string> HostObjects = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>模块头有没有 `Option Explicit`（= 强制声明变量）。</summary>
+        public bool OptionExplicit;
+
         /// <summary>行数。池子缓存用它判"文本变了没有"。</summary>
         public int LineCount;
 
@@ -103,7 +116,18 @@ namespace VbeComplete
 
     internal static class Scope
     {
-        private const string Id = @"[A-Za-z_][A-Za-z0-9_]*[\%\&\#\@\$]?";
+        /// <summary>
+        /// 有 `Option Explicit` 时要不要剔除未声明的隐式名字。
+        /// 默认 1（按用户口径：强制声明的地方，没定义过的名字不该出现在候选里）；
+        /// 设 0 可以退回旧行为（照收），留给"窗体控件名也想提示"的极端场景。
+        /// </summary>
+        private static readonly bool HonorExplicit = Settings.Flag("IMPLICIT_HONOR_EXPLICIT", true);
+
+        // ★v133：标识符必须认 Unicode 字母 —— VBA 里 `学生 = Split(...)` / `总分()`
+        //   是完全合法的，而旧正则只认 [A-Za-z_]，于是中文变量名从来没进过候选池，
+        //   用户看到的就是"中文名一律不提示"。\p{L} 覆盖汉字/假名/谚文等，
+        //   \p{N} 覆盖全角与阿拉伯数字。
+        private const string Id = @"[\p{L}_][\p{L}\p{N}_]*[\%\&\#\@\$]?";
 
         private static readonly Regex ReProcHead = new Regex(
             @"^[ \t]*(?:(Public|Private|Friend|Global)[ \t]+)?(?:Static[ \t]+)?" +
@@ -319,6 +343,8 @@ namespace VbeComplete
                 }
             }
 
+            ms.OptionExplicit = Parser.OptionExplicit(text);
+
             // ---- 全量标识符：只留"没被任何过程声明为局部"的 ----
             var declared = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var d in ms.Decls) declared.Add(d.Name);
@@ -331,14 +357,53 @@ namespace VbeComplete
                 foreach (Match m in ReIdent.Matches(code))
                 {
                     string w = Clean(m.Value);
-                    if (w.Length < 2) continue;                       // 单字母噪音太大
+                    if (w.Length == 0) continue;
                     if (VbaBuiltins.IsKeyword(w)) continue;
                     if (declared.Contains(w)) continue;
                     if (localNames.Contains(w)) continue;             // 别处的局部，不能漏过来
+
+                    // 单字母（且是 ASCII）噪音太大 —— `i` `n` 这种在候选里没意义。
+                    // ★汉字单字不在此列：`和` / `总` 是正经名字，不能按字母数筛掉。
+                    if (w.Length < 2 && w[0] < 0x80) continue;
+
+                    bool host = LooksLikeHostObject(code, m);
+                    if (host) ms.HostObjects.Add(w);
+
+                    // ★强制声明变量的模块：没写 Dim 的名字在 VBE 里直接编译不过，
+                    //   把它当候选等于教用户写错代码。唯一例外是"像宿主对象"的
+                    //   那些（控件名 / Application / 隐式对象）—— 它们本来就不用声明。
+                    if (HonorExplicit && ms.OptionExplicit && !host) continue;
+
                     if (seen.Add(w)) ms.FreeIdents.Add(w);
                 }
             }
             return ms;
+        }
+
+        /// <summary>
+        /// 这个名字像不像"宿主给的对象"（窗体控件、Application、隐式全局）？
+        /// 两条判据，都只认最直接的语法证据：
+        ///   * 后面紧跟点号 —— `CommandButton1.Caption`
+        ///   * 前面是 `Set` —— `Set btn = ...`
+        /// 不做类型推断：拿不准就按普通自由标识符处理。
+        /// </summary>
+        private static bool LooksLikeHostObject(string code, Match m)
+        {
+            int after = m.Index + m.Length;
+            while (after < code.Length && (code[after] == ' ' || code[after] == '\t')) after++;
+            if (after < code.Length && code[after] == '.') return true;
+
+            int p = m.Index - 1;
+            while (p >= 0 && (code[p] == ' ' || code[p] == '\t')) p--;
+            if (p >= 2)
+            {
+                string head = code.Substring(0, p + 1).TrimEnd();
+                if (head.Length >= 3 &&
+                    head.Substring(head.Length - 3).Equals("Set", StringComparison.OrdinalIgnoreCase) &&
+                    (head.Length == 3 || !char.IsLetterOrDigit(head[head.Length - 4])))
+                    return true;
+            }
+            return false;
         }
 
         /// <summary>`a, b(1 To 3) As Long` -> [(a, Long), (b, Long)]</summary>
