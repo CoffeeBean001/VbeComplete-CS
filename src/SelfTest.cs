@@ -44,6 +44,8 @@ namespace VbeComplete
                 TestRules();
                 TestParser();
                 TestEngine();
+                TestEditing();
+                TestSnippets();
             }
             catch (Exception e)
             {
@@ -326,6 +328,209 @@ End Type
             Ok("bat/不用 find（Git 的同名程序会抢 /i）",
                 runCsText.Contains("findstr") && !runCsText.Contains("| find /i"),
                 "still uses find");
+        }
+
+        // ------------------------------------------------------------------
+        // 编辑手感（块结构 / 缩进 / 自动配对 / 退格接管）
+        // ------------------------------------------------------------------
+        private static void TestEditing()
+        {
+            // ---- 基础换算 ----
+            Eq("indent/4 空格", Editing.IndentWidth("    x"), 4);
+            Eq("indent/tab 算 4 列", Editing.IndentWidth("\tx"), 4);
+            Eq("leading-ws/混合", Editing.LeadingWs(" \t x"), " \t ");
+
+            // ---- 块结构识别 ----
+            Eq("block/If Then", Editing.BlockKind("If x Then"), "if");
+            Eq("block/End If 不是块头", Editing.BlockKind("End If"), null);
+            Eq("block/For", Editing.BlockKind("    For i = 1 To 3"), "for");
+            Eq("block/Do While", Editing.BlockKind("Do While x"), "do");
+            Eq("block/While", Editing.BlockKind("While x"), "while");
+            Eq("block/With", Editing.BlockKind("With rng"), "with");
+            Eq("block/Select Case", Editing.BlockKind("Select Case x"), "select");
+            Eq("block/Select 少了 Case", Editing.BlockKind("Select x"), null);
+            Eq("block/Private Sub", Editing.BlockKind("Private Sub Foo()"), "sub");
+            Eq("block/Static Function", Editing.BlockKind("Static Function F() As Long"), "function");
+            Eq("block/Property Get", Editing.BlockKind("Property Get X()"), "property");
+            Eq("block/Type", Editing.BlockKind("Type Foo"), "type");
+            Eq("block/Enum", Editing.BlockKind("Enum Color"), "enum");
+            Eq("block/Else 是分支", Editing.BlockKind("Else"), "branch");
+            Eq("block/ElseIf 带 Then", Editing.BlockKind("ElseIf y Then"), "branch");
+            Eq("block/ElseIf 没 Then", Editing.BlockKind("ElseIf y"), null);
+            Eq("block/Case 是分支", Editing.BlockKind("Case 1"), "branch");
+            Eq("block/条件编译", Editing.BlockKind("#If VBA7 Then"), "directive");
+            Eq("block/单选 If", Editing.BlockKind("If x Then y = 1"), null);
+            Eq("block/Next 不是块头", Editing.BlockKind("Next i"), null);
+            Eq("block/普通赋值", Editing.BlockKind("x = 1"), null);
+            Eq("block/续行符结尾", Editing.BlockKind("If x Then _"), null);
+            Eq("block/字符串里的 Then 不算", Editing.BlockKind("If x = \"a Then\" Then"), "if");
+            Eq("block/Rem 整行注释", Editing.BlockKind("Rem If x Then"), null);
+            Eq("block/整行注释不是块头", Editing.BlockKind("' For i = 1"), null);
+
+            Eq("closer/For -> Next", Editing.BlockCloser("For i = 1 To 3"), "Next");
+            Eq("closer/Do -> Loop", Editing.BlockCloser("Do"), "Loop");
+            Eq("closer/With -> End With", Editing.BlockCloser("With rng"), "End With");
+            Eq("closer/Else 没有收尾", Editing.BlockCloser("Else"), null);
+            Eq("closer/#If 没有收尾", Editing.BlockCloser("#If VBA7 Then"), null);
+
+            Ok("closer-line/Next i", Editing.IsBlockCloserLine("Next i"));
+            Ok("closer-line/End If 带注释", Editing.IsBlockCloserLine("End If  '结束"));
+            Ok("closer-line/For 不是收尾", !Editing.IsBlockCloserLine("For i = 1 To 3"));
+
+            // ---- 缩进推算 ----
+            Eq("indent/块头深一级", Editing.NextLineIndent("    For i = 1 To 3", new List<string>(), "    "),
+                "        ");
+            Eq("indent/普通行抄自己", Editing.NextLineIndent("    x = 1", new List<string>(), "    "), "    ");
+            Eq("indent/注释跟上方第一个非注释行",
+                Editing.NextLineIndent("    ' 注释", new List<string> { "Sub A()" }, "    "), "    ");
+            Eq("indent/找不到参考行就用自己",
+                Editing.NextLineIndent("    ' 注释", new List<string>(), "    "), "    ");
+            Eq("indent/Tab 工程跟着用 Tab",
+                Editing.NextLineIndent("\tIf x Then", new List<string>(), "\t"), "\t\t");
+
+            // ---- 分支对齐 ----
+            string mine, next;
+            Ok("branch/Else 与 If 齐平",
+                Editing.BranchAlign("    Else", new List<string> { "    If x Then" }, "    ",
+                    out mine, out next) && mine == "    " && next == "        ");
+            Ok("branch/Case 比 Select Case 深一级",
+                Editing.BranchAlign("    Case 1", new List<string> { "    Select Case x" }, "    ",
+                    out mine, out next) && mine == "        " && next == "            ");
+            Ok("branch/找不到归属者就不动",
+                !Editing.BranchAlign("    Else", new List<string>(), "    ", out mine, out next));
+            Ok("branch/#Else 与 #If 齐平",
+                Editing.BranchAlign("#Else", new List<string> { "#If VBA7 Then" }, "    ",
+                    out mine, out next) && mine == "" && next == "    ");
+
+            // ---- 回车接管 ----
+            string blockLine = "    For i = 1 To 3";
+            Ok("enter/块头行尾接管",
+                Editing.EnterIndentWanted(blockLine, Rules.DispCol(blockLine, blockLine.Length)));
+            Ok("enter/普通行不接管",
+                !Editing.EnterIndentWanted("    x = 1", Rules.DispCol("    x = 1", 9)));
+            string comment = "    ' 注释";
+            Ok("enter/整行注释接管",
+                Editing.EnterIndentWanted(comment, Rules.DispCol(comment, comment.Length)));
+            Ok("enter/光标不在行尾不接管", !Editing.EnterIndentWanted(blockLine, 10));
+            string tabLine = "\tIf x Then";
+            Ok("enter/含 Tab 不接管",
+                !Editing.EnterIndentWanted(tabLine, Rules.DispCol(tabLine, tabLine.Length)));
+            string wideLine = "    For 每个 = 1 To 10";
+            Ok("enter/全角行只认行尾",
+                Editing.EnterIndentWanted(wideLine, Rules.DispCol(wideLine, wideLine.Length)) &&
+                !Editing.EnterIndentWanted(wideLine, Rules.DispCol(wideLine, wideLine.Length - 3)));
+
+            // ---- 退格 ----
+            Ok("bs/整行空白接管", Editing.BlankLineDeleteWanted("    ", 5));
+            Ok("bs/整行空白中间不接管", !Editing.BlankLineDeleteWanted("    ", 3));
+            Ok("bs/真空行不接管", !Editing.BlankLineDeleteWanted("", 1));
+            Ok("bs/有内容的行不接管", !Editing.BlankLineDeleteWanted("    x", 6));
+
+            int left, right;
+            Ok("bs-pair/空括号中间接管",
+                Editing.PairDeleteSpan("x = f()", Rules.DispCol("x = f()", 6), out left, out right) &&
+                left == 5 && right == 6);
+            Ok("bs-pair/不在括号中间不接管",
+                !Editing.PairDeleteSpan("x = f()", Rules.DispCol("x = f()", 8), out left, out right));
+            Ok("bs-pair/括号里有内容不接管",
+                !Editing.PairDeleteSpan("f(a)", Rules.DispCol("f(a)", 2), out left, out right));
+            Ok("bs-pair/空引号中间接管",
+                Editing.PairDeleteSpan("s = \"\"", Rules.DispCol("s = \"\"", 5), out left, out right) &&
+                left == 4 && right == 5);
+
+            // ---- 自动配对 ----
+            int caretOff;
+            bool paired;
+            string got = Editing.PairInsertion("abc", 3, '(', ')', out caretOff, out paired);
+            Ok("pair/行尾补一对", got == "abc()" && caretOff == 4 && paired);
+            got = Editing.PairInsertion("abc def", 0, '(', ')', out caretOff, out paired);
+            Ok("pair/右侧还有内容只插左括号", got == "(abc def" && !paired);
+            got = Editing.PairInsertion("foo(bar", 7, '(', ')', out caretOff, out paired);
+            Ok("pair/实参表里仍补一对", got == "foo(bar()" && paired);
+            got = Editing.PairInsertion("s = ", 4, '"', '"', out caretOff, out paired);
+            Ok("pair/引号补一对", got == "s = \"\"" && paired);
+            got = Editing.PairInsertion("s = \"ab", 7, '"', '"', out caretOff, out paired);
+            Ok("pair/未闭合字符串里只补收尾", got == "s = \"ab\"" && !paired);
+            got = Editing.PairInsertion("s = \"\"", 5, '"', '"', out caretOff, out paired);
+            Ok("pair/右边已是引号就跨过去", got == null && caretOff == 6);
+            // 注：`)` 的"跨过去"在 VbeBackend.InsertPair 里先挡掉了（那个分支要读
+            //     COM 才知道右边是什么），PairInsertion 不负责它 —— 这里只验引号那一档。
+
+            Eq("pair/全角括号收符号", Editing.CloseOf('（'), '）');
+            Eq("pair/全角引号收符号", Editing.CloseOf('“'), '”');
+            Eq("pair/不认识的符号", Editing.CloseOf('['), '\0');
+
+            // ---- 配对的闸门：只挡"注释里"，不挡"字符串里" ----
+            // 这一条是 `s = "abc|"` 里再按 `"` 别变成 `"abc""` 的前提：
+            // 闸门要是把"在字符串里"也算进去，PairInsertion 的"跨过去 / 只补
+            // 收尾"两档就永远走不到。
+            Ok("gate/未闭合字符串不算注释", !Rules.InCommentOnly("s = \"abc", 9));
+            Ok("gate/闭合字符串之后不算注释", !Rules.InCommentOnly("s = \"abc\"", 10));
+            Ok("gate/同一行与 InCommentOrString 的差别",
+                Rules.InCommentOrString("s = \"abc", 9) && !Rules.InCommentOnly("s = \"abc", 9));
+            Ok("gate/引号后是注释", Rules.InCommentOnly("s = \"abc\" ' hi", 14));
+            Ok("gate/行首撇号", Rules.InCommentOnly("' hi", 5));
+            Ok("gate/字符串里的撇号不是注释", !Rules.InCommentOnly("MsgBox \"it's\"", 13));
+            Ok("gate/Rem 整行注释", Rules.InCommentOnly("Rem 说明", 6));
+            Ok("gate/Remember 不是注释", !Rules.InCommentOnly("Remember = 1", 11));
+            Ok("gate/冒号后的 Rem", Rules.InCommentOnly("x = 1 : Rem 说明", 14));
+            Ok("gate/语句中间的 Rem 不是注释", !Rules.InCommentOnly("x = Rem", 7));
+
+            Eq("call-paren/foo( 认得出", Editing.EnclosingCallParen("foo(", 4), 3);
+            Eq("call-paren/运算分组 -> -1", Editing.EnclosingCallParen("x = (a + ", 9), -1);
+            Eq("call-paren/字符串里的括号不算", Editing.EnclosingCallParen("s = \"(\" & foo(", 14), 13);
+
+            Ok("string/未闭合", Editing.UnterminatedString("x = \"abc"));
+            Ok("string/已闭合", !Editing.UnterminatedString("x = \"abc\""));
+            Ok("string/注释里的引号不算", !Editing.UnterminatedString("x = 1  ' 他说\"你好"));
+            Ok("string/双写引号是转义", !Editing.UnterminatedString("x = \"a\"\"b\""));
+
+            // ---- 补收尾（保守口径）----
+            Ok("closer-needed/下面是 End Sub 就补",
+                Editing.CloserNeeded(new List<string> { "End Sub" }, "Next", 4));
+            Ok("closer-needed/下面已有 Next 不补",
+                !Editing.CloserNeeded(new List<string> { "    Next" }, "Next", 4));
+            Ok("closer-needed/块里已有内容不补",
+                !Editing.CloserNeeded(new List<string> { "        x = 1" }, "Next", 4));
+            Ok("closer-needed/同缩进的别的东西不补",
+                !Editing.CloserNeeded(new List<string> { "    y = 2" }, "Next", 4));
+            Ok("closer-needed/空行与注释跳过",
+                Editing.CloserNeeded(new List<string> { "", "    ' 注释", "End Sub" }, "Next", 4));
+        }
+
+        // ------------------------------------------------------------------
+        // 片段库：标题模糊匹配（不碰数据库，纯函数）
+        // ------------------------------------------------------------------
+        private static void TestSnippets()
+        {
+            List<int> hits;
+            Ok("snippet/整标题相等", SnippetMatch.Score("getcode", "GetCode", out hits) != null);
+            Ok("snippet/前缀", SnippetMatch.Score("Get", "GetCode", out hits) != null);
+            Ok("snippet/子串", SnippetMatch.Score("Code", "GetCode", out hits) != null);
+            Ok("snippet/驼峰子序列 gc -> GetCode", SnippetMatch.Score("gc", "GetCode", out hits) != null);
+            Ok("snippet/不命中", SnippetMatch.Score("zzz", "GetCode", out hits) == null);
+            Ok("snippet/多词 AND 全中", SnippetMatch.Score("get code", "GetCode", out hits) != null);
+            Ok("snippet/多词 AND 有一个不中",
+                SnippetMatch.Score("get zzz", "GetCode", out hits) == null);
+
+            int s1 = SnippetMatch.Score("Get", "GetCode", out hits) ?? -1;
+            int s2 = SnippetMatch.Score("Code", "GetCode", out hits) ?? -1;
+            Ok("snippet/前缀分高于子串分", s1 > s2, "prefix=" + s1 + " substr=" + s2);
+
+            var rows = new List<KeyValuePair<string, string>>
+            {
+                new KeyValuePair<string, string>("Zeta", "z"),
+                new KeyValuePair<string, string>("SetValue", "a"),
+                new KeyValuePair<string, string>("Settings", "b"),
+            };
+            var f = SnippetMatch.Filter(rows, "");
+            Eq("snippet/空词原样返回", f.Count, 3);
+            Eq("snippet/空词保持原顺序", f[0].Title, "Zeta");
+
+            var f2 = SnippetMatch.Filter(rows, "set");
+            Ok("snippet/过滤掉不命中的", f2.Count == 2, "count=" + f2.Count);
+            Ok("snippet/前缀命中排前面", f2.Count > 0 && f2[0].Title == "Settings",
+                f2.Count > 0 ? f2[0].Title : "");
         }
     }
 }

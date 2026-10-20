@@ -71,6 +71,10 @@ namespace VbeComplete
             {
                 return HkTest();
             }
+            if (args.Length > 0 && args[0] == "--snipetest")
+            {
+                return SnippetTest();
+            }
 
             // 单实例：同名互斥体已经存在就说明有一份在跑。
             bool created;
@@ -378,6 +382,141 @@ namespace VbeComplete
                     check("Ctrl+Shift+↓ 跳空白行", ok,
                         "ret=" + r + " caretLine=" + (snap?.Line ?? -1) + " want=" + Lblank);
                 }
+
+                // ==========================================================
+                // 以下六条是 v132 新移植的"编辑手感"命令。每一条都自己造一小段
+                // 临时代码、验完立刻整段删掉 —— 不依赖上面那 6 行的行号。
+                // ==========================================================
+                Func<string[], int> append = lines =>
+                {
+                    int at = be.LineCount() + 1;
+                    // ★倒着插（全部插在 at 这一位）：正着插的话，`""`（空行）会在
+                    //   某一瞬间成为**模块最后一行**，而 VBE 对"末尾的空行"处理
+                    //   并不可靠（可能直接吞掉），后面几条用例的行号就全偏了。
+                    for (int i = lines.Length - 1; i >= 0; i--) be.InsertLines(at, lines[i]);
+                    return at;
+                };
+                Action dropFrom = () =>
+                {
+                    for (int i = 0; i < 3; i++)
+                    {
+                        int c = be.LineCount();
+                        if (c <= baseCount) break;
+                        be.DeleteLines(baseCount + 1, c - baseCount);
+                    }
+                };
+
+                // ---- 7. Shift+Enter：下方插一行，缩进抄本行 ----
+                {
+                    int at = append(new[] { "Sub VbcNl()", "    n = 1", "End Sub" });
+                    be.SetCaret(at + 1, 1);
+                    be.InvalidateSnapshot();
+                    bool r = be.NewLineBelow(false, false, false);
+                    string ins = be.LineAt(at + 2) ?? "";
+                    var snap = be.Snapshot();
+                    bool ok = r && ins == "    " && Rules.Rstrip(be.LineAt(at + 1) ?? "") == "    n = 1"
+                              && snap != null && snap.Line == at + 2;
+                    check("Shift+Enter 下方插行", ok,
+                        "ret=" + r + " 新行=[" + ins.Replace("\t", "\\t") + "] 期望=[    ] caret=" + (snap?.Line ?? -1));
+                    dropFrom();
+                }
+
+                // ---- 8. 回车自动缩进 + 补收尾 ----
+                {
+                    int at = append(new[] { "Sub VbcIn()", "    For i = 1 To 3", "End Sub" });
+                    // ★行尾 = "字符数 + 1"（SetCaret 的列是"第几个字符之前"）
+                    be.SetCaret(at + 1, (be.LineAt(at + 1) ?? "").Length + 1);
+                    be.InvalidateSnapshot();
+                    bool r = be.NewLineBelow(true, true, true);
+                    string line2 = be.LineAt(at + 2) ?? "";
+                    string line3 = be.LineAt(at + 3) ?? "";
+                    var snap = be.Snapshot();
+                    bool ok = r && line2 == "        " && Rules.Rstrip(line3) == "    Next"
+                              && snap != null && snap.Line == at + 2;
+                    check("回车自动缩进 + 补 Next", ok,
+                        "ret=" + r + " 新行=[" + line2 + "] 下一行=[" + line3 + "] caret=" + (snap?.Line ?? -1));
+                    dropFrom();
+                }
+
+                // ---- 9. 退格删整行空白 ----
+                {
+                    int at = append(new[] { "Sub VbcBs()", "    ", "    n = 2", "End Sub" });
+                    string raw = be.LineAt(at + 1) ?? "";
+                    be.SetCaret(at + 1, raw.Length + 1);
+                    be.InvalidateSnapshot();
+                    int before = be.LineCount();
+                    bool r = be.DeleteBlankLineHere();
+                    int after = be.LineCount();
+                    if (raw.Length == 0)
+                    {
+                        // VBE 把只有空白的行 trim 成真空行了 —— 那时"原生退格"的结果
+                        // 与删整行一样，我们不接管是**正确**的
+                        check("退格删整行空白（跳过：VBE 已 trim 成真空行）", !r,
+                            "raw 为空 -> 不接管，ret=" + r);
+                    }
+                    else
+                    {
+                        check("退格删整行空白", r && after == before - 1 && (be.LineAt(at + 1) ?? "").Trim() == "n = 2",
+                            "ret=" + r + " lines " + before + "->" + after + " 下一行=[" + be.LineAt(at + 1) + "]");
+                    }
+                    dropFrom();
+                }
+
+                // ---- 10. 退格删一对空括号 ----
+                {
+                    int at = append(new[] { "Sub VbcDp()", "    x = f()", "End Sub" });
+                    be.SetCaret(at + 1, 11);               // 夹在 `(` 与 `)` 中间
+                    be.InvalidateSnapshot();
+                    bool r = be.DeletePairHere();
+                    string now = be.LineAt(at + 1) ?? "";
+                    var snap = be.Snapshot();
+                    bool ok = r && Rules.Rstrip(now) == "    x = f" && snap != null && snap.CaretCol == 10;
+                    check("退格删一对空括号", ok,
+                        "ret=" + r + " 行=[" + now + "] caretCol=" + (snap?.CaretCol ?? -1) + " want=10");
+                    dropFrom();
+                }
+
+                // ---- 11. 自动配对括号 ----
+                {
+                    int at = append(new[] { "Sub VbcAu()", "    abc" });
+                    be.SetCaret(at + 1, (be.LineAt(at + 1) ?? "").Length + 1);   // 行尾
+                    be.InvalidateSnapshot();
+                    bool r = be.InsertPair('(');
+                    string now = be.LineAt(at + 1) ?? "";
+                    var snap = be.Snapshot();
+                    int col = snap == null ? -1 : snap.CaretCol;
+                    // "    abc()" 共 9 个字符，光标落在 `(` 与 `)` **之间** = 第 9 列
+                    // （第 k 列 = "第 k 个字符之前"，`)` 是第 9 个字符）
+                    bool ok = r && Rules.Rstrip(now) == "    abc()" && col == 9;
+                    check("自动配对括号", ok,
+                        "ret=" + r + " 行=[" + now + "] caretCol=" + col + " want=9");
+                    dropFrom();
+                }
+
+                // ---- 12. 插入代码片段（多行） ----
+                {
+                    // ★中间留一行**空行**当落点：片段的落点模型是"整行拼接"
+                    //   （前半行 + 片段首行 / 片段末行 + 后半行），光标停在有内容的
+                    //   行尾时会拼成 `    x = 0    a = 1` —— 那是设计如此，不是 bug。
+                    //   拿空行当落点才是用户真实用法：点一下空行，插入。
+                    int at = append(new[] { "Sub VbcSn()", "", "End Sub" });
+                    be.SetCaret(at + 1, 1);
+                    be.InvalidateSnapshot();
+                    int before = be.LineCount();
+                    bool r = be.InsertSnippet("    a = 1\r\n    b = 2");
+                    int after = be.LineCount();
+                    string l1 = be.LineAt(at + 1) ?? "";
+                    string l2 = be.LineAt(at + 2) ?? "";
+                    string l3 = be.LineAt(at + 3) ?? "";
+                    bool ok = r && after == before + 1
+                              && Rules.Rstrip(l1) == "    a = 1"
+                              && Rules.Rstrip(l2) == "    b = 2"
+                              && Rules.Rstrip(l3) == "End Sub";
+                    check("插入多行片段", ok,
+                        "ret=" + r + " lines " + before + "->" + after +
+                        " [" + l1 + "][" + l2 + "][" + l3 + "]");
+                    dropFrom();
+                }
             }
             finally
             {
@@ -397,6 +536,85 @@ namespace VbeComplete
             sb.AppendLine(allOk ? "RESULT: PASS" : "RESULT: FAIL");
             File.WriteAllText(Path.Combine(Settings.Home, "hktest.log"), sb.ToString(), Encoding.UTF8);
             return allOk ? 0 : 1;
+        }
+
+        /// <summary>
+        /// 片段库自检（不需要 Excel、不需要桌面）：在**临时库**上跑一遍增删改查，
+        /// 顺便报告真实库的路径与条数。
+        /// ★刻意不碰用户的 snippets.db —— 自检绝不允许改坏用户攒下来的片段。
+        /// </summary>
+        private static int SnippetTest()
+        {
+            var sb = new StringBuilder();
+            bool ok = true;
+            string tmp = Path.Combine(Path.GetTempPath(),
+                "vbecomplete-snipetest-" + Guid.NewGuid().ToString("N") + ".db");
+
+            sb.AppendLine("=== snippet store test ===");
+            sb.AppendLine("winsqlite3 路径 = " + Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.System), "winsqlite3.dll"));
+            sb.AppendLine("临时库 = " + tmp);
+            sb.AppendLine("真实库 = " + SnippetStore.DbPath() +
+                          "（存在=" + File.Exists(SnippetStore.DbPath()) + "）");
+
+            Action<string, bool, string> check = (name, pass, detail) =>
+            {
+                if (!pass) ok = false;
+                sb.AppendLine((pass ? "  PASS  " : "  FAIL  ") + name + (detail.Length > 0 ? "   " + detail : ""));
+            };
+
+            // 走环境变量换库（Settings.Raw 每次都现读，所以这里设了就生效）
+            string oldEnv = Environment.GetEnvironmentVariable("VBECOMPLETE_SNIPPET_DB");
+            Environment.SetEnvironmentVariable("VBECOMPLETE_SNIPPET_DB", tmp);
+            try
+            {
+                using (var st = new SnippetStore())
+                {
+                    check("打开临时库", st.Count() == 0, "count=" + st.Count() + " err=" + st.LastError());
+
+                    check("新增", st.Add("Hello", "MsgBox \"hi\""), "err=" + st.LastError());
+                    check("新增第二条", st.Add("Loop", "For i = 1 To 3\r\nNext"), "");
+                    check("重名新增返回 false", !st.Add("Hello", "x"), "");
+                    check("读回来一致", st.Get("Hello") == "MsgBox \"hi\"", "got=[" + st.Get("Hello") + "]");
+                    check("Exists", st.Exists("Loop") && !st.Exists("nope"), "");
+                    check("修改代码", st.Update("Hello", "MsgBox \"bye\"") &&
+                          st.Get("Hello") == "MsgBox \"bye\"", "");
+
+                    var all = st.All();
+                    check("全部按标题排序", all.Count == 2 && all[0].Key == "Hello" && all[1].Key == "Loop",
+                        "count=" + all.Count);
+
+                    check("改名", st.Rename("Hello", "Hi") && st.Get("Hi") != null && !st.Exists("Hello"), "");
+                    check("改名撞车返回 false", !st.Rename("Hi", "Loop"), "");
+
+                    check("中文标题与多行代码",
+                        st.Add("中文片段", "Sub 测试()\r\n    Debug.Print \"中文\"\r\nEnd Sub") &&
+                        (st.Get("中文片段") ?? "").Contains("中文"), "");
+
+                    check("删除", st.Delete("Hi") && !st.Exists("Hi"), "");
+                    check("删除不存在返回 false", !st.Delete("Hi"), "");
+                }
+
+                // 重新打开一次：确认是真的落盘了（不是内存里的假象）
+                using (var st2 = new SnippetStore())
+                {
+                    check("重新打开后数据还在", st2.Count() == 2, "count=" + st2.Count());
+                }
+            }
+            catch (Exception e)
+            {
+                ok = false;
+                sb.AppendLine("EXCEPTION " + e);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("VBECOMPLETE_SNIPPET_DB", oldEnv);
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+            }
+
+            sb.AppendLine(ok ? "RESULT: PASS" : "RESULT: FAIL");
+            File.WriteAllText(Path.Combine(Settings.Home, "snipetest.log"), sb.ToString(), Encoding.UTF8);
+            return ok ? 0 : 1;
         }
 
         private static int CaretTest()
@@ -581,6 +799,36 @@ namespace VbeComplete
                 }
                 f.Hide();
                 f.Dispose();
+
+                // ---- 片段窗也离屏渲染一张：布局/配色/按钮顺序一眼能核对 ----
+                try
+                {
+                    using (var store = new SnippetStore())
+                    {
+                        var sf = new SnippetForm(store, code => false);
+                        sf.StartPosition = FormStartPosition.Manual;
+                        sf.Location = new System.Drawing.Point(-4000, -4000);
+                        sf.Show();
+                        sf.PreviewOnly(store.All());
+                        Application.DoEvents();
+                        int sw = sf.Width, sh = sf.Height;
+                        using (var bmp2 = new System.Drawing.Bitmap(sw, sh))
+                        {
+                            sf.DrawToBitmap(bmp2, new System.Drawing.Rectangle(0, 0, sw, sh));
+                            string p2 = Path.Combine(Settings.Home, "snippet-preview.png");
+                            bmp2.Save(p2, System.Drawing.Imaging.ImageFormat.Png);
+                            sb.AppendLine("saved " + p2 + "  " + sw + "x" + sh +
+                                           "  rows=" + store.Count());
+                        }
+                        sf.Hide();
+                        sf.Dispose();
+                    }
+                }
+                catch (Exception e2)
+                {
+                    sb.AppendLine("snippet preview skipped: " + e2.Message);
+                }
+
                 sb.AppendLine("RESULT: PASS");
                 File.WriteAllText(Path.Combine(Settings.Home, "uitest.log"), sb.ToString(), Encoding.UTF8);
                 return 0;

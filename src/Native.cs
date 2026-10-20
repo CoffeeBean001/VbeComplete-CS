@@ -118,6 +118,10 @@ namespace VbeComplete
         [DllImport("user32.dll")]
         public static extern IntPtr GetForegroundWindow();
 
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool SetForegroundWindow(IntPtr hWnd);
+
         [DllImport("user32.dll", SetLastError = true)]
         public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
@@ -241,6 +245,14 @@ namespace VbeComplete
         /// <summary>注入一个虚拟键（不做修饰键合成，调用方自己决定按不按修饰键）。</summary>
         public static bool SendVk(int vk, bool ctrl = false, bool shift = false, bool alt = false)
         {
+            // ★物理按住的修饰键不要合成。命令失败、把原键还回去时，用户的手还按在
+            //   Ctrl 上；我们再注入一对 Ctrl down/up，逻辑键状态会被"up"清掉 ——
+            //   之后 Ctrl+C/V/Z 全失灵，按 D 直接把字母打进代码，直到用户松手重按。
+            //   物理按着就一直按着：只发目标键，修饰状态由真实键盘维持。
+            ctrl = ctrl && !Down(VK_CONTROL);
+            shift = shift && !Down(VK_SHIFT);
+            alt = alt && !Down(VK_MENU);
+
             int n = 0;
             INPUT[] seq = new INPUT[8];
 
@@ -364,5 +376,98 @@ namespace VbeComplete
             }
             catch { return ""; }
         }
+
+        // ------------------------------------------------------------------
+        // 输入法：中文标点 / 全角时，标点不能被我们"翻成"半角
+        //
+        // 用户报过的 bug（Python 版 v108 原话）："我不能输入中文的双括号和中文双
+        // 引号，一输入就会自动变成英文的双括号和英文双引号。"
+        // 根因是自动配对只看"虚拟键 + Shift"，不看输入法状态 —— 中文标点档下
+        // Shift+9 敲出来的是 `（`，我们却一律插半角 `()`。
+        //
+        // 取法（Python 版实测有效的那一条）：跨进程拿不到 ImmGetContext，只能
+        // 走 `ImmGetDefaultIMEWnd(hwnd)` + `SendMessageTimeout(WM_IME_CONTROL,
+        // IMC_GETCONVERSIONMODE)`。★必须用 SendMessageTimeout + SMTO_ABORTIFHUNG：
+        // 目标窗口卡死时立刻返回，绝不解把钩子线程钉死（低级键盘钩子超时会被
+        // 系统悄悄摘掉，那是最坏的结果）。
+        // ------------------------------------------------------------------
+        private const uint WM_IME_CONTROL = 0x0283;
+        private const int IMC_GETCONVERSIONMODE = 0x0001;
+        private const int IME_CMODE_NATIVE = 0x0001;
+        private const int IME_CMODE_FULLSHAPE = 0x0008;
+        private const int IME_CMODE_SYMBOL = 0x0400;
+        private const uint SMTO_ABORTIFHUNG = 0x0002;
+
+        [DllImport("imm32.dll")]
+        private static extern IntPtr ImmGetDefaultIMEWnd(IntPtr hwnd);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint msg, IntPtr wParam,
+            IntPtr lParam, uint flags, uint timeout, out IntPtr result);
+
+        [DllImport("user32.dll")]
+        private static extern uint MapVirtualKey(uint uCode, uint uMapType);
+
+        /// <summary>问一次窗口所属输入法的转换模式；问不到返回 -1（纯 Win32）。</summary>
+        public static int ImeConversionMode(IntPtr hwnd)
+        {
+            try
+            {
+                if (hwnd == IntPtr.Zero) return -1;
+                IntPtr ime = ImmGetDefaultIMEWnd(hwnd);
+                if (ime == IntPtr.Zero) return -1;
+                IntPtr res;
+                IntPtr got = SendMessageTimeout(ime, WM_IME_CONTROL,
+                    (IntPtr)IMC_GETCONVERSIONMODE, IntPtr.Zero, SMTO_ABORTIFHUNG, 50, out res);
+                if (got == IntPtr.Zero) return -1;
+                return (int)(res.ToInt64() & 0xFFFF);
+            }
+            catch { return -1; }
+        }
+
+        /// <summary>此刻敲出来的标点是不是全角中文标点（必须在中文模式 + 中文标点/全角）。</summary>
+        public static bool ImeFullwidthPunct(IntPtr hwnd)
+        {
+            if (Settings.Flag("NO_IME_PUNCT", false)) return false;
+            int m = ImeConversionMode(hwnd);
+            if (m < 0) return false;
+            return (m & IME_CMODE_NATIVE) != 0 &&
+                   (m & (IME_CMODE_SYMBOL | IME_CMODE_FULLSHAPE)) != 0;
+        }
+
+        /// <summary>
+        /// 这个键敲出来的是不是需要自动配对的符号 —— 返回半角字符，否则 '\0'。
+        /// 刻意去问系统"这个 vk 在当前键盘布局下的基础字符"（MapVirtualKey mode 2），
+        /// 而不是写死 vk 常量：布局不同也不会配错。★mode 0 返回的是扫描码不是字符，
+        /// 别换成它（Python 版踩过）。
+        /// </summary>
+        public static char PairCharForKey(int vk, bool shift)
+        {
+            if (!shift) return '\0';
+            if (vk >= 0x60 && vk <= 0x69) return '\0';      // 小键盘不管
+            try
+            {
+                uint baseCh = MapVirtualKey((uint)vk, 2) & 0xFFFF;
+                if (baseCh == 0) return '\0';
+                char ch = (char)baseCh;
+                if (ch == '9') return '(';
+                if (ch == '0') return ')';                 // 右半边已在右边时"跨过去"
+                if (ch == '\'' || ch == '"') return '"';
+                return '\0';
+            }
+            catch { return '\0'; }
+        }
+
+        /// <summary>半角配对字符 -> 输入法此刻真正会打出来的那个（中文标点档换全角）。</summary>
+        public static char PairCharForIme(char half, IntPtr hwnd)
+        {
+            if (half == '(') return ImeFullwidthPunct(hwnd) ? '（' : half;
+            // ★右括号必须一起映射：少了这一条，中文标点档下自动配出的 `（` 按
+            //   `)` 会走"跨过去"判定失败 → 注入半角 `)`，屏幕上是 `（)）`。
+            if (half == ')') return ImeFullwidthPunct(hwnd) ? '）' : half;
+            if (half == '"') return ImeFullwidthPunct(hwnd) ? '“' : half;
+            return half;
+        }
+
     }
 }

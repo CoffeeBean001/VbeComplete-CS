@@ -43,6 +43,14 @@ namespace VbeComplete
         private volatile bool _codePaneFocused;
         private volatile bool _popupVisible;
         private volatile bool _running = true;
+        private volatile Snapshot _hookSnap;      // 最近一次轮询拿到的快照（钩子线程只读）
+        private volatile int _pendingKeys;        // 按了"可能写字"的键、文档却没变（输入法组字）
+        private long _pendingAt;                  // 上面那次计数的时刻（超时就当 0）
+        private long _hookSnapTicks;
+        // 片段窗的 HWND。★必须由 UI 线程在 Show 之前存好、钩子线程只读这个
+        // IntPtr：钩子线程去碰 `_snippetForm.Handle` 会在句柄还没建出来时
+        // 触发一次【在钩子线程上创建窗口句柄】，那是跨线程建窗，必炸。
+        private volatile IntPtr _snippetHwnd;
         private long _lastKeyTs;
 
         // ---- 钩子 ----
@@ -50,14 +58,36 @@ namespace VbeComplete
         private IntPtr _hookHandle = IntPtr.Zero;
         private uint _hookThreadId;
         private Native.LowLevelKeyboardProc _hookProc;   // 必须保持引用，否则被 GC
+        // 已吞掉 keydown 的键 -> 吞键时刻。★必须是"带时标"的字典而不是 HashSet：
+        // 吞了 keydown 之后如果那个 keyup 没回来（切窗口、被别的钩子劫走、程序被挂起），
+        // 键就永远留在表里，下一次同键的 keyup 会在**任何**窗口里被吞掉 —— 丢一个
+        // keyup 的后果是修饰键粘住（Shift 按一下就一直是选定状态）。所以只认
+        // 距今 1.5 秒内的配对，超时当没这回事。
+        private readonly Dictionary<int, long> _swallowed = new Dictionary<int, long>();
+        private const long SwallowPairMs = 1500;
 
         // ---- 轮询状态 ----
         private Snapshot _lastSnap;
         private string _lastModName = "";
         private DateTime _lastPollAt = DateTime.MinValue;
 
+        // ---- 代码片段 ----
+        private SnippetStore _snippetStore;
+        private SnippetForm _snippetForm;
+
         private readonly bool NoCtrlNav = Settings.Flag("NO_CTRL_NAV", false);
         private readonly bool NoSnippets = Settings.Flag("NO_SNIPPETS", false);
+        private readonly bool NoComment = Settings.Flag("NO_COMMENT", false);
+        private readonly bool NoDupLine = Settings.Flag("NO_DUP_LINE", false);
+        private readonly bool NoDelLine = Settings.Flag("NO_DEL_LINE", false);
+        private readonly bool NoInsertAbove = Settings.Flag("NO_INSERT_ABOVE", false);
+        private readonly bool NoEnterIndent = Settings.Flag("NO_ENTER_INDENT", false);
+        private readonly bool NoAutoClose = Settings.Flag("NO_AUTOCLOSE", false);
+        private readonly bool NoBranchAlign = Settings.Flag("NO_BRANCH_ALIGN", false);
+        private readonly bool NoShiftNav = Settings.Flag("NO_SHIFT_NAV", false);
+        private readonly bool NoAutoPair = Settings.Flag("NO_AUTOPAIR", false);
+        private readonly bool NoBsDelLine = Settings.Flag("NO_BS_DELLINE", false);
+        private readonly bool NoBsDelPair = Settings.Flag("NO_BS_DELPAIR", false);
 
         public App()
         {
@@ -77,7 +107,13 @@ namespace VbeComplete
             {
                 _popup.SetData(items, sel, top, _eng.ViewRows);
                 ShowPopupAtCaret();
-                _popupVisible = true;
+                // ★镜像标志必须跟着【真实可见性】走：ShowPopupAtCaret 拿不到插入符
+                //   时会 _eng.Hide()，此时窗口压根没显示。无条件置 true 会让
+                //   _popupVisible 永久为真 —— 之后 ↑/↓/PgUp/Esc 全被吞掉却什么都
+                //   不发生（且 Engine.Hide 的 `if (!Visible) return` 让 OnHide
+                //   再也纠正不了它）。
+                _popupVisible = _popup.Visible;
+                if (!_popupVisible) _eng.Hide();
             };
             _eng.OnHide = () =>
             {
@@ -171,6 +207,11 @@ namespace VbeComplete
                 var title = new ToolStripMenuItem("VbeComplete · C# 版") { Enabled = false };
                 menu.Items.Add(title);
                 menu.Items.Add(new ToolStripSeparator());
+                menu.Items.Add("代码片段…", null, (s, e) =>
+                {
+                    try { ToggleSnippets(); }
+                    catch (Exception ex) { Log.Write("托盘打开片段窗失败：{0}", ex.Message); }
+                });
                 menu.Items.Add("打开日志", null, (s, e) =>
                 {
                     try { System.Diagnostics.Process.Start("notepad.exe", Log.Path_); } catch { }
@@ -235,124 +276,290 @@ namespace VbeComplete
             if (nCode < 0) return Native.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
 
             int msg = wParam.ToInt32();
-            if (msg != Native.WM_KEYDOWN && msg != Native.WM_SYSKEYDOWN)
-                return Native.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
+            bool isDown = msg == Native.WM_KEYDOWN || msg == Native.WM_SYSKEYDOWN;
+            bool isUp = msg == Native.WM_KEYUP || msg == Native.WM_SYSKEYUP;
+            if (!isDown && !isUp) return Native.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
 
             var kb = (Native.KBDLLHOOKSTRUCT)Marshal.PtrToStructure(
                 lParam, typeof(Native.KBDLLHOOKSTRUCT));
 
-            // 注入的键（我们自己发的空格/括号）不算"用户按键"：否则会自己触发自己
+            // 注入的键（我们自己发的空格/括号/回车）不算"用户按键"：否则会自己触发自己
             if ((kb.flags & Native.LLKHF_INJECTED) != 0)
                 return Native.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
+
+            int vk = (int)kb.vkCode;
+
+            // ---- keyup：跟被吞掉的 keydown 配对的也一起吞 ----
+            // ★Python 版同一个坑：只吞 keydown 的话，VBE 会收到一个没有 down 的 up
+            //   （Ctrl+D / Ctrl+K 这类会被当成"半截按键"），表现为偶发的重复动作。
+            if (isUp)
+            {
+                lock (_swallowed)
+                {
+                    // 只有"刚吞了 keydown 的那个键"才连带吞掉它的 keyup；过期的条目
+                    // 一并清掉，绝不让它去吞不相干的 keyup（丢 keyup = 修饰键粘住）。
+                    if (_swallowed.TryGetValue(vk, out long at))
+                    {
+                        _swallowed.Remove(vk);
+                        if (Environment.TickCount64 - at <= SwallowPairMs) return (IntPtr)1;
+                    }
+                }
+                return Native.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
+            }
 
             // ★时标打在【这里】：放到别的回调里就晚了（那时钩子已经把事件
             //   post 给监听器，文本可能已经变了）
             _lastKeyTs = Environment.TickCount64;
-
-            int vk = (int)kb.vkCode;
 
             bool ctrl = Native.Down(Native.VK_CONTROL);
             bool shift = Native.Down(Native.VK_SHIFT);
             bool alt = Native.Down(Native.VK_MENU);
             bool win = Native.Down(Native.VK_LWIN) || Native.Down(Native.VK_RWIN);
 
-            // 不在 VBE 代码窗：一个键都不碰。
-            // ★v131c：但如果按的是我们"该管"的组合键却因为焦点判定被跳过，就记一笔 ——
+            // 不在 VBE 代码窗（或片段窗正占着焦点）：一个键都不碰。
+            // ★片段窗那道闸必须看【实时前台】而不是"窗子开着就算"：
+            //   `_codePaneFocused` 是轮询算的，片段窗刚弹出来的那一两百毫秒里它还
+            //   停在 true —— 这时候在搜索框里打字会被当成在代码里打字（敲个 `(`
+            //   就往模块里补一对括号、敲回车就跑"自动缩进"）。反过来，只看
+            //   "窗子开着"又会把"用户点了下代码窗继续写、顺手 Ctrl+Q 收起"一起
+            //   冻住。GetForegroundWindow 是纯 Win32（微秒级），每次按键问一次没成本。
+            // ★但如果按的是我们"该管"的组合键却因为焦点判定被跳过，就记一笔 ——
             //   这正是"快捷键全都不灵了"最常见的真因（焦点探测说不在代码窗，
             //   于是连一次路由都没走）。只在 LOG=1 时落盘，平时零成本。
-            if (!_codePaneFocused)
+            bool snipActive = SnippetFormActive();
+            if (!_codePaneFocused || snipActive)
             {
                 if (ctrl && IsWatchedHotkey(vk))
-                    Log.Write("热键被跳过：焦点判定=不在 VBE 代码窗（vk=0x{0:X2} shift={1}）", vk, shift);
+                    Log.Write("热键被跳过：焦点判定=不在 VBE 代码窗（vk=0x{0:X2} shift={1} codePane={2} snippet={3}）",
+                        vk, shift, _codePaneFocused, snipActive);
                 return Native.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
             }
 
             if (win) return Native.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
 
-            // ---- 1. 候选窗可见时的导航键 ----
+            // ---- 数"按了可能写字的键、文档却没变"的次数 ----
+            // 那就是输入法正在组字的信号（拼音被吃掉、还没上屏）。组字状态下
+            // 回车是【上屏键】、退格是【删拼音】，抢了就是"字没上屏反而多一行"。
+            // 文档一变（轮询看到）计数就清零，所以正常打字时它总是 0。
+            if (Editing.IsTextKey(vk) && !ctrl && !alt)
+            {
+                int n = _pendingKeys;
+                if (n < 99) _pendingKeys = n + 1;
+                _pendingAt = Environment.TickCount64;
+            }
+
+            // ==============================================================
+            // 1. 候选窗可见时的导航键
+            // ==============================================================
             if (_popupVisible && !ctrl && !alt)
             {
                 if (vk == Native.VK_DOWN && !shift)
                 {
                     Post(() => _eng.Move(1));
-                    return (IntPtr)1;
+                    return Swallow(vk);
                 }
                 if (vk == Native.VK_UP && !shift)
                 {
                     Post(() => _eng.Move(-1));
-                    return (IntPtr)1;
+                    return Swallow(vk);
+                }
+                // ★Shift+↑/↓ = 跳出候选列表 + 光标上/下移一行。
+                //   刻意【不】走上面"在列表里选词"那条：VBE 原生的 Shift+↑/↓ 是
+                //   扩选，不是移光标，所以只能由我们用 COM 落光标（并吞掉按键）。
+                if ((vk == Native.VK_UP || vk == Native.VK_DOWN) && shift && !NoShiftNav)
+                {
+                    int delta = vk == Native.VK_UP ? -1 : 1;
+                    Post(() =>
+                    {
+                        _eng.Hide();
+                        if (!_be.MoveCaretLine(delta)) Native.SendVk(vk, false, true);
+                    });
+                    return Swallow(vk);
                 }
                 if (vk == Native.VK_NEXT)
                 {
                     Post(() => _eng.Move(_eng.PageSize));
-                    return (IntPtr)1;
+                    return Swallow(vk);
                 }
                 if (vk == Native.VK_PRIOR)
                 {
                     Post(() => _eng.Move(-_eng.PageSize));
-                    return (IntPtr)1;
+                    return Swallow(vk);
                 }
                 if (vk == Native.VK_TAB && !shift)
                 {
                     Post(() => { if (!_eng.Accept()) Native.SendVk(Native.VK_TAB); });
-                    return (IntPtr)1;
+                    return Swallow(vk);
                 }
-                if (vk == Native.VK_RETURN)
+                if (vk == Native.VK_RETURN && !shift)
                 {
                     Post(() => { if (!_eng.Accept()) Native.SendVk(Native.VK_RETURN); });
-                    return (IntPtr)1;
+                    return Swallow(vk);
                 }
                 if (vk == Native.VK_ESCAPE)
                 {
                     Post(() => _eng.Hide());
-                    return (IntPtr)1;
+                    return Swallow(vk);
+                }
+                if (vk == Native.VK_LEFT || vk == Native.VK_RIGHT)
+                {
+                    // 移动光标即放弃本次补全。刻意【不】吞键 —— 光标要照常移动。
+                    Post(() => _eng.Hide());
+                    return Native.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
                 }
             }
 
-            // ---- 2. 手动唤出 ----
-            if (ctrl && vk == Native.VK_SPACE)
+            // ==============================================================
+            // 2. 手动唤出
+            // ==============================================================
+            if (ctrl && !shift && !alt && vk == Native.VK_SPACE)
             {
                 Post(() =>
                 {
                     var snap = _be.Snapshot();
                     if (snap != null) _eng.Trigger(true, snap);
                 });
-                return (IntPtr)1;
+                return Swallow(vk);
             }
 
-            // ---- 3. 行操作 ----
-            // ★v131c：每一个都必须"做成了才算吃掉了键"。命令返回 false（没快照 /
-            //   COM 失败 / 没有可落的位置）就把键原样送回去 —— 绝不"吞了但什么都没发生"，
-            //   那正是用户报"快捷键都没了"时屏幕上的样子（按键没反应，也看不出原因）。
-            if (ctrl && shift && vk == Native.VK_RETURN)
+            // ==============================================================
+            // 3. Ctrl+Q：代码片段窗（开关）
+            //    排在所有"改写文本"的分支之前 —— 它是纯粹的开/关界面动作，
+            //    与候选窗是否可见无关。Ctrl+Q 在 VBE 里本来什么也不做。
+            // ==============================================================
+            if (ctrl && !shift && !alt && vk == 'Q' && !NoSnippets)
             {
-                Post(() => { if (!Commands.InsertLineAbove(_be)) Native.SendVk(Native.VK_RETURN, true, true); });
-                return (IntPtr)1;
+                Post(ToggleSnippets);
+                return Swallow(vk);
             }
-            if (ctrl && !shift && vk == 'D')
-            {
-                Post(() => { if (!Commands.DuplicateLine(_be)) Native.SendVk('D', true, false); });
-                return (IntPtr)1;
-            }
-            if (ctrl && !shift && vk == 'K')
-            {
-                Post(() => { if (!Commands.DeleteLine(_be)) Native.SendVk('K', true, false); });
-                return (IntPtr)1;
-            }
-            // ⚠️ Shift+D / Shift+K 绝不能接管 —— 那是输入大写字母
-            if (ctrl && !shift && vk == Native.VK_OEM_2)
+
+            // ==============================================================
+            // 4. 会改写文本的组合键
+            // ★每一个都必须"做成了才算吃掉了键"。命令返回 false（没快照 / COM
+            //   失败 / 没有可落的位置）就把键原样送回去 —— 绝不"吞了但什么都没
+            //   发生"，那正是用户报"快捷键都没了"时屏幕上的样子。
+            // ==============================================================
+            if (ctrl && !shift && !alt && vk == Native.VK_OEM_2 && !NoComment)
             {
                 Post(() => { if (!Commands.ToggleComment(_be)) Native.SendVk(Native.VK_OEM_2, true, false); });
-                return (IntPtr)1;
+                return Swallow(vk);
             }
-            if (ctrl && shift && (vk == Native.VK_UP || vk == Native.VK_DOWN) && !NoCtrlNav)
+            // ⚠️ Shift+D / Shift+K 绝不能接管 —— 那是输入大写字母
+            if (ctrl && !shift && !alt && vk == 'D' && !NoDupLine)
+            {
+                Post(() => { if (!Commands.DuplicateLine(_be)) Native.SendVk('D', true, false); });
+                return Swallow(vk);
+            }
+            if (ctrl && !shift && !alt && vk == 'K' && !NoDelLine)
+            {
+                Post(() => { if (!Commands.DeleteLine(_be)) Native.SendVk('K', true, false); });
+                return Swallow(vk);
+            }
+            if (ctrl && shift && !alt && vk == Native.VK_RETURN && !NoInsertAbove)
+            {
+                Post(() => { if (!Commands.InsertLineAbove(_be)) Native.SendVk(Native.VK_RETURN, true, true); });
+                return Swallow(vk);
+            }
+            if (ctrl && shift && !alt && (vk == Native.VK_UP || vk == Native.VK_DOWN) && !NoCtrlNav)
             {
                 int dir = vk == Native.VK_UP ? -1 : 1;
                 Post(() =>
                 {
                     if (!Commands.CtrlNavJump(_be, dir)) Native.SendVk(vk, true, true);
                 });
-                return (IntPtr)1;
+                return Swallow(vk);
+            }
+
+            // ==============================================================
+            // 5. Shift+Enter：在下方新起一行（不拆行），缩进对齐 + 补收尾
+            //    ⚠️ 必须排在"回车自动缩进"之前，两条判据互斥（这条要求 Shift）
+            // ==============================================================
+            if (shift && !ctrl && !alt && vk == Native.VK_RETURN)
+            {
+                Post(() =>
+                {
+                    _eng.Hide();
+                    if (!_be.NewLineBelow(false, !NoAutoClose, !NoBranchAlign))
+                        Native.SendVk(Native.VK_RETURN, false, true);
+                });
+                return Swallow(vk);
+            }
+
+            // ==============================================================
+            // 6. 回车自动缩进（缩进 / 补收尾 / 分支对齐）
+            //    只有"整行注释 / 块结构开头 + 光标在行尾 + 行内无 Tab"才接管，
+            //    其余一律放行给 VBE 原生回车（零风险）。
+            // ==============================================================
+            if (!ctrl && !shift && !alt && vk == Native.VK_RETURN && !NoEnterIndent)
+            {
+                string lineText;
+                int caretDisp;
+                if (FreshHookSnap(out lineText, out caretDisp) &&
+                    Editing.EnterIndentWanted(lineText, caretDisp))
+                {
+                    Post(() =>
+                    {
+                        _eng.Hide();
+                        if (!_be.NewLineBelow(true, !NoAutoClose, !NoBranchAlign))
+                            Native.SendVk(Native.VK_RETURN);
+                    });
+                    return Swallow(vk);
+                }
+            }
+
+            // ==============================================================
+            // 7. 退格：删整行空白 / 删一对空括号
+            // ==============================================================
+            if (!ctrl && !shift && !alt && vk == Native.VK_BACK &&
+                (!NoBsDelLine || !NoBsDelPair))
+            {
+                string lineText;
+                int caretDisp;
+                if (FreshHookSnap(out lineText, out caretDisp))
+                {
+                    bool blankLine = !NoBsDelLine && Editing.BlankLineDeleteWanted(lineText, caretDisp);
+                    int left, right;
+                    bool pair = !NoBsDelPair && !blankLine &&
+                                Editing.PairDeleteSpan(lineText, caretDisp, out left, out right);
+                    if (blankLine)
+                    {
+                        Post(() =>
+                        {
+                            _eng.Hide();
+                            if (!_be.DeleteBlankLineHere()) Native.SendVk(Native.VK_BACK);
+                        });
+                        return Swallow(vk);
+                    }
+                    if (pair)
+                    {
+                        Post(() =>
+                        {
+                            _eng.Hide();
+                            if (!_be.DeletePairHere()) Native.SendVk(Native.VK_BACK);
+                        });
+                        return Swallow(vk);
+                    }
+                }
+            }
+
+            // ==============================================================
+            // 8. 自动配对括号 / 引号（含中文标点的全角）
+            // ==============================================================
+            if (NoAutoPair == false && !ctrl && !alt)
+            {
+                char half = Native.PairCharForKey(vk, shift);
+                if (half != '\0')
+                {
+                    // ★到这里才问输入法状态（要发一次窗口消息）。放在"已经确定要
+                    //   接管这个键"之后，别每次按 Shift 都去问。
+                    char ch = Native.PairCharForIme(half, Native.GetForegroundWindow());
+                    Post(() =>
+                    {
+                        _eng.Hide();
+                        if (!_be.InsertPair(ch)) Native.SendUnicodeChar(ch);
+                    });
+                    return Swallow(vk);
+                }
             }
 
             // 只记录"按了 Ctrl 却没命中任何分支"的、与该管的热键相关的键 ——
@@ -364,9 +571,113 @@ namespace VbeComplete
             return Native.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
         }
 
+        /// <summary>吃掉这一下按键（keydown），并记下 vk 好把配对的 keyup 也吞掉。</summary>
+        private IntPtr Swallow(int vk)
+        {
+            long now = Environment.TickCount64;
+            lock (_swallowed)
+            {
+                // 顺手清理过期条目：正常情况下 keyup 一来就删掉了，这里只是兜底，
+                // 免得"吞了 keydown 却没有 keyup"的残渣越积越多。
+                if (_swallowed.Count > 0)
+                {
+                    List<int> dead = null;
+                    foreach (var kv in _swallowed)
+                        if (now - kv.Value > SwallowPairMs) (dead ??= new List<int>()).Add(kv.Key);
+                    if (dead != null) foreach (int k in dead) _swallowed.Remove(k);
+                }
+                _swallowed[vk] = now;
+            }
+            return (IntPtr)1;
+        }
+
+        /// <summary>
+        /// 钩子线程用：前台窗口是不是片段窗（或它的子控件）？
+        /// 只读一个缓存的 HWND + `GetForegroundWindow` + 几次 `GetParent`，
+        /// 全是纯 Win32，一次 COM 都不碰，也不去碰任何 WinForms 对象。
+        /// </summary>
+        private bool SnippetFormActive()
+        {
+            IntPtr fg = _snippetHwnd;
+            if (fg == IntPtr.Zero) return false;
+            IntPtr h = Native.GetForegroundWindow();
+            for (int i = 0; i < 8 && h != IntPtr.Zero; i++)
+            {
+                if (h == fg) return true;
+                IntPtr p = Native.GetParent(h);
+                if (p == h) break;
+                h = p;
+            }
+            return false;
+        }
+
+        /// <summary>钩子线程用：拿"轮询留下的快照"。快照过期 / 输入法可能正在组字时一律
+        /// 返回 false —— 宁可这一次不接管（原生行为无害），也绝不拿旧行文本去赌
+        /// 用户正在敲的那一行。
+        /// </summary>
+        private bool FreshHookSnap(out string lineText, out int caretDisp)
+        {
+            lineText = "";
+            caretDisp = 0;
+            var s = _hookSnap;
+            if (s == null) return false;
+            // 800ms：与 Python 版的 ENTER_CTX_MAX_AGE 同口径。在代码窗里打字时
+            // 轮询是 50ms 一轮，这个上限其实是"轮询卡住了 / 刚切过焦点"的兜底。
+            if (Environment.TickCount64 - _hookSnapTicks > 800) return false;
+            // 计数超过 2 秒还挂着 ⇒ 不是"输入法在组字"，是那次变化我们没采到。
+            // 不清掉的话回车缩进 / 退格接管会被永久挡死（宁可放过这一次）。
+            if (_pendingKeys > 0 && Environment.TickCount64 - _pendingAt > 2000) _pendingKeys = 0;
+            if (_pendingKeys > 0) return false;
+            lineText = s.Text ?? "";
+            caretDisp = s.CaretCol;
+            return caretDisp > 0;
+        }
+
+        /// <summary>Ctrl+Q：开 / 关片段窗（UI 线程）。开窗位置取【开窗之前】的光标。</summary>
+        private void ToggleSnippets()
+        {
+            try
+            {
+                if (_snippetForm != null && _snippetForm.Visible)
+                {
+                    _snippetForm.Close_();
+                    return;
+                }
+                if (_snippetForm == null)
+                {
+                    _snippetStore = new SnippetStore();
+                    _snippetForm = new SnippetForm(_snippetStore, code => _be.InsertSnippet(code));
+                    _snippetForm.OnClosedCallback = () =>
+                    {
+                        _snippetHwnd = IntPtr.Zero;    // 钩子线程的实时判据一并失效
+                        try { _be.FocusVbe(); } catch { }
+                    };
+                    // 用户直接点标题栏的 × 时 FormClosing 会转成 Hide + OnClosed，
+                    // 但句柄被系统回收时不会 —— 这里补一道，免得 _snippetHwnd 卡住
+                    _snippetForm.FormClosed += (s, e) => _snippetHwnd = IntPtr.Zero;
+                }
+                _eng.Hide();
+
+                // 位置必须在窗子显示【之前】取：一显示前台就变了，插入符矩形就没了
+                int x, top, bottom;
+                bool has = Native.CaretRect(out x, out top, out bottom);
+                // ★句柄在这里（UI 线程上）逼出来并存给钩子线程用；窗子还没建句柄
+                //   的时候 `_snippetHwnd` 就是 0，钩子那条实时判据会退化成"不拦"，
+                //   而那时前台还在 VBE 代码窗 —— 正是我们想要的行为。
+                _ = _snippetForm.Handle;
+                _snippetHwnd = _snippetForm.Handle;
+                _snippetForm.OpenAtCaret(has, x, top, bottom);
+            }
+            catch (Exception e)
+            {
+                _snippetHwnd = IntPtr.Zero;
+                Log.Write("片段窗打开失败：{0}", e.Message);
+            }
+        }
+
         /// <summary>是不是"我们该管的"组合键（用于诊断日志，避免每天打的字都进日志）。</summary>
         private static bool IsWatchedHotkey(int vk) =>
-            vk == 'D' || vk == 'K' || vk == Native.VK_OEM_2 ||
+            vk == 'D' || vk == 'K' || vk == 'Q' || vk == Native.VK_OEM_2 ||
             vk == Native.VK_RETURN || vk == Native.VK_UP || vk == Native.VK_DOWN ||
             vk == Native.VK_SPACE;
 
@@ -421,7 +732,12 @@ namespace VbeComplete
                 {
                     if (_popupVisible) _eng.Hide();
                     _lastSnap = null;
+                    _hookSnap = null;
                     _lastModName = "";
+                    // 焦点已经不在代码窗：那些"按了键却没落进文档"的计数从此无从
+                    // 求证（钩子在这之后也不再累加），留着只会白挡 2 秒的回车/
+                    // 退格。Python 版同样在"刚切回 VBE"时清零。
+                    _pendingKeys = 0;
                     SetInterval(250);
                     return;
                 }
@@ -430,12 +746,18 @@ namespace VbeComplete
                 if (snap == null)
                 {
                     if (_popupVisible) _eng.Hide();
+                    _hookSnap = null;
                     SetInterval(150);
                     return;
                 }
 
                 bool typing = Environment.TickCount64 - _lastKeyTs < 900;
                 SetInterval(typing ? 50 : 150);
+
+                // 给钩子线程留一份"最近的行 + 光标列"：回车缩进 / 退格那几条判据
+                // 全靠它（钩子线程一次 COM 都不许碰）。
+                _hookSnapTicks = Environment.TickCount64;
+                _hookSnap = snap;
 
                 bool changed = _lastSnap == null
                     || snap.Line != _lastSnap.Line
@@ -444,6 +766,9 @@ namespace VbeComplete
 
                 if (changed)
                 {
+                    // 文档变了 ⇒ "按了键却没落进文档"的计数清零（见 _pendingKeys 的说明）
+                    _pendingKeys = 0;
+
                     // 换模块 = 不是打字，只是切了代码窗，不该弹
                     bool modSwitched = !string.Equals(snap.Module, _lastModName, StringComparison.OrdinalIgnoreCase)
                                        && _lastSnap != null;
@@ -506,6 +831,8 @@ namespace VbeComplete
             try { if (_hookHandle != IntPtr.Zero) Native.UnhookWindowsHookEx(_hookHandle); } catch { }
             try { _showEvent?.Dispose(); } catch { }
             try { _popup.Hide(); _popup.Dispose(); } catch { }
+            try { _snippetForm?.Hide(); _snippetForm?.Dispose(); } catch { }
+            try { _snippetStore?.Dispose(); } catch { }
             try
             {
                 if (_tray != null) { _tray.Visible = false; _tray.Dispose(); _tray = null; }

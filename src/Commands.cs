@@ -176,8 +176,9 @@ namespace VbeComplete
         /// <summary>把"显示列"的光标位置折成同一行靠左的合理字符列。</summary>
         private static int CharColOf(Snapshot s, string line)
         {
-            int n = Math.Min(line.Length, Math.Max(0, s.CaretCol - 1));
-            return n + 1;
+            // ★快照里的 CaretCol 是 VBE 的【显示列】（全角占 2 格、Tab 展开），
+            //   不能当字符下标用 —— 含中文/Tab 的行上副本光标会偏到右边去。
+            return Rules.CharColFromDisp(line, s.CaretCol);
         }
 
         internal static string LeadingWs(string s)

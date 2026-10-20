@@ -176,6 +176,50 @@ namespace VbeComplete
             return before.EndsWith(".", StringComparison.Ordinal);
         }
 
+        /// <summary>
+        /// 光标是不是在**注释**里（`'...` 或语句开头的 `Rem ...`）。
+        /// ★与 <see cref="InCommentOrString"/> 的差别只在"字符串算不算"这一条 ——
+        /// 自动配对必须用这一版，原因见 `Editing.CloseOf` 那一段：
+        /// 打 `s = "abc` 再按 `"` 时，光标在未闭合的字符串**内部**，那一下正是
+        /// 收尾的引号；若按"在字符串里就不配对"提前放弃，VBE 会老实插一个 `"`，
+        /// 结果是 `s = "abc""`。正确行为是只补一个收尾引号（Python 版
+        /// `_classify(...)[1]` 就是只看 in_comment）。
+        /// </summary>
+        public static bool InCommentOnly(string line, int caretCol)
+        {
+            if (string.IsNullOrEmpty(line)) return false;
+            int end = Math.Max(0, Math.Min(caretCol - 1, line.Length));
+            bool inStr = false;
+            bool stmtStart = true;          // 还没写出本语句的第一个实义字符
+            for (int i = 0; i < end; i++)
+            {
+                char c = line[i];
+                if (inStr)
+                {
+                    if (c == '"')
+                    {
+                        if (i + 1 < end && line[i + 1] == '"') { i++; continue; }
+                        inStr = false;
+                    }
+                    continue;
+                }
+                if (c == '"') { inStr = true; stmtStart = false; continue; }
+                if (c == '\'') return true;          // 注释到行尾，后面不可能再有代码
+                if (c == ':') { stmtStart = true; continue; }     // 语句分隔符
+                if (c == ' ' || c == '\t') { continue; }          // 空白不改 stmtStart
+                if (stmtStart)
+                {
+                    // `Rem` 只有作为语句的第一个词才是注释（`Remember` 不是）
+                    if (i + 3 <= line.Length &&
+                        string.Compare(line, i, "Rem", 0, 3, StringComparison.OrdinalIgnoreCase) == 0 &&
+                        (i + 3 == line.Length || line[i + 3] == ' ' || line[i + 3] == '\t'))
+                        return true;
+                    stmtStart = false;
+                }
+            }
+            return false;
+        }
+
         /// <summary>光标是不是在注释里（`'` 之后）或字符串里。</summary>
         public static bool InCommentOrString(string line, int caretCol)
         {

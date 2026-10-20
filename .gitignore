@@ -12,6 +12,7 @@ writetest.log
 uitest.log
 probe-cs.log
 popup-preview.png
+snippet-preview.png
 
 # ---- 本机私有配置 ----
 # settings.ini 是这一台机器的开关配置（首次启动照 settings.example.ini 生成）
@@ -19,8 +20,19 @@ settings.ini
 recent.json
 recent.json.tmp
 
+# ---- 用户数据：代码片段库（Ctrl+Q）----
+# 里面是你自己一条条攒的片段，与 Python 版同一格式；不进仓库。
+# 想连库一起带走，直接拷 snippets.db 即可。
+snippets.db
+snippets.db-journal
+snippets.db-wal
+snippets.db-shm
+
 # ---- 编辑器 / 系统 ----
 .vscode/
 .idea/
 Thumbs.db
 desktop.ini
+
+# ---- 本地协作记录（项目记忆，非源码）----
+.workbuddy/
