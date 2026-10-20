@@ -59,3 +59,16 @@ desktop.ini
 
 # ---- 本地协作记录（项目记忆，非源码）----
 .workbuddy/
+
+# ---- 图标生成的中间产物 / 托盘截图 ----
+src/icon-preview.png
+icon-tray.png
+tray-shot.png
+tray-zoom.png
+
+# ---- 运行期状态（不进仓库）----
+firstrun.txt
+autostart.txt
+startuptest.log
+VbeComplete.log
+usage.log

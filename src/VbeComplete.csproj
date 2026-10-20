@@ -9,6 +9,10 @@
     <AssemblyName>VbeComplete</AssemblyName>
     <RootNamespace>VbeComplete</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- 图标：exe 本体的图标（资源管理器/任务栏）+ 内嵌一份给托盘和窗口用。
+         ★两处都要：ApplicationIcon 是编译进 PE 的 Win32 资源，运行时用 Icon 类
+           读不到；EmbeddedResource 才能在代码里 new Icon(stream, size) 挑尺寸。 -->
+    <ApplicationIcon>app.ico</ApplicationIcon>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- 中文注释必须按 UTF-8 读，否则源文件里的字面量会乱码 -->
     <CodePage>65001</CodePage>
@@ -20,5 +24,13 @@
     <!-- 只依赖 .NET 运行时，不打包成单文件（60MB 太胖）；机器上装了 SDK 就有运行时 -->
     <SelfContained>false</SelfContained>
   </PropertyGroup>
+
+  <!-- app.ico 既是 exe 图标，也要在运行时读得到（托盘 / 窗口）。
+       LogicalName 固定，代码里按 VbeComplete.app.ico 这个名字取。 -->
+  <ItemGroup>
+    <EmbeddedResource Include="app.ico">
+      <LogicalName>VbeComplete.app.ico</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
 
 </Project>

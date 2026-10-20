@@ -14,6 +14,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -145,19 +146,42 @@ namespace VbeComplete
 
         public void Start()
         {
+            // 开机自启：按 autostart.txt 里记的意图把注册表修正一遍（第一次运行默认开）。
+            // ★必须放在 SetupTray 之前：托盘菜单里的勾选状态是在建菜单时读注册表的，
+            //   顺序反过来会看到"已经登记了但菜单上没勾"。
+            try { AutoStart.Sync(); } catch (Exception e) { Log.Write("开机自启同步失败：{0}", e.Message); }
             SetupTray();
             StartHook();
             StartShowListener();
             _timer = new System.Windows.Forms.Timer { Interval = 200 };
             _timer.Tick += (s, e) => PollOnce();
             _timer.Start();
-            Log.Write("C# 版已启动（Home={0}）", Settings.Home);
+            Log.Write("C# 版已启动（Home={0}，{1}）", Settings.Home, AutoStart.Describe());
+
+            // 托盘图标刚注册时，Windows 才刚建好它在 NotifyIconSettings 里的那条记录，
+            // 所以延后 2.5 秒再去找 —— 太早会找不到（第一次运行尤其如此）。
+            var pin = new System.Windows.Forms.Timer { Interval = 2500 };
+            pin.Tick += (s, e) =>
+            {
+                pin.Stop();
+                pin.Dispose();
+                try { TrayPin.EnsureVisible(); } catch { }
+            };
+            pin.Start();
 
             // 启动了就必须让用户看得见。这个程序没有主窗口，图标又默认折叠进
             // Win11 的托盘溢出区 —— 不给提示的话，"双击了没反应"和"已经正常运行"
             // 在屏幕上长得一模一样（用户就是这么报的 bug）。
-            ShowBalloon("VbeComplete 已启动",
-                "它没有主窗口，图标在右下角托盘的溢出区里。右键那个图标可以退出。");
+            // ★只在第一次运行时提示：现在它会开机自启，每次登录都弹一个气泡就是骚扰。
+            //   之后手动再启动时，若已有一份在跑，SignalExisting() 会负责提示。
+            string first = Path.Combine(Settings.Home, "firstrun.txt");
+            if (!File.Exists(first))
+            {
+                ShowBalloon("VbeComplete 已启动",
+                    "没有主窗口：图标在右下角托盘里（若看不到，点一下任务栏的 ^ ，把它拖到外面即可常驻）。\r\n"
+                    + "右键那个图标可以开关「开机自动启动」或退出。");
+                try { File.WriteAllText(first, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")); } catch { }
+            }
         }
 
         private void ShowBalloon(string title, string text)
@@ -218,7 +242,7 @@ namespace VbeComplete
             try
             {
                 var menu = new ContextMenuStrip();
-                var title = new ToolStripMenuItem("VbeComplete · C# 版") { Enabled = false };
+                var title = new ToolStripMenuItem("VbeComplete · VBA 补全（C# 版）") { Enabled = false };
                 menu.Items.Add(title);
                 menu.Items.Add(new ToolStripSeparator());
                 menu.Items.Add("代码片段…", null, (s, e) =>
@@ -226,6 +250,26 @@ namespace VbeComplete
                     try { ToggleSnippets(); }
                     catch (Exception ex) { Log.Write("托盘打开片段窗失败：{0}", ex.Message); }
                 });
+
+                // 开机自启：勾选状态按注册表的**真实情况**显示（不是按配置），
+                // 免得用户看到"勾着但其实早被清理软件删了"。
+                var miAutoStart = new ToolStripMenuItem("开机自动启动")
+                {
+                    CheckOnClick = false,                    // 自己处理，避免和真实状态脱节
+                    Checked = AutoStart.IsRegistered(out _),
+                    ToolTipText = "随 Windows 登录自动运行（写 HKCU 的 Run 键，不需要管理员）",
+                };
+                miAutoStart.Click += (s, e) =>
+                {
+                    bool want = !AutoStart.IsRegistered(out _);
+                    bool ok = AutoStart.SetEnabled(want);
+                    miAutoStart.Checked = AutoStart.IsRegistered(out _);
+                    Log.Write("托盘切换开机自启 -> {0}：{1}", want ? "开" : "关", ok ? "成功" : "失败");
+                    if (!ok)
+                        ShowBalloon("开机自启没设置成功",
+                            "写注册表被拒绝了（常见于安全软件拦截）。日志里有详细原因。");
+                };
+                menu.Items.Add(miAutoStart);
                 menu.Items.Add("打开日志", null, (s, e) =>
                 {
                     try { System.Diagnostics.Process.Start("notepad.exe", Log.Path_); } catch { }
@@ -234,8 +278,10 @@ namespace VbeComplete
 
                 _tray = new NotifyIcon
                 {
-                    Icon = System.Drawing.SystemIcons.Application,
-                    Text = "VbeComplete（C# 版）",
+                    // ★一定要用自己的图标：SystemIcons.Application 是一张通用的
+                    //   "空白窗口"，在托盘里跟十几个程序长得一模一样，用户根本找不到。
+                    Icon = IconAssets.Tray(),
+                    Text = "VbeComplete · VBA 补全（C# 版）",
                     Visible = true,
                     ContextMenuStrip = menu,
                 };

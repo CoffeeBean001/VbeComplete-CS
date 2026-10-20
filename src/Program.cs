@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -95,6 +96,10 @@ namespace VbeComplete
             {
                 return EngineTest();
             }
+            if (args.Length > 0 && args[0] == "--startuptest")
+            {
+                return StartupTest();
+            }
             // ★认不出的 `--xxx` 不能顺手当成"正常启动"：那会静默起一个托盘实例，
             //   让人以为"检查跑过了"（其实什么都没跑）。打一行用法就退出。
             if (args.Length > 0 && args[0].StartsWith("--", StringComparison.Ordinal))
@@ -112,7 +117,8 @@ namespace VbeComplete
                     "  --paretest    真机验证函数补括号（改完即还原）\r\n" +
                     "  --carettest   真机验证中文名光标落点（改完即还原）\r\n" +
                     "  --writetest   真机验证写入链路（改完即还原）\r\n" +
-                    "  --hktest      真机验证行操作快捷键（改完即还原）\r\n";
+                    "  --hktest      真机验证行操作快捷键（改完即还原）\r\n" +
+                    "  --startuptest 图标 + 开机自启的登记/回滚（会短暂改注册表，随后还原）\r\n";
                 Console.WriteLine("未知开关：" + args[0]);
                 Console.WriteLine(usage);
                 try
@@ -277,6 +283,120 @@ namespace VbeComplete
             if (from >= s.Length) return "";
             string part = s.Substring(from, Math.Min(len, s.Length - from));
             return part.Replace("\r", "\\r").Replace("\n", "\\n");
+        }
+
+        /// <summary>
+        /// 图标 + 开机自启的自检（不需要 Excel、不需要桌面）。
+        ///   · 图标：内嵌资源在不在、九个尺寸能不能各自取到、拿到的像素尺寸对不对；
+        ///   · 自启：登记 → 读回来要等于当前命令行 → 取消 → 读回来要没有。
+        /// ★先给注册表和 autostart.txt 拍快照，测完原样还原 —— 不留任何痕迹。
+        /// </summary>
+        private static int StartupTest()
+        {
+            var sb = new StringBuilder();
+            bool ok = true;
+            Action<string, bool, string> check = (name, pass, detail) =>
+            {
+                if (!pass) ok = false;
+                sb.AppendLine((pass ? "  PASS  " : "  FAIL  ") + name +
+                              (string.IsNullOrEmpty(detail) ? "" : "   " + detail));
+            };
+
+            sb.AppendLine("=== icon + autostart test ===");
+
+            // ---- 1. 图标 ----
+            var asm = typeof(IconAssets).Assembly;
+            bool hasRes = false;
+            foreach (var n in asm.GetManifestResourceNames())
+                if (n.EndsWith("app.ico", StringComparison.OrdinalIgnoreCase)) hasRes = true;
+            check("内嵌 app.ico 资源存在", hasRes,
+                "resources=" + string.Join(",", asm.GetManifestResourceNames()));
+
+            int[] sizes = { 16, 20, 24, 32, 40, 48, 64, 128, 256 };
+            var bad = new StringBuilder();
+            foreach (int s in sizes)
+            {
+                try
+                {
+                    using (var ic = IconAssets.Get(s))
+                    {
+                        // Icon.Width 报的是"选中那一帧"的尺寸，可能不等于请求值。
+                        // ★唯一已知的例外：256 那一帧是 PNG 压缩的（ICO 规范允许），
+                        //   .NET 的 Icon(stream, size) 挑不到它，会退回 128 —— 我们
+                        //   实际只用 16/20/32/48，256 是给资源管理器看 exe 用的，
+                        //   所以这里只要求"别比请求的小太多"。
+                        int want = Math.Min(s, 128);
+                        if (ic == null || ic.Width < want || ic.Width > s)
+                            bad.Append(s + "->" + (ic == null ? "null" : ic.Width.ToString()) + " ");
+                    }
+                }
+                catch (Exception e) { bad.Append(s + "->异常:" + e.Message + " "); }
+            }
+            check("九个尺寸都能取到图标", bad.Length == 0, bad.ToString());
+
+            // 托盘那一份必须不是"通用空白图标"（和 SystemIcons.Application 尺寸相同但内容不同，
+            // 这里只做存在性判断；真正的观感看 src/icon-preview.png）
+            using (var ti = IconAssets.Tray())
+                check("托盘图标可用", ti != null && ti.Width >= 16, "w=" + (ti == null ? -1 : ti.Width));
+            check("exe 路径可取", !string.IsNullOrEmpty(AutoStart.ExePath()), AutoStart.ExePath());
+
+            // 把真正会挂到托盘上的那两个尺寸存成图片，肉眼确认"是不是那张蓝色 V"
+            // （只看 log 里"加载成功"是不够的 —— 加载成功也可能是退回系统图标）
+            try
+            {
+                using (var i32 = IconAssets.Get(32))
+                using (var b32 = i32.ToBitmap())
+                {
+                    var canvas = new Bitmap(64 * 4 + 24, 80);
+                    using (var g = Graphics.FromImage(canvas))
+                    {
+                        g.Clear(Color.FromArgb(32, 34, 38));
+                        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+                        g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+                        g.DrawImage(b32, new Rectangle(8, 8, 32, 32));
+                        g.DrawImage(b32, new Rectangle(48, 8, 32, 32));
+                        using (var i16 = IconAssets.Get(16))
+                            g.DrawImage(i16.ToBitmap(), new Rectangle(88, 16, 16, 16));
+                    }
+                    canvas.Save(Path.Combine(Settings.Home, "icon-tray.png"),
+                        System.Drawing.Imaging.ImageFormat.Png);
+                    canvas.Dispose();
+                }
+            }
+            catch (Exception e) { sb.AppendLine("  存 icon-tray.png 失败：" + e.Message); }
+
+            // ---- 2. 开机自启 ----
+            var snap = AutoStart.Capture();
+            try
+            {
+                sb.AppendLine("  原始注册表值 = " + (snap.HadValue ? snap.Value : "（无）"));
+                sb.AppendLine("  原始 " + "autostart.txt = " + (snap.HadMarker ? snap.Marker.Trim() : "（无）"));
+                sb.AppendLine("  当前命令行 = " + AutoStart.CommandLine);
+
+                bool on = AutoStart.SetEnabled(true);
+                bool has = AutoStart.IsRegistered(out string v1);
+                check("开启后注册表里有这一条", on && has, "value=" + (v1 ?? "null"));
+                check("登记的内容就是本程序的命令行",
+                    string.Equals(v1, AutoStart.CommandLine, StringComparison.OrdinalIgnoreCase),
+                    v1 ?? "null");
+
+                bool off = AutoStart.SetEnabled(false);
+                bool has2 = AutoStart.IsRegistered(out string v2);
+                check("关闭后注册表里没有了", off && !has2, "value=" + (v2 ?? "null"));
+            }
+            finally
+            {
+                AutoStart.Restore(snap);
+            }
+            bool restored = AutoStart.IsRegistered(out string v3);
+            check("测完已还原成测试前的状态",
+                restored == snap.HadValue &&
+                (!snap.HadValue || string.Equals(v3, snap.Value, StringComparison.OrdinalIgnoreCase)),
+                "value=" + (v3 ?? "null"));
+
+            sb.AppendLine(ok ? "RESULT: PASS" : "RESULT: FAIL");
+            File.WriteAllText(Path.Combine(Settings.Home, "startuptest.log"), sb.ToString(), Encoding.UTF8);
+            return ok ? 0 : 1;
         }
 
         private static int ParenTest()

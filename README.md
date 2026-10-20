@@ -61,6 +61,12 @@ pane**, and its message loop costs nothing when idle.
 - **Adaptive polling**: 50 ms while typing, 150 ms when idle, 250 ms outside the VBE. Text changes
   caused by a paste or by another program only dismiss the popup — they never open it
   (`REQUIRE_KEY_TRIGGER`).
+- **Tray icon + run at Windows startup**: a dark-blue V badge sits in the notification area
+  (`app.ico` carries 16/20/24/32/40/48/64/128/256 frames, so it still reads at 16 px). The context
+  menu has **"开机自动启动" (start with Windows)** — written to
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, **no admin rights needed** — plus open-log
+  and exit. On startup it also asks Windows to keep the icon always visible, so Win11 does not
+  bury it in the `^` overflow.
 
 ## Pros
 
@@ -72,8 +78,8 @@ pane**, and its message loop costs nothing when idle.
 - Every shortcut follows one rule: **if the action fails, the original key is replayed**, so keys
   are never silently swallowed.
 - 296 self-checks (fuzzy matching, scopes, `Option Explicit`, Chinese identifiers, member completion,
-  highlight splitting, call-site detection) plus word-DB, snippet-store and off-screen rendering
-  checks, and four live probes keep the logic honest.
+  highlight splitting, call-site detection) plus word-DB, snippet-store, icon/autostart and
+  off-screen rendering checks, and five live probes keep the logic honest.
 
 ## Cons
 
@@ -84,6 +90,9 @@ pane**, and its message loop costs nothing when idle.
   `Set ... = New` (it does no return-type inference).
 - The word databases are read once at startup, so a change needs a restart (deliberate: it keeps
   "file changed underneath us" out of the running process).
+- Autostart writes to the current user's registry; some security suites block that (the menu then
+  reports a failure and the log says why). You can always drag the icon out of the `^` overflow
+  yourself.
 - Project-wide identifiers are re-scanned every 2 s (`SCOPE_TTL`); with very many modules the first
   completion after a pause can take a few dozen milliseconds.
 - The global hook is mounted only while the VBE is focused, so there is no completion in other
