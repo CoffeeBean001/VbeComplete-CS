@@ -1657,6 +1657,31 @@ namespace VbeComplete
                                    "    Nickname As String\n" +
                                    "    Age As Long\n" +
                                    "End Type\n";
+            // ★v158：用户报的原文（无 Option Explicit 的 Worksheet 模块）：
+            //   `Set conditions = getConditions()` 之后，在 `If isMeet(condi|` 里
+            //   打 condi 提示不出 conditions。
+            //   ★关键：下面 `Private Function isMeet(conditions, ws, t, r)` 的**形参**
+            //   也叫 conditions —— 旧实现按名字一刀切排除，形参把隐式变量挡掉了。
+            const string modUser =
+                "Sub 查询()\n" +
+                "    Set ws = Worksheets(\"人员考勤记录\")\n" +
+                "    Set t = getTitle(ws, 1, 1)\n" +
+                "    Set conditions = getConditions()      ' 已设置的条件\n" +
+                "    Set dic = CreateObject(\"scripting.dictionary\")\n" +
+                "    For i = 2 To ws.Cells(Cells.Rows.Count, t(\"姓名\")).End(xlUp).Row\n" +
+                "        If isMeet(condi\n" +
+                "    Next\n" +
+                "End Sub\n" +
+                "\n" +
+                "Private Function getConditions()\n" +
+                "    Set dic = CreateObject(\"scripting.dictionary\")\n" +
+                "    Set getConditions = dic\n" +
+                "End Function\n" +
+                "\n" +
+                "Private Function isMeet(conditions, ws, t, r)\n" +
+                "    If conditions.exists(\"项目名称\") Then\n" +
+                "    End If\n" +
+                "End Function\n";
 
             var synth = new SyntheticBackend()
                 .Add("模块1", 1, modStd)
@@ -1664,7 +1689,8 @@ namespace VbeComplete
                 .Add("modMem", 1, modMem)
                 .Add("Sheet1", 100, modNoExp)
                 .Add("模块2", 1, modFree)
-                .Add("modT", 1, modType);
+                .Add("modT", 1, modType)
+                .Add("模块3", 1, modUser);
 
             // 说明, 模块, 行, 行文本, 光标显示列, 期望该弹?, 必须有, 不许有
             Action<string, string, int, string, int, bool?, string[], string[]> sprobe =
@@ -1742,6 +1768,14 @@ namespace VbeComplete
                 "    sec", 8, true, new[] { "secretVar" }, null);
             sprobe("Type 成员不进裸名池（模块1 里 Nic| 不冒 Nickname）", "模块1", 11,
                 "    Nic", 8, null, null, new[] { "Nickname" });
+
+            // ---- 2d. v158：用户案例（Set 出来的隐式变量必须能提示）----
+            var dbg = Scope.Analyze("模块3", modUser);
+            sb.AppendLine("  [诊断] Decls: " + string.Join(",", dbg.Decls.Select(d => d.Name + "@" + (d.Proc ?? "-"))));
+            sb.AppendLine("  [诊断] FreeIdents: " + string.Join(",", dbg.FreeIdents));
+            sb.AppendLine("  [诊断] Procs: " + string.Join(",", dbg.Procs.Select(p => p.Name + ":" + p.StartLine + "-" + p.EndLine)));
+            sprobe("Set 出来的隐式变量能提示（condi| -> conditions）", "模块3", 7,
+                "        If isMeet(condi", 24, true, new[] { "conditions" }, null);
 
             // ---- 3. A/B 对照：去掉 Option Explicit，同一个探针就该收进来 ----
             //   证明"未声明的不提示"确实是 Option Explicit 在起作用，不是别的原因。

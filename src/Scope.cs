@@ -441,8 +441,29 @@ namespace VbeComplete
             ms.OptionExplicit = Parser.OptionExplicit(text);
 
             // ---- 全量标识符：只留"没被任何过程声明为局部"的 ----
-            var declared = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var d in ms.Decls) declared.Add(d.Name);
+            // ★v158：声明要**按作用域**排，不能按名字一刀切。真实案例（用户报的）：
+            //   ```vba
+            //   Sub 查询()
+            //       Set conditions = getConditions()     ' 隐式变量 conditions
+            //       If isMeet(conditions, ws, t, r) Then ' 打 condi 提示不出 conditions
+            //   End Sub
+            //   Private Function isMeet(conditions, ws, t, r)   ' ← 形参也叫 conditions
+            //   ```
+            //   旧实现把所有 Decls 的名字并成一个 `declared` 集合，于是"isMeet 的形参
+            //   conditions"把"查询里的隐式变量 conditions"挡在 FreeIdents 之外，而
+            //   Visible("查询") 里又因为形参属于 isMeet 而跳过它 —— 结果两边都不认。
+            //   PY 版早就分了 `declared_global` / `declared_by_proc` 两份（parser.py
+            //   里那条"主过程的 num 被 Function f(ws, num) 挡住"的注释就是同一个坑）。
+            var declaredGlobal = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var declaredByProc = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var d in ms.Decls)
+            {
+                if (d.Proc == null) { declaredGlobal.Add(d.Name); continue; }
+                HashSet<string> set;
+                if (!declaredByProc.TryGetValue(d.Name, out set))
+                    declaredByProc[d.Name] = set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                set.Add(d.Proc);
+            }
 
             // ---- v153：先分清"这个名字在模块里是怎么用的" ----
             // `Range("d2")`、`InputBox("x")` 这种后面紧跟 `(` 的，是**函数/过程调用**，
@@ -586,9 +607,22 @@ namespace VbeComplete
                     //   `_IMPLICIT_STOPWORDS` + `_RE_BUILTIN_CONST` 两道闸的作用。
                     if (!written.Contains(w) && (IsHostObjectName(w) || IsHostEnumConst(w)))
                         continue;
-                    if (declared.Contains(w)) continue;
-                    if (localNames.Contains(w)) continue;             // 别处的局部，不能漏过来
-
+                    // ★v158：**按作用域**判"声明过没有"。
+                    //   模块级声明 → 全模块排除；
+                    //   过程级声明（Dim / 形参）→ 只在**那个过程**里排除。
+                    //   旧实现用一份 `declared` 名字集合一刀切，于是 isMeet 的形参
+                    //   `conditions` 把"查询"里的隐式变量 `conditions` 挡在池外
+                    //   （用户报的 condi 提示不出 conditions 就是这条）。
+                    //   `localNames` 那条同理，已经由 declaredByProc 覆盖，删掉。
+                    string curProc = (ln + 1) < owner.Length ? owner[ln + 1] : null;   // owner 是 1-based
+                    bool declaredHere = declaredGlobal.Contains(w);
+                    if (!declaredHere && curProc != null)
+                    {
+                        HashSet<string> procs;
+                        if (declaredByProc.TryGetValue(w, out procs) && procs.Contains(curProc))
+                            declaredHere = true;
+                    }
+                    if (declaredHere) continue;
                     // 单字母（且是 ASCII）噪音太大 —— `i` `n` 这种在候选里没意义。
                     // ★汉字单字不在此列：`和` / `总` 是正经名字，不能按字母数筛掉。
                     if (w.Length < 2 && w[0] < 0x80) continue;
@@ -611,7 +645,7 @@ namespace VbeComplete
                         // ★v155（对齐 PY 的 scope="proc"）：未声明变量的作用域是它
                         // **首次出现的过程** —— VBA 里 A 过程的 num 和 B 过程的 num
                         // 是两个独立变量，把 A 的提示到 B 去等于教用户写错代码。
-                        ms.FreeIdentProc[w] = ln < owner.Length ? owner[ln] : null;
+                        ms.FreeIdentProc[w] = (ln + 1) < owner.Length ? owner[ln + 1] : null;
                     }
                 }
             }
