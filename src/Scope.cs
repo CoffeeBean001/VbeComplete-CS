@@ -379,6 +379,32 @@ namespace VbeComplete
             var declared = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var d in ms.Decls) declared.Add(d.Name);
 
+            // ---- v153：先分清"这个名字在模块里是怎么用的" ----
+            // `Range("d2")`、`InputBox("x")` 这种后面紧跟 `(` 的，是**函数/过程调用**，
+            // 不是"自动声明的变量"。无 Option Explicit 时把它们当变量收进池子，
+            // 就会拿工程名档位（rank 2）压过词库里的真函数 —— 用户打 `ra`，
+            // 第一条是 Excel 的 `Range`，把 `Rate`/`Randomize` 全顶到后面去。
+            // 判据只在"这个名字从没被当值用过"时才生效：`arr(1) = 5` 里的 arr
+            // 如果也在别处出现 `arr = Array()`，仍然按变量收。
+            var callOnly = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var usedAsValue = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var raw in lines)
+            {
+                string c0 = Parser.CodeOnly(raw);
+                if (c0.Length == 0) continue;
+                foreach (Match m0 in ReIdent.Matches(c0))
+                {
+                    string w0 = Clean(m0.Value);
+                    if (w0.Length == 0) continue;
+                    // `As Range` / `Dim x As Range` 里的 Range 是**类型名**：
+                    // 它既不是函数调用、也不是值 —— 归类成"值"会让 `Range("d2")`
+                    // 那条判据失效（`!usedAsValue` 永远不成立）。
+                    if (IsAfterAs(c0, m0)) continue;
+                    if (FollowedByParen(c0, m0)) callOnly.Add(w0);
+                    else usedAsValue.Add(w0);
+                }
+            }
+
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var raw in lines)
             {
@@ -411,6 +437,11 @@ namespace VbeComplete
 
                     bool host = LooksLikeHostObject(code, m);
 
+                    // ★v153：只被当函数调用过、从没当值用过的名字，不是"自动声明的
+                    //   变量"（`Range("d2")` / `InputBox("x")`）。收进池子只会让宿主
+                    //   函数混进变量档位。真正声明过的过程不受影响 —— 它们走 Decls。
+                    if (!host && callOnly.Contains(w) && !usedAsValue.Contains(w)) continue;
+
                     // ★强制声明变量的模块：没写 Dim 的名字在 VBE 里直接编译不过，
                     //   把它当候选等于教用户写错代码。唯一例外是"像宿主对象"的
                     //   那些（控件名 / Application / 隐式对象）—— 它们本来就不用声明。
@@ -432,6 +463,33 @@ namespace VbeComplete
             int p = m.Index - 1;
             while (p >= 0 && (code[p] == ' ' || code[p] == '\t')) p--;
             return p >= 0 && code[p] == '.';
+        }
+
+        /// <summary>
+        /// 这个标识符是不是紧跟在 `As` 后面（= 类型名，不是值也不是调用）。
+        /// 只看前一个词是不是 `As`，不做别的推断。
+        /// </summary>
+        private static bool IsAfterAs(string code, Match m)
+        {
+            int p = m.Index - 1;
+            while (p >= 0 && (code[p] == ' ' || code[p] == '\t')) p--;
+            int e = p;
+            while (p >= 0 && (char.IsLetterOrDigit(code[p]) || code[p] == '_')) p--;
+            if (e - p != 2) return false;                       // "As" 正好两个字符
+            return code.Substring(p + 1, 2).Equals("As", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// 这个标识符后面是不是紧跟一个 `(` —— 也就是它被当成**函数/过程调用**用了。
+        /// 只跳过空白，不做任何类型推断（`Range ("d2")` 这种带空格的写法也认）。
+        /// 与 <see cref="LooksLikeHostObject"/> 的区别：那边看"后面跟点号"（对象），
+        /// 这边看"后面跟括号"（调用）。
+        /// </summary>
+        private static bool FollowedByParen(string code, Match m)
+        {
+            int after = m.Index + m.Length;
+            while (after < code.Length && (code[after] == ' ' || code[after] == '\t')) after++;
+            return after < code.Length && code[after] == '(';
         }
 
         /// <summary>

@@ -48,6 +48,7 @@ namespace VbeComplete
                 TestScope();
                 TestChineseAndExplicit();
                 TestGuards();
+                TestFreeIdents();
                 TestMember();
                 TestEditing();
                 TestContinuation();
@@ -735,11 +736,13 @@ End Sub
                 mem.FreeIdents.Contains("wsR"),
                 string.Join(",", mem.FreeIdents));
 
-            // 反过来也要成立：用户**真的**裸写了 `Cells(1,1)`（Excel 里合法，
-            // 等价于 Application.Cells），那就该提示 —— 判据只认语法，不做类型推断。
+            // ★v153 口径变了：`Cells(1,1)` 是**函数调用**，不再当"自动声明的变量"收。
+            //   用户报的是同一类现象 —— Worksheet 里打 `ra` 第一条弹 Excel 的 `Range`，
+            //   把 `Rate` / `Randomize` 全顶到后面。宿主函数要提示，正路是往
+            //   keywords-cs.db / functions-cs.db 里加一行（内置档，不抢工程名档位）。
             const string bareSample = "Sub T()\r\n    n = Cells(1, 1)\r\nEnd Sub\r\n";
-            Ok("裸用 Cells(1,1) 仍然收（用户真这么写了）",
-                Scope.Analyze("M", bareSample).FreeIdents.Contains("Cells"),
+            Ok("裸用 Cells(1,1) 不再按变量收（v153：调用不是自动声明）",
+                !Scope.Analyze("M", bareSample).FreeIdents.Contains("Cells"),
                 string.Join(",", Scope.Analyze("M", bareSample).FreeIdents));
 
             // ---- 引擎层面：Option Explicit 的模块里，未声明名字不该出现在候选 ----
@@ -842,6 +845,37 @@ End Sub
             Ok("guard/命中过多时列表截断到 240",
                 shown5 && eng5.Items.Count <= 240 && eng5.TruncatedFrom > 240,
                 "shown=" + shown5 + " items=" + eng5.Items.Count + " total=" + eng5.TruncatedFrom);
+        }
+
+        /// <summary>
+        /// v153：无 Option Explicit 时，只被当**函数调用**过的名字（`Range("d2")`
+        /// / `InputBox("x")`）不能算"自动声明的变量"。
+        /// <para>用户报的现象：Worksheet 模块里打 `ra`，第一条是 Excel 的 `Range`
+        /// —— 它其实只是自己代码里 `Range("d2")` 调用过一次的宿主函数，被全量
+        /// 标识符收进池子后拿着工程名档位排到了 `Rate` / `Randomize` 前面。</para>
+        /// </summary>
+        private static void TestFreeIdents()
+        {
+            const string ws = "Private Sub Worksheet_SelectionChange(ByVal Target As Range)\r\n" +
+                              "    Set Target = Target.Cells(1, 1)\r\n" +
+                              "    If Target.Address = Range(\"d2\").Address Then\r\n" +
+                              "        setValidity ActiveCell, \"c\"\r\n" +
+                              "    End If\r\n" +
+                              "End Sub\r\n";
+            var ms = Scope.Analyze("Sheet1", ws);
+            Ok("free/调用型名字不算自动声明变量（Range 不进池）",
+                !ms.FreeIdents.Contains("Range"), string.Join(",", ms.FreeIdents));
+            Ok("free/无括号的调用仍按变量收（setValidity）",
+                ms.FreeIdents.Contains("setValidity"), string.Join(",", ms.FreeIdents));
+            Ok("free/已声明的参数不进 FreeIdents（Target）",
+                !ms.FreeIdents.Contains("Target"), string.Join(",", ms.FreeIdents));
+
+            // 同一个名字既被当函数调用、又在别处当值用过 ⇒ 仍然是变量
+            // （数组下标 `arr(1) = 5` 与赋值 `arr = Array()` 同时出现）
+            const string arrCase = "Sub T()\r\n    arr(1) = 5\r\n    arr = Array(1, 2)\r\nEnd Sub\r\n";
+            var ms2 = Scope.Analyze("M", arrCase);
+            Ok("free/既调用又赋值时保留", ms2.FreeIdents.Contains("arr"),
+                string.Join(",", ms2.FreeIdents));
         }
 
         private static void TestMember()

@@ -29,8 +29,11 @@ pane**, and its message loop costs nothing when idle.
   `Private` members never leak in — while other modules' `Public` procedures still autocomplete.
 - **`Option Explicit` is honoured**: in a module that declares it, names you never `Dim`'d stay out
   of the pool (they would not compile anyway); without it those names are treated as implicitly
-  declared and are offered normally. Host-declared objects (something seen as `control.member` or
-  after `Set control =`) are exempt either way.
+  declared and are offered normally. A name that is **only ever called** (`Range("A1")`,
+  `InputBox("x")`) is not an implicitly declared variable though — it is a host function, and it
+  should not outrank the built-ins. To surface one of those, add a row to `keywords-cs.db` /
+  `functions-cs.db`. Host-declared objects (something seen as `control.member` or after
+  `Set control =`) are exempt either way.
 - **Silent where it should be**: after `As` **or `New`** (only a type name can follow — that includes
   `Set c = New |`, `For i As |` and parameter lists, not just `Dim` lines), in the naming position of
   `Dim` / `Public` / `Private` / `Global`, and for the word you are currently typing.
@@ -112,7 +115,7 @@ pane**, and its message loop costs nothing when idle.
   tool; they are fully independent of the Python edition, sharing no file with it.
 - Every shortcut follows one rule: **if the action fails, the original key is replayed**, so keys
   are never silently swallowed.
-- 382 self-checks (fuzzy matching, scopes, `Option Explicit`, Chinese identifiers, member completion,
+- 397 self-checks (fuzzy matching, scopes, `Option Explicit`, Chinese identifiers, member completion,
   highlight splitting, call-site detection, `As`/`New` suppression, line continuations) plus
   word-DB, snippet-store, icon/autostart and off-screen rendering checks, and seven live probes
   keep the logic honest.

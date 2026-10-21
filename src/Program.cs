@@ -1632,11 +1632,23 @@ namespace VbeComplete
                 "Sub W()\n" +
                 "    n = wsR.Cells(1, 1).Value\n" +
                 "End Sub\n";
+            // ★v153：无 Option Explicit 的 Worksheet 模块（用户报的那一段原文）。
+            //   `Range` 只在两处出现：`As Range`（类型）与 `Range("d2")`（调用），
+            //   都不是"自动声明的变量" —— 打 `ra` 不该冒出 Range。
+            const string modNoExp =
+                "Private Sub Worksheet_SelectionChange(ByVal Target As Range)\n" +
+                "    Set Target = Target.Cells(1, 1)\n" +
+                "    If Target.Address = Range(\"d2\").Address Then\n" +
+                "        setValidity ActiveCell, \"c\"\n" +
+                "    End If\n" +
+                "    ra\n" +
+                "End Sub\n";
 
             var synth = new SyntheticBackend()
                 .Add("模块1", 1, modStd)
                 .Add("cls1", 2, modCls)
-                .Add("modMem", 1, modMem);
+                .Add("modMem", 1, modMem)
+                .Add("Sheet1", 100, modNoExp);
 
             // 说明, 模块, 行, 行文本, 光标显示列, 期望该弹?, 必须有, 不许有
             Action<string, string, int, string, int, bool?, string[], string[]> sprobe =
@@ -1694,6 +1706,12 @@ namespace VbeComplete
                 "    ok", 7, null, new[] { "okkk2" }, new[] { "ok" });
             sprobe("中文变量名能提示（他|）", "模块1", 11,
                 "    他", 7, true, new[] { "他们" }, null);
+
+            // ---- 2b. v153：无 Option Explicit 时，"只当函数调用过"的名字不算变量 ----
+            //   用户报的原文：Worksheet 模块里打 `ra`，第一条是 Excel 的 `Range` ——
+            //   它只是代码里 `Range("d2")` 调用过一次的宿主函数。
+            sprobe("无 Option Explicit 时调用名不进变量池（ra| 不冒 Range）", "Sheet1", 6,
+                "    ra", 7, true, new[] { "RaiseEvent" }, new[] { "Range" });
 
             // ---- 3. A/B 对照：去掉 Option Explicit，同一个探针就该收进来 ----
             //   证明"未声明的不提示"确实是 Option Explicit 在起作用，不是别的原因。
