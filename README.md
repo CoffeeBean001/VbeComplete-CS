@@ -87,9 +87,6 @@ pane**, and its message loop costs nothing when idle.
   `Ctrl+D` duplicate · `Ctrl+K` delete ·
   `Ctrl+Shift+Enter` insert above · `Ctrl+↑/↓` jump to the last `Dim` line / to the last code
   line above `End Sub` ·
-  `Ctrl+Shift+L` **re-indent the whole module** (or just the selection when it spans lines). Only
-  leading whitespace is rewritten — not a single character inside a line — so the worst case is a
-  wrong indent, a few `Ctrl+Z` away.
 - **`Ctrl+Q` snippet library** — its own `snippets-cs.db` (SQLite; the window title shows that
   file name), the only snippet file in the project. Two-line list on the left (title + first code
   line, per-character search highlighting), editor on the right, `Ctrl+N` new / `Ctrl+S` save /
@@ -113,10 +110,10 @@ pane**, and its message loop costs nothing when idle.
   tool; they are fully independent of the Python edition, sharing no file with it.
 - Every shortcut follows one rule: **if the action fails, the original key is replayed**, so keys
   are never silently swallowed.
-- 376 self-checks (fuzzy matching, scopes, `Option Explicit`, Chinese identifiers, member completion,
-  highlight splitting, call-site detection, `As`/`New` suppression, line-by-line re-indent) plus
+- 382 self-checks (fuzzy matching, scopes, `Option Explicit`, Chinese identifiers, member completion,
+  highlight splitting, call-site detection, `As`/`New` suppression, line continuations) plus
   word-DB, snippet-store, icon/autostart and off-screen rendering checks, and seven live probes
-  (including `Ctrl+Shift+L`) keep the logic honest.
+  keep the logic honest.
 
 ## Cons
 

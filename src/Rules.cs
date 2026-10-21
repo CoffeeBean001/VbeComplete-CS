@@ -37,9 +37,11 @@ namespace VbeComplete
         public static string ReplaceWord(string line, int wordStartCol, int endCol, string completion)
         {
             line = line ?? "";
-            int start = Math.Max(0, wordStartCol - 1);
+            // ★先把 start 夹进行宽，再算 end —— 反过来的话 start 越界时 end 会停在
+            //   start 上（也越界），下面 Substring(end) 直接抛 ArgumentOutOfRange。
+            //   "实际行比快照行短"真的会发生：撤销 / 别处并发改动 / VBE 自己重排。
+            int start = Math.Max(0, Math.Min(wordStartCol - 1, line.Length));
             int end = Math.Max(start, Math.Min(line.Length, endCol - 1));
-            if (start > line.Length) start = line.Length;
             return line.Substring(0, start) + completion + line.Substring(end);
         }
 
@@ -167,12 +169,44 @@ namespace VbeComplete
         {
             if (string.IsNullOrEmpty(line)) return false;
             int end = Math.Max(0, Math.Min(caretCol - 1, line.Length));
-            string before = line.Substring(0, end);
-            if (!ReDeclHead.IsMatch(line)) return false;
+
+            // ★只看**光标所在的语句段**：VBA 允许 `Dim x As Long: x = Ms|`，
+            //   整行以 Dim 开头不代表光标这段是声明 —— 用整行判会把冒号后面
+            //   那条普通赋值也当成"造新名字"，从此在那里永远不弹候选。
+            int segStart = StatementStart(line, end);
+            string seg = line.Substring(segStart, end - segStart);
+            if (!ReDeclHead.IsMatch(seg)) return false;
 
             // `Const PI = 3.14` 的值位置不是名字位置，也不是类型位置
-            if (Regex.IsMatch(before, @"\bConst\b.*=", RegexOptions.IgnoreCase)) return false;
+            if (Regex.IsMatch(seg, @"\bConst\b.*=", RegexOptions.IgnoreCase)) return false;
             return true;
+        }
+
+        /// <summary>
+        /// 光标所在**语句段**的起点（0-based）。VBA 用 `:` 分隔同一行里的多条语句，
+        /// 只认「引号外、注释外」的冒号 —— `s = "a:b"` 里的那个不算分隔符。
+        /// </summary>
+        public static int StatementStart(string line, int endCol)
+        {
+            if (string.IsNullOrEmpty(line)) return 0;
+            int end = Math.Max(0, Math.Min(endCol, line.Length));
+            int start = 0;
+            bool inStr = false;
+            for (int i = 0; i < end; i++)
+            {
+                char c = line[i];
+                if (c == '"')
+                {
+                    // VBA 的字符串转义是双写引号（`""`），跳过去别误判成"关闭"
+                    if (inStr && i + 1 < end && line[i + 1] == '"') { i++; continue; }
+                    inStr = !inStr;
+                    continue;
+                }
+                if (inStr) continue;
+                if (c == '\'') break;        // 注释从这里开始，后面没有语句了
+                if (c == ':') start = i + 1;
+            }
+            return start;
         }
 
         /// <summary>
@@ -340,7 +374,30 @@ namespace VbeComplete
         /// 结果是 `s = "abc""`。正确行为是只补一个收尾引号（Python 版
         /// `_classify(...)[1]` 就是只看 in_comment）。
         /// </summary>
-        public static bool InCommentOnly(string line, int caretCol)
+        public static bool InCommentOnly(string line, int caretCol) =>
+            ScanDead(line, caretCol, strCounts: false, remCounts: true);
+
+        /// <summary>光标是不是在注释里（`'` 之后）或字符串里（含未闭合字符串）。</summary>
+        public static bool InCommentOrString(string line, int caretCol) =>
+            ScanDead(line, caretCol, strCounts: true, remCounts: false);
+
+        /// <summary>
+        /// 光标是不是落在"写什么都无所谓"的位置 —— 注释（`'` 或 `Rem`）或字符串里。
+        ///
+        /// ★v150：候选弹窗原来只过 <see cref="InCommentOrString"/>，它不认 `Rem`，
+        ///   于是 `Rem 说明 |` 里照样弹全工程候选、按 Tab 还能把注释改写掉。
+        ///   两个判据各自漏的那块正好被对方补上，取并集才是全的。
+        /// </summary>
+        public static bool InDeadZone(string line, int caretCol) =>
+            ScanDead(line, caretCol, strCounts: true, remCounts: true);
+
+        /// <summary>
+        /// 上面三个判据的公共扫描。旧实现是两份几乎逐行重复的循环，改一处漏一处。
+        /// </summary>
+        /// <param name="strCounts">未闭合的字符串算不算"死区"。
+        ///   true = 算（弹候选没意义）；false = 不算（自动配对要能进到字符串里收尾）。</param>
+        /// <param name="remCounts">语句开头的 `Rem` 算不算注释。</param>
+        private static bool ScanDead(string line, int caretCol, bool strCounts, bool remCounts)
         {
             if (string.IsNullOrEmpty(line)) return false;
             int end = Math.Max(0, Math.Min(caretCol - 1, line.Length));
@@ -353,50 +410,24 @@ namespace VbeComplete
                 {
                     if (c == '"')
                     {
-                        if (i + 1 < end && line[i + 1] == '"') { i++; continue; }
+                        if (i + 1 < end && line[i + 1] == '"') { i++; continue; }  // `""` 是转义
                         inStr = false;
                     }
                     continue;
                 }
                 if (c == '"') { inStr = true; stmtStart = false; continue; }
-                if (c == '\'') return true;          // 注释到行尾，后面不可能再有代码
-                if (c == ':') { stmtStart = true; continue; }     // 语句分隔符
-                if (c == ' ' || c == '\t') { continue; }          // 空白不改 stmtStart
-                if (stmtStart)
-                {
-                    // `Rem` 只有作为语句的第一个词才是注释（`Remember` 不是）
-                    if (i + 3 <= line.Length &&
-                        string.Compare(line, i, "Rem", 0, 3, StringComparison.OrdinalIgnoreCase) == 0 &&
-                        (i + 3 == line.Length || line[i + 3] == ' ' || line[i + 3] == '\t'))
-                        return true;
-                    stmtStart = false;
-                }
+                if (c == '\'') return true;                       // 注释到行尾，后面不可能再有代码
+                if (c == ':') { stmtStart = true; continue; }      // 语句分隔符
+                if (c == ' ' || c == '\t') continue;               // 空白不改 stmtStart
+                if (!remCounts || !stmtStart) { stmtStart = false; continue; }
+                // `Rem` 只有作为语句的第一个词才是注释（`Remember` 不是）
+                if (i + 3 <= line.Length &&
+                    string.Compare(line, i, "Rem", 0, 3, StringComparison.OrdinalIgnoreCase) == 0 &&
+                    (i + 3 == line.Length || line[i + 3] == ' ' || line[i + 3] == '\t'))
+                    return true;
+                stmtStart = false;
             }
-            return false;
-        }
-
-        /// <summary>光标是不是在注释里（`'` 之后）或字符串里。</summary>
-        public static bool InCommentOrString(string line, int caretCol)
-        {
-            if (string.IsNullOrEmpty(line)) return false;
-            int end = Math.Max(0, Math.Min(caretCol - 1, line.Length));
-            bool inStr = false;
-            for (int i = 0; i < end; i++)
-            {
-                char c = line[i];
-                if (inStr)
-                {
-                    if (c == '"')
-                    {
-                        if (i + 1 < end && line[i + 1] == '"') { i++; continue; }
-                        inStr = false;
-                    }
-                    continue;
-                }
-                if (c == '"') { inStr = true; continue; }
-                if (c == '\'') return true;
-            }
-            return inStr;
+            return strCounts && inStr;
         }
 
         /// <summary>

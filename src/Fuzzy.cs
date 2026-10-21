@@ -202,12 +202,5 @@ namespace VbeComplete
             hit.Run = LongestRun(positions);
             return true;
         }
-
-        /// <summary>只看命中不命中（不需要下标时用，省一次分配）。</summary>
-        public static bool IsMatch(string name, string query)
-        {
-            FuzzyHit h;
-            return Match(name, query, out h);
-        }
     }
 }

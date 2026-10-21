@@ -49,7 +49,7 @@ namespace VbeComplete
                 TestChineseAndExplicit();
                 TestMember();
                 TestEditing();
-                TestIndent();
+                TestContinuation();
                 TestAutoTrigger();
                 TestSnippets();
             }
@@ -493,6 +493,17 @@ Public Sub C()
 End Sub
 ";
 
+        /// <summary>
+        /// 过程外不带 Dim 的裸声明（v150）：逗号多名 / Friend / 只有名字。
+        /// 这几行以前只有第一种写法能解析出来。
+        /// </summary>
+        private const string MultiBareSample = @"Option Explicit
+Public a, b As Long
+Private c, d As String
+Friend e As Long
+Global f
+";
+
         private static void TestScope()
         {
             var ms = Scope.Analyze("Mod1", ScopedSample);
@@ -533,6 +544,22 @@ End Sub
             Ok("scope/引擎在 A 里提示得到自己的局部",
                 items2.Any(x => x.Name.ToLowerInvariant() == "shared"),
                 string.Join(",", items2.Select(x => x.Name)));
+
+            // ---- v150：过程外裸声明要支持逗号多名 ----
+            //   旧正则要求首名后面紧跟 As/(/行尾，于是 `Public a, b As Long`
+            //   整行匹配不上，a 和 b 双双进不了候选池。
+            var mb = Scope.Analyze("Mod2", MultiBareSample);
+            Func<string, Decl> pick = n => mb.Decls.FirstOrDefault(x => x.Name == n);
+            Ok("scope/裸声明多名：a 收进来了", pick("a") != null);
+            Ok("scope/裸声明多名：b 收进来了", pick("b") != null);
+            Eq("scope/裸声明多名：b 拿到 As 后面的类型", pick("b")?.TypeName, "Long");
+            // VBA 口径：`Public a, b As Long` 里 a 是 Variant，只有 b 是 Long
+            Eq<string>("scope/裸声明多名：a 仍是 Variant", pick("a")?.TypeName, null);
+            Ok("scope/裸声明多名：Private 覆盖到每个名字",
+                pick("c") != null && pick("d") != null && pick("c").IsPrivate && pick("d").IsPrivate);
+            Ok("scope/裸声明 Friend 不算 Private", pick("e") != null && !pick("e").IsPrivate);
+            Ok("scope/裸声明只写名字也收", pick("f") != null);
+            Ok("scope/裸声明进了可见集", mb.Visible(null).ContainsKey("a") && mb.Visible(null).ContainsKey("b"));
         }
 
         /// <summary>造一个假快照跑 Trigger（不碰 COM），返回候选名。</summary>
@@ -804,6 +831,48 @@ End Sub
             };
             eng.Backend = be4;
             Ok("member/Me 用当前模块", eng.Trigger(false, be4.Snap));
+
+            // ---- v150：`Me.` 里 Private 成员也算 ----
+            //   旧实现套的是 Exported()，那是"别的模块看得见什么"，正好把
+            //   Private 全滤掉了；而 `Me.PrivateSub` 完全合法。
+            var meNames = eng.Items.Select(x => x.Name).ToList();
+            Ok("member/Me 含自己的 Private 过程", meNames.Contains("Main"), string.Join(",", meNames));
+            Ok("member/Me 含自己的 Public 过程", meNames.Contains("DoIt"), string.Join(",", meNames));
+            Ok("member/Me 不含过程局部", !meNames.Contains("c"), string.Join(",", meNames));
+
+            // ---- v150：注释里（' 和 Rem）一律不弹 ----
+            //   旧闸门只认 `'` 和字符串，`Rem msg |` 里照样弹全工程候选，
+            //   按 Tab 还能把这行注释改写掉。这里挑 `msg` 是因为它有真候选
+            //   （MsgBox），否则"不弹"可能只是"没匹配"的假象。
+            eng.Hide();
+            var beRem = new FakeBackend
+            {
+                Text = MemberSample,
+                Extra = new List<ModuleScope> { cls },
+                Snap = new Snapshot { Line = 7, Text = "Rem msg", Module = "Mod1", CaretCol = 8 },
+            };
+            eng.Backend = beRem;
+            Ok("gate/Rem 注释里不弹候选", !eng.Trigger(false, beRem.Snap));
+
+            eng.Hide();
+            var beTick = new FakeBackend
+            {
+                Text = MemberSample,
+                Extra = new List<ModuleScope> { cls },
+                Snap = new Snapshot { Line = 7, Text = "  ' msg", Module = "Mod1", CaretCol = 8 },
+            };
+            eng.Backend = beTick;
+            Ok("gate/撇号注释里不弹候选", !eng.Trigger(false, beTick.Snap));
+            // 反向对照：同样的词在正常代码位置上是要弹的（否则上面两条没意义）
+            eng.Hide();
+            var beCode = new FakeBackend
+            {
+                Text = MemberSample,
+                Extra = new List<ModuleScope> { cls },
+                Snap = new Snapshot { Line = 7, Text = "    msg", Module = "Mod1", CaretCol = 8 },
+            };
+            eng.Backend = beCode;
+            Ok("gate/同一行代码位置照常弹", eng.Trigger(false, beCode.Snap));
         }
 
         // ------------------------------------------------------------------
@@ -950,6 +1019,15 @@ End Sub
             Ok("gate/冒号后的 Rem", Rules.InCommentOnly("x = 1 : Rem 说明", 14));
             Ok("gate/语句中间的 Rem 不是注释", !Rules.InCommentOnly("x = Rem", 7));
 
+            // ---- 弹窗死区（v150）：`'` / `Rem` / 字符串三者都算 ----
+            //   两条老判据各管一半，引擎原来只用其中一条，于是 Rem 里照弹。
+            Ok("gate/死区：Rem 注释", Rules.InDeadZone("Rem 说明", 6));
+            Ok("gate/死区：撇号注释", Rules.InDeadZone("x = 1 ' hi", 11));
+            Ok("gate/死区：闭合字符串里", Rules.InDeadZone("s = \"ab\"", 8));
+            Ok("gate/死区：未闭合字符串里", Rules.InDeadZone("s = \"abc", 9));
+            Ok("gate/死区：普通代码不是", !Rules.InDeadZone("x = 1", 5));
+            Ok("gate/死区：Remember 不是", !Rules.InDeadZone("Remember = 1", 11));
+
             Eq("call-paren/foo( 认得出", Editing.EnclosingCallParen("foo(", 4), 3);
             Eq("call-paren/运算分组 -> -1", Editing.EnclosingCallParen("x = (a + ", 9), -1);
             Eq("call-paren/字符串里的括号不算", Editing.EnclosingCallParen("s = \"(\" & foo(", 14), 13);
@@ -1081,91 +1159,18 @@ End Sub
         }
 
         // ------------------------------------------------------------------
-        // 一键格式化缩进（Ctrl+Shift+L）：纯函数，逐行钉住"应有的行首空白"
+        // 续行判据：`Ctrl+↑` 跨续行找最后的 Dim 时要用它，判错会把光标停在
+        // 半条语句上（`Dim a, _` 那行）。v150 删掉一键格式化（Ctrl+Shift+L）后，
+        // 这是原 Indent.cs 里唯一还有调用方的成员，已并入 Editing。
         // ------------------------------------------------------------------
-        private static void TestIndent()
+        private static void TestContinuation()
         {
-            // ---- 基础：Sub / If / Else ----
-            Eq("fmt/Sub+If+Else", Fmt(
-                "Sub A()\nx = 1\nIf x Then\ny = 2\nElse\ny = 3\nEnd If\nEnd Sub"),
-                "Sub A()\n    x = 1\n    If x Then\n        y = 2\n    Else\n        y = 3\n    End If\nEnd Sub");
-
-            // ---- Select Case：Case 比 Select 深一级，块体再深一级 ----
-            Eq("fmt/Select Case", Fmt(
-                "Sub A()\nSelect Case x\nCase 1\ny = 1\nCase Else\ny = 2\nEnd Select\nEnd Sub"),
-                "Sub A()\n    Select Case x\n        Case 1\n            y = 1\n        Case Else\n            y = 2\n    End Select\nEnd Sub");
-
-            // ---- 多行块头（续行）：整条语句算一次，续行再深一级 ----
-            Eq("fmt/多行 If 头", Fmt(
-                "Sub A()\nIf a And _\nb Then\ny = 1\nEnd If\nEnd Sub"),
-                "Sub A()\n    If a And _\n        b Then\n        y = 1\n    End If\nEnd Sub");
-
-            // ---- with / for / next ----
-            Eq("fmt/With+For", Fmt(
-                "Sub A()\nWith rng\nFor i = 1 To 3\nx = i\nNext i\nEnd With\nEnd Sub"),
-                "Sub A()\n    With rng\n        For i = 1 To 3\n            x = i\n        Next i\n    End With\nEnd Sub");
-
-            // ---- Do / Loop ----
-            Eq("fmt/Do Loop", Fmt("Sub A()\nDo While x\nx = x - 1\nLoop\nEnd Sub"),
-                "Sub A()\n    Do While x\n        x = x - 1\n    Loop\nEnd Sub");
-
-            // ---- ElseIf ----
-            Eq("fmt/ElseIf", Fmt("Sub A()\nIf a Then\nx = 1\nElseIf b Then\nx = 2\nEnd If\nEnd Sub"),
-                "Sub A()\n    If a Then\n        x = 1\n    ElseIf b Then\n        x = 2\n    End If\nEnd Sub");
-
-            // ---- 普通语句的续行 ----
-            Eq("fmt/赋值续行", Fmt("Sub A()\nx = a + _\nb\nEnd Sub"),
-                "Sub A()\n    x = a + _\n        b\nEnd Sub");
-
-            // ---- 条件编译 ----
-            Eq("fmt/#If", Fmt("#If VBA7 Then\nPrivate Declare PtrSafe Sub s Lib \"k\" ()\n#Else\nPrivate Declare Sub s Lib \"k\" ()\n#End If"),
-                "#If VBA7 Then\n    Private Declare PtrSafe Sub s Lib \"k\" ()\n#Else\n    Private Declare Sub s Lib \"k\" ()\n#End If");
-
-            // ---- 空行 / 整行注释一个字符都不动 ----
-            Eq("fmt/注释与空行原样", Fmt("Sub A()\n  ' 顶格注释\n\nx = 1\nEnd Sub"),
-                "Sub A()\n  ' 顶格注释\n\n    x = 1\nEnd Sub");
-
-            // ---- 行标签顶格 ----
-            Eq("fmt/标签顶格", Fmt("Sub A()\nIf x Then\nRetry:\nx = 1\nEnd If\nEnd Sub"),
-                "Sub A()\n    If x Then\nRetry:\n        x = 1\n    End If\nEnd Sub");
-
-            // ---- Tab 工程：一级就是一个 Tab ----
-            Eq("fmt/Tab 单位", Fmt("Sub A()\nx = 1\nEnd Sub", "\t"), "Sub A()\n\tx = 1\nEnd Sub");
-
-            // ---- 已经对齐的：一行都不用改（Changed == 0）----
-            var good = Parser.SplitLines("Sub A()\n    x = 1\nEnd Sub");
-            Eq("fmt/已对齐不用改", Indent.Compute(good, "    ", 1, good.Length).Changed, 0);
-
-            // ---- 只格式化中间几行：层级仍按全文结构算 ----
-            var part = Parser.SplitLines("Sub A()\nIf x Then\ny = 1\nEnd If\nEnd Sub");
-            var pr = Indent.Compute(part, "    ", 3, 3);
-            Eq("fmt/只改指定行", pr.Changed, 1);
-            Eq("fmt/指定行的层级按全文算", pr.Ws[2], "        ");
-            Eq("fmt/范围外的行不碰", pr.Ws[1], null);
-
-            // ---- 结构没闭合也不崩：照常算，只是把"末层级"报出来 ----
-            var open = Parser.SplitLines("Sub A()\nIf x Then\ny = 1");
-            Eq("fmt/未闭合不崩", Indent.Compute(open, "    ", 1, open.Length).FinalDepth, 2);
-
-            // ---- 续行判据 ----
-            Ok("fmt/续行符", Indent.IsContinuation("x = 1 _"));
-            Ok("fmt/下划线标识符不算续行", !Indent.IsContinuation("x = foo_"));
-            Ok("fmt/短行不算续行", !Indent.IsContinuation("_"));
-        }
-
-        /// <summary>把 src 按 4 空格（或指定单位）格式化一遍，返回结果文本。</summary>
-        private static string Fmt(string src, string unit = "    ")
-        {
-            var lines = Parser.SplitLines(src);
-            var res = Indent.Compute(lines, unit, 1, lines.Length);
-            var outp = new List<string>(lines.Length);
-            for (int i = 0; i < lines.Length; i++)
-            {
-                if (res.Ws[i] == null) { outp.Add(lines[i]); continue; }
-                int n = Editing.LeadingWs(lines[i]).Length;
-                outp.Add(res.Ws[i] + lines[i].Substring(n));
-            }
-            return string.Join("\n", outp);
+            Ok("continuation/续行符", Editing.IsContinuation("x = 1 _"));
+            Ok("continuation/下划线标识符不算续行", !Editing.IsContinuation("x = foo_"));
+            Ok("continuation/短行不算续行", !Editing.IsContinuation("_"));
+            Ok("continuation/Tab 打头也算", Editing.IsContinuation("x = 1\t_"));
+            Ok("continuation/空串不崩",
+                !Editing.IsContinuation("") && !Editing.IsContinuation(null));
         }
 
         // ------------------------------------------------------------------

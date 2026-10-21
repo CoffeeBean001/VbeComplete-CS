@@ -28,7 +28,6 @@ namespace VbeComplete
         public int Span;           // 命中跨度（越小越好）
         public int[] Hits;         // 逐字符命中的下标（UI 高亮用；空 = 全都算命中）
         public int HitKind;        // 4 完全相等 / 3 前缀 / 2 词首缩略 / 1 连续块 / 0 分散
-        public int Run;            // 最长连续命中段
         public int ScopeKind;      // 4 本过程局部 / 3 本模块 / 2 别的模块 Public
         public int RecentRank;     // 最近使用次数
         public bool IsBuiltin;
@@ -64,9 +63,9 @@ namespace VbeComplete
         private int _top;
         public bool Visible { get; private set; }
 
-        // 池：全工程的声明（每个模块一份，按行数缓存）
-        private readonly Dictionary<string, ModuleScope> _scopeCache =
-            new Dictionary<string, ModuleScope>(StringComparer.OrdinalIgnoreCase);
+        // 池：全工程的声明。★按行数缓存在 VbeBackend 那一层（ProjectScopes），
+        //   这里只留当前这一轮的解析结果 —— 曾经这里还有一份 _scopeCache，
+        //   只写不读，纯属"以为在用"（v150 删）。
         private List<ModuleScope> _scopes = new List<ModuleScope>();
         private List<string> _poolNames = new List<string>();
         // 池里哪些名字【必须】通过作用域判定才能出现（= 声明出来的名字）。
@@ -76,7 +75,6 @@ namespace VbeComplete
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private HashSet<string> _typeNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private string _poolKey;
-        private string _poolModule;
 
         // 刚按 Tab 确认过的那个词。同一行、同一个词不再提示自己 ——
         // Python 版 v90 的那条口径（"按完 Tab 意味着本次录入完成，不要再匹配提示"）。
@@ -92,7 +90,6 @@ namespace VbeComplete
         public IReadOnlyList<Candidate> Items => _items;
         public int SelectedIndex => _sel;
         public int TopIndex => _top;
-        public bool WordComplete => _wordComplete;
 
         // ------------------------------------------------------------------
         // 池子
@@ -133,7 +130,6 @@ namespace VbeComplete
                     ? Rules.BlankToken(moduleText, blankLine, blankStart, blankToken)
                     : moduleText;
                 cur = Scope.Analyze(moduleName ?? "", parsed);
-                _scopeCache[moduleName ?? ""] = cur;
                 scopes.Add(cur);
                 seen.Add(moduleName ?? "");
             }
@@ -198,7 +194,6 @@ namespace VbeComplete
                 if (nameSeen.Add(n)) names.Add(n);
 
             _poolNames = names;
-            _poolModule = moduleName ?? "";
             _poolKey = key;
         }
 
@@ -256,7 +251,10 @@ namespace VbeComplete
             //   —— 含中文/全角的行不换算就会取到空词，连弹窗都不出现。
             int caret = Rules.CharColFromDisp(line, snap.CaretCol);
 
-            if (!manual && Rules.InCommentOrString(line, caret)) { Hide(); return false; }
+            // 注释（`'` 或 `Rem`）里 / 字符串里一律不弹 —— 判据见 Rules.InDeadZone。
+            // 原来这里只过 InCommentOrString，它不认 `Rem`，于是 `Rem 说明 |`
+            // 照样弹全工程候选、按 Tab 还能把这行注释改写掉。
+            if (!manual && Rules.InDeadZone(line, caret)) { Hide(); return false; }
             // ★声明位置一律不弹（含 `As` 之后、裸声明 `Public x` 之后）。
             //   见 Rules.InDeclarationPosition 的说明。
             if (!manual && !DeclPopup && Rules.InDeclarationPosition(line, caret)) { Hide(); return false; }
@@ -363,7 +361,6 @@ namespace VbeComplete
                     Span = fh.Span,
                     Hits = fh.Positions,
                     HitKind = fh.Kind,
-                    Run = fh.Run,
                     ScopeKind = rank,
                     IsBuiltin = isBuiltin,
                     RecentRank = Recent != null ? Recent.Rank(name) : 0,
@@ -424,9 +421,12 @@ namespace VbeComplete
             if (string.IsNullOrEmpty(root) || snap == null) return null;
             string curModule = snap.Module ?? "";
             string typeName;
+            // ★v150：`Me.` / `this.` 是"本模块自己"，成员含 Private；
+            //   别的 root 是"别人的类型"，只能看 Public。
+            bool self = string.Equals(root, "Me", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(root, "this", StringComparison.OrdinalIgnoreCase);
 
-            if (string.Equals(root, "Me", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(root, "this", StringComparison.OrdinalIgnoreCase))
+            if (self)
             {
                 typeName = curModule;
             }
@@ -446,11 +446,13 @@ namespace VbeComplete
             var outp = new List<string>();
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            // 1) 同名模块（类模块 / 窗体 / 标准模块）的 Public 成员
+            // 1) 同名模块（类模块 / 窗体 / 标准模块）的成员：
+            //    Me -> 含 Private；别的模块 -> 只取 Public。
             foreach (var ms in _scopes)
             {
                 if (!string.Equals(ms.Module, typeName, StringComparison.OrdinalIgnoreCase)) continue;
-                foreach (var kv in ms.Exported()) if (seen.Add(kv.Key)) outp.Add(kv.Key);
+                foreach (var kv in (self ? ms.Members() : ms.Exported()))
+                    if (seen.Add(kv.Key)) outp.Add(kv.Key);
                 return outp.Count > 0 ? outp : null;
             }
 

@@ -792,6 +792,29 @@ namespace VbeComplete
             Wheel?.Invoke(e.Delta > 0 ? -3 : 3);
         }
 
+        /// <summary>
+        /// 先定位、再显示。★顺序反了用户会看到窗口在屏幕左上角闪一下再跳过来：
+        /// <c>StartPosition = Manual</c> 且还没设过 Location 时，首次 Show 用的是
+        /// 系统给的默认位置（0,0 附近）。
+        /// </summary>
+        public void ShowAt(int x, int top, int bottom)
+        {
+            PlaceAt(x, top, bottom);       // 内部会碰 Handle，句柄在这里建出来
+            if (!Visible) Show();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                // 字体是本类自己 new 的（BuildFont / new Font(_font, Bold)）——
+                // 不释放就每个实例漏一个 HFONT。同一实例被 _fontBold 引用时只释放一次。
+                if (!ReferenceEquals(_fontBold, _font)) _fontBold?.Dispose();
+                _font?.Dispose();
+            }
+            base.Dispose(disposing);
+        }
+
         protected override void WndProc(ref System.Windows.Forms.Message m)
         {
             const int WM_MOUSEACTIVATE = 0x0021;

@@ -53,12 +53,6 @@ namespace VbeComplete
                 { "while",    "Wend" },
             };
 
-        /// <summary>
-        /// 块名 -> 收尾文本。格式化（Indent.cs）要反查"这一行是哪个块的收尾"，
-        /// 所以必须能读；但外面不许改（拿着去 Add 一个就会影响回车补收尾）。
-        /// </summary>
-        public static IReadOnlyDictionary<string, string> CloserTable => Closers;
-
         // 收符号表：开符号 -> 收符号。半角与全角（中文标点输入法）都要能配对。
         private static readonly Dictionary<char, char> PairClose =
             new Dictionary<char, char>
@@ -752,11 +746,22 @@ namespace VbeComplete
                 if (!ReDimDeclHead.IsMatch(code)) continue;
 
                 int last = i;
-                while (last < end && Indent.IsContinuation(Parser.CodeOnly(lines[last - 1]).Trim()))
+                while (last < end && IsContinuation(Parser.CodeOnly(lines[last - 1]).Trim()))
                     last++;
                 return last >= end ? 0 : last;            // 续行拖到收尾行：不猜
             }
             return 0;
+        }
+
+        /// <summary>
+        /// 行尾是续行符 ` _`（下划线本身可以是标识符的一部分，所以要求前面是空白）。
+        /// </summary>
+        public static bool IsContinuation(string code)
+        {
+            if (string.IsNullOrEmpty(code) || code.Length < 2) return false;
+            if (code[code.Length - 1] != '_') return false;
+            char prev = code[code.Length - 2];
+            return prev == ' ' || prev == '\t';
         }
 
         /// <summary>

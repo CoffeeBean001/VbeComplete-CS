@@ -89,6 +89,12 @@ namespace VbeComplete
                     return false;
                 }
                 _db = db;
+                // ★用户的词库 / 片段库是**允许用 DB Browser 等工具同时打开**的
+                //   （文件头就写着"用户会用 DB Browser 去编辑词库"）。没有 busy
+                //   超时的话，对端占着写锁时我们这一下会立刻拿到 SQLITE_BUSY，
+                //   表现为"保存片段没反应"。2 秒足够对端写完一行。
+                Exec("PRAGMA busy_timeout = 2000");
+                ResetError();
                 return true;
             }
             catch (Exception e)

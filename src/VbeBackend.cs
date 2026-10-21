@@ -84,6 +84,35 @@ namespace VbeComplete
             _modAt = DateTime.MinValue;
         }
 
+        /// <summary>
+        /// 取"当前代码窗 + 它的 CodeModule"，拿不到返回 false。
+        /// <para>★为什么要有这一处：VBE 关着 / 切到没有代码窗的视图时 `ActiveCodePane`
+        /// 是 null，直接点 `.CodeModule` 会抛 "runtime binding on a null reference"。
+        /// 那**不是故障**，不该在日志里制造假警报，更不该让每个方法各判一遍
+        /// （以前 17 处各写一遍，其中 6 处忘了判）。</para>
+        /// </summary>
+        private bool TryCodePane(out dynamic pane, out dynamic module)
+        {
+            pane = null;
+            module = null;
+            try
+            {
+                dynamic vbe = ComCtx.Vbe();
+                if (ReferenceEquals(vbe, null)) return false;
+                pane = vbe.ActiveCodePane;
+                if (ReferenceEquals(pane, null)) return false;
+                module = pane.CodeModule;
+                return !ReferenceEquals(module, null);
+            }
+            catch (Exception e)
+            {
+                Fail(e);
+                pane = null;
+                module = null;
+                return false;
+            }
+        }
+
         // ------------------------------------------------------------------
         // 读
         // ------------------------------------------------------------------
@@ -419,11 +448,9 @@ namespace VbeComplete
 
         public bool ReplaceLineRaw(int lineNo, string text)
         {
+            if (!TryCodePane(out _, out dynamic cm)) return false;
             try
             {
-                dynamic vbe = ComCtx.Vbe();
-                if (ReferenceEquals(vbe, null)) return false;
-                dynamic cm = vbe.ActiveCodePane.CodeModule;
                 cm.ReplaceLine(lineNo, text);
                 OnWeWrote();
                 return true;
@@ -433,11 +460,9 @@ namespace VbeComplete
 
         public bool DeleteLines(int from, int count)
         {
+            if (!TryCodePane(out _, out dynamic cm)) return false;
             try
             {
-                dynamic vbe = ComCtx.Vbe();
-                if (ReferenceEquals(vbe, null)) return false;
-                dynamic cm = vbe.ActiveCodePane.CodeModule;
                 cm.DeleteLines(from, count);
                 OnWeWrote();
                 return true;
@@ -447,11 +472,9 @@ namespace VbeComplete
 
         public bool InsertLines(int at, string text)
         {
+            if (!TryCodePane(out _, out dynamic cm)) return false;
             try
             {
-                dynamic vbe = ComCtx.Vbe();
-                if (ReferenceEquals(vbe, null)) return false;
-                dynamic cm = vbe.ActiveCodePane.CodeModule;
                 cm.InsertLines(at, text);
                 OnWeWrote();
                 return true;
@@ -461,28 +484,17 @@ namespace VbeComplete
 
         public int LineCount()
         {
-            try
-            {
-                dynamic vbe = ComCtx.Vbe();
-                if (ReferenceEquals(vbe, null)) return -1;
-                // ★v131c：VBE 关着的时候 `ActiveCodePane` 是 null，直接 .CodeModule
-                //   会抛 "runtime binding on a null reference" —— 那是"现在没有代码窗"，
-                //   不是故障，安静返回 -1 就行，别在日志里制造假警报。
-                object cp = vbe.ActiveCodePane;
-                if (ReferenceEquals(cp, null)) return -1;
-                return Convert.ToInt32(((dynamic)cp).CodeModule.CountOfLines);
-            }
+            // ★v131c：VBE 关着的时候 `ActiveCodePane` 是 null —— 那是"现在没有代码窗"，
+            //   不是故障，安静返回 -1 就行（判空统一在 TryCodePane 里）。
+            if (!TryCodePane(out _, out dynamic cm)) return -1;
+            try { return Convert.ToInt32(cm.CountOfLines); }
             catch (Exception e) { Fail(e); return -1; }
         }
 
         public string LineAt(int lineNo)
         {
-            try
-            {
-                dynamic vbe = ComCtx.Vbe();
-                if (ReferenceEquals(vbe, null)) return null;
-                return Convert.ToString(vbe.ActiveCodePane.CodeModule.Lines(lineNo, 1)) ?? "";
-            }
+            if (!TryCodePane(out _, out dynamic cm)) return null;
+            try { return Convert.ToString(cm.Lines(lineNo, 1)) ?? ""; }
             catch (Exception e) { Fail(e); return null; }
         }
 
@@ -494,14 +506,8 @@ namespace VbeComplete
         public string LinesBlock(int from, int count)
         {
             if (from < 1 || count < 1) return null;
-            try
-            {
-                dynamic vbe = ComCtx.Vbe();
-                if (ReferenceEquals(vbe, null)) return null;
-                object cp = vbe.ActiveCodePane;
-                if (ReferenceEquals(cp, null)) return null;
-                return Convert.ToString(((dynamic)cp).CodeModule.Lines(from, count));
-            }
+            if (!TryCodePane(out _, out dynamic cm)) return null;
+            try { return Convert.ToString(cm.Lines(from, count)); }
             catch (Exception e) { Fail(e); return null; }
         }
 
@@ -1032,10 +1038,7 @@ namespace VbeComplete
                 }
                 if (col < 1) col = 1;
 
-                dynamic vbe = ComCtx.Vbe();
-                if (ReferenceEquals(vbe, null)) return false;
-                dynamic cp = vbe.ActiveCodePane;
-                if (ReferenceEquals(cp, null)) return false;
+                if (!TryCodePane(out dynamic cp, out _)) return false;
                 cp.SetSelection(target, col, target, col);
                 return true;
             }
@@ -1163,12 +1166,9 @@ namespace VbeComplete
         /// <summary>把光标放到某行的行尾（列交给 VBE 自己钳）。</summary>
         public bool CaretToLineEnd(int lineNo)
         {
+            if (!TryCodePane(out dynamic cp, out dynamic cm)) return false;
             try
             {
-                dynamic vbe = ComCtx.Vbe();
-                if (ReferenceEquals(vbe, null)) return false;
-                dynamic cp = vbe.ActiveCodePane;
-                dynamic cm = cp.CodeModule;
                 int count = Convert.ToInt32(cm.CountOfLines);
                 if (lineNo < 1 || lineNo > count) return false;
                 string text = Convert.ToString(cm.Lines(lineNo, 1)) ?? "";
@@ -1188,12 +1188,10 @@ namespace VbeComplete
         /// </summary>
         public bool SetCaret(int lineNo, int charCol)
         {
+            if (!TryCodePane(out dynamic cp, out dynamic cm)) return false;
             try
             {
-                dynamic vbe = ComCtx.Vbe();
-                if (ReferenceEquals(vbe, null)) return false;
-                dynamic cp = vbe.ActiveCodePane;
-                string text = Convert.ToString(cp.CodeModule.Lines(lineNo, 1)) ?? "";
+                string text = Convert.ToString(cm.Lines(lineNo, 1)) ?? "";
                 int col = Rules.CaretColForCharCol(text, charCol, 4);
                 cp.SetSelection(lineNo, 1, lineNo, 1);
                 cp.SetSelection(lineNo, col, lineNo, col);
@@ -1210,11 +1208,8 @@ namespace VbeComplete
         {
             try
             {
-                dynamic vbe = ComCtx.Vbe();
-                if (ReferenceEquals(vbe, null)) return false;
-                object cp = vbe.ActiveCodePane;
-                if (ReferenceEquals(cp, null)) return false;
-                ((dynamic)cp).SetSelection(sl, sc, el, ec);
+                if (!TryCodePane(out dynamic cp, out _)) return false;
+                cp.SetSelection(sl, sc, el, ec);
                 InvalidateSnapshot();
                 return true;
             }
@@ -1227,11 +1222,8 @@ namespace VbeComplete
             sl = sc = el = ec = 0;
             try
             {
-                dynamic vbe = ComCtx.Vbe();
-                if (ReferenceEquals(vbe, null)) return false;
-                object cp = vbe.ActiveCodePane;
-                if (ReferenceEquals(cp, null)) return false;
-                return ComCall.CallFourOut(cp, "GetSelection", out sl, out sc, out el, out ec);
+                if (!TryCodePane(out dynamic cp, out _)) return false;
+                return ComCall.CallFourOut((object)cp, "GetSelection", out sl, out sc, out el, out ec);
             }
             catch (Exception e) { Fail(e); return false; }
         }
@@ -1240,12 +1232,9 @@ namespace VbeComplete
         {
             try
             {
-                dynamic vbe = ComCtx.Vbe();
-                if (ReferenceEquals(vbe, null)) return "";
-                dynamic cp = vbe.ActiveCodePane;
+                if (!TryCodePane(out dynamic cp, out dynamic cm)) return "";
                 int sl, sc, el, ec;
-                if (!ComCall.CallFourOut(cp, "GetSelection", out sl, out sc, out el, out ec)) return "";
-                dynamic cm = cp.CodeModule;
+                if (!ComCall.CallFourOut((object)cp, "GetSelection", out sl, out sc, out el, out ec)) return "";
                 if (el < sl) return "";
                 if (el == sl && ec <= sc) return "";
                 return Convert.ToString(cm.Lines(sl, el - sl + 1)) ?? "";

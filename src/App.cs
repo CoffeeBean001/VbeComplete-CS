@@ -46,6 +46,7 @@ namespace VbeComplete
         private long _lastJumpLog;                // "跳行不弹"日志限速（每 2 秒最多一条）
         private volatile bool _running = true;
         private volatile Snapshot _hookSnap;      // 最近一次轮询拿到的快照（钩子线程只读）
+        private long _popupBeat;                  // 候选窗心跳（UI 线程写，钩子线程只读）
         private volatile int _pendingKeys;        // 按了"可能写字"的键、文档却没变（输入法组字）
         private long _pendingAt;                  // 上面那次计数的时刻（超时就当 0）
         private long _hookSnapTicks;
@@ -89,6 +90,7 @@ namespace VbeComplete
         private Snapshot _lastSnap;
         private string _lastModName = "";
         private DateTime _lastPollAt = DateTime.MinValue;
+        private int _shutdownDone;                // Shutdown 的幂等标志（Interlocked）
 
         // ---- 代码片段 ----
         private SnippetStore _snippetStore;
@@ -104,7 +106,6 @@ namespace VbeComplete
         private readonly bool NoAutoClose = Settings.Flag("NO_AUTOCLOSE", false);
         private readonly bool NoBranchAlign = Settings.Flag("NO_BRANCH_ALIGN", false);
         private readonly bool NoShiftNav = Settings.Flag("NO_SHIFT_NAV", false);
-        private readonly bool NoFormatIndent = Settings.Flag("NO_FORMAT_INDENT", false);
         private readonly bool NoAutoPair = Settings.Flag("NO_AUTOPAIR", false);
         private readonly bool NoBsDelLine = Settings.Flag("NO_BS_DELLINE", false);
         private readonly bool NoBsDelPair = Settings.Flag("NO_BS_DELPAIR", false);
@@ -140,6 +141,7 @@ namespace VbeComplete
                 //   不发生（且 Engine.Hide 的 `if (!Visible) return` 让 OnHide
                 //   再也纠正不了它）。
                 _popupVisible = _popup.Visible;
+                _popupBeat = Environment.TickCount64;
                 if (!_popupVisible) _eng.Hide();
             };
             _eng.OnHide = () =>
@@ -433,7 +435,7 @@ namespace VbeComplete
             // ==============================================================
             // 1. 候选窗可见时的导航键
             // ==============================================================
-            if (_popupVisible && !ctrl && !alt)
+            if (PopupAlive && !ctrl && !alt)
             {
                 if (vk == Native.VK_DOWN && !shift)
                 {
@@ -564,20 +566,11 @@ namespace VbeComplete
             }
             // ⚠️ Shift+D / Shift+K 绝不能接管 —— 那是输入大写字母
             if (ctrl && !shift && !alt && vk == 'D' && !NoDupLine)
-            {
-                Post(() => { if (!Commands.DuplicateLine(_be)) Native.SendVk('D', true, false); });
-                return Swallow(vk);
-            }
+                return SwallowAndRun('D', true, false, () => Commands.DuplicateLine(_be));
             if (ctrl && !shift && !alt && vk == 'K' && !NoDelLine)
-            {
-                Post(() => { if (!Commands.DeleteLine(_be)) Native.SendVk('K', true, false); });
-                return Swallow(vk);
-            }
+                return SwallowAndRun('K', true, false, () => Commands.DeleteLine(_be));
             if (ctrl && shift && !alt && vk == Native.VK_RETURN && !NoInsertAbove)
-            {
-                Post(() => { if (!Commands.InsertLineAbove(_be)) Native.SendVk(Native.VK_RETURN, true, true); });
-                return Swallow(vk);
-            }
+                return SwallowAndRun(Native.VK_RETURN, true, true, () => Commands.InsertLineAbove(_be));
             // ==============================================================
             // 4c. Ctrl+↑ / Ctrl+↓（**不带 Shift**）：过程内的两个端点
             //     ↑ 落到本过程【最后一个 Dim 行】的行尾；
@@ -590,25 +583,10 @@ namespace VbeComplete
             if (ctrl && !shift && !alt && (vk == Native.VK_UP || vk == Native.VK_DOWN) && !NoCtrlNav)
             {
                 int dir = vk == Native.VK_UP ? -1 : 1;
-                Post(() =>
-                {
-                    // 判据不成立（光标在声明区 / 过程里没有 Dim / 过程体为空）就把键
-                    // 还回去。SendVk 在"Ctrl 正被物理按住"时不合成 Ctrl，所以实际
-                    // 发出的是裸 ↑/↓。
-                    if (!Commands.CtrlProcJump(_be, dir)) Native.SendVk(vk, true, false);
-                });
-                return Swallow(vk);
-            }
-
-            // ⚠️ Ctrl+Shift+L 排在 Ctrl+D / Ctrl+K 之后：那两条都要求 !shift，互不干扰
-            if (ctrl && shift && !alt && vk == 'L' && !NoFormatIndent)
-            {
-                Post(() =>
-                {
-                    _eng.Hide();
-                    if (!Commands.FormatIndent(_be)) Native.SendVk('L', true, true);
-                });
-                return Swallow(vk);
+                // 判据不成立（光标在声明区 / 过程里没有 Dim / 过程体为空）就把键
+                // 还回去。SendVk 在"Ctrl 正被物理按住"时不合成 Ctrl，所以实际
+                // 发出的是裸 ↑/↓。
+                return SwallowAndRun(vk, true, false, () => Commands.CtrlProcJump(_be, dir));
             }
 
             // ==============================================================
@@ -616,15 +594,8 @@ namespace VbeComplete
             //    ⚠️ 必须排在"回车自动缩进"之前，两条判据互斥（这条要求 Shift）
             // ==============================================================
             if (shift && !ctrl && !alt && vk == Native.VK_RETURN)
-            {
-                Post(() =>
-                {
-                    _eng.Hide();
-                    if (!_be.NewLineBelow(false, !NoAutoClose, !NoBranchAlign))
-                        Native.SendVk(Native.VK_RETURN, false, true);
-                });
-                return Swallow(vk);
-            }
+                return SwallowAndRun(Native.VK_RETURN, false, true,
+                    () => _be.NewLineBelow(false, !NoAutoClose, !NoBranchAlign));
 
             // ==============================================================
             // 6. 回车自动缩进（缩进 / 补收尾 / 分支对齐）
@@ -637,15 +608,8 @@ namespace VbeComplete
                 int caretDisp;
                 bool fresh = FreshHookSnap(out lineText, out caretDisp);
                 if (fresh && Editing.EnterIndentWanted(lineText, caretDisp))
-                {
-                    Post(() =>
-                    {
-                        _eng.Hide();
-                        if (!_be.NewLineBelow(true, !NoAutoClose, !NoBranchAlign))
-                            Native.SendVk(Native.VK_RETURN);
-                    });
-                    return Swallow(vk);
-                }
+                    return SwallowAndRun(Native.VK_RETURN, false, false,
+                        () => _be.NewLineBelow(true, !NoAutoClose, !NoBranchAlign));
 
                 // ★v142：快照"落后一两格"时也要接管 —— 这是用户报的那个 bug 的真因。
                 //   用户敲完 `For i = 1 To 3` 的最后一个字符【立刻】回车：那一瞬间
@@ -662,15 +626,8 @@ namespace VbeComplete
                 if (!Native.ImeComposing(Native.FocusedVbeWindow()) &&
                     Editing.LooksLikeBlockHeaderPrefix(lineText) &&
                     caretDisp + 16 >= Rules.DispCol(lineText, (lineText ?? "").Length))
-                {
-                    Post(() =>
-                    {
-                        _eng.Hide();
-                        if (!_be.NewLineBelow(true, !NoAutoClose, !NoBranchAlign))
-                            Native.SendVk(Native.VK_RETURN);
-                    });
-                    return Swallow(vk);
-                }
+                    return SwallowAndRun(Native.VK_RETURN, false, false,
+                        () => _be.NewLineBelow(true, !NoAutoClose, !NoBranchAlign));
             }
 
             // ==============================================================
@@ -688,23 +645,9 @@ namespace VbeComplete
                     bool pair = !NoBsDelPair && !blankLine &&
                                 Editing.PairDeleteSpan(lineText, caretDisp, out left, out right);
                     if (blankLine)
-                    {
-                        Post(() =>
-                        {
-                            _eng.Hide();
-                            if (!_be.DeleteBlankLineHere()) Native.SendVk(Native.VK_BACK);
-                        });
-                        return Swallow(vk);
-                    }
+                        return SwallowAndRun(Native.VK_BACK, false, false, () => _be.DeleteBlankLineHere());
                     if (pair)
-                    {
-                        Post(() =>
-                        {
-                            _eng.Hide();
-                            if (!_be.DeletePairHere()) Native.SendVk(Native.VK_BACK);
-                        });
-                        return Swallow(vk);
-                    }
+                        return SwallowAndRun(Native.VK_BACK, false, false, () => _be.DeletePairHere());
                 }
             }
 
@@ -755,6 +698,28 @@ namespace VbeComplete
                 _swallowed[vk] = now;
             }
             return (IntPtr)1;
+        }
+
+        /// <summary>
+        /// "吞掉这个键 → 去 UI 线程干事 → 干不成再把键原样还回去"。
+        /// <para>★全项目同一条铁律的**唯一**落地点。以前每个分支各写一遍
+        /// <c>Post(() =&gt; { if (!X()) SendVk(...); }); return Swallow(vk);</c>，
+        /// 写漏一次就是"吞了但什么都没发生"——用户看到的是"快捷键全没了"。</para>
+        /// </summary>
+        /// <param name="vk">用户按的那个键（失败时原样重放）。</param>
+        /// <param name="restoreCtrl">重放时是否带上 Ctrl（用户手指还按着，SendVk 不会合成）。</param>
+        /// <param name="restoreShift">重放时是否带上 Shift。</param>
+        /// <param name="work">真正要做的动作；返回 false = 没做成。</param>
+        /// <param name="hidePopup">做动作前先收起候选窗（改文本的动作都要）。</param>
+        private IntPtr SwallowAndRun(int vk, bool restoreCtrl, bool restoreShift,
+            Func<bool> work, bool hidePopup = true)
+        {
+            Post(() =>
+            {
+                if (hidePopup) _eng.Hide();
+                if (!work()) Native.SendVk(vk, restoreCtrl, restoreShift);
+            });
+            return Swallow(vk);
         }
 
         /// <summary>
@@ -843,9 +808,14 @@ namespace VbeComplete
             }
         }
 
-        /// <summary>是不是"我们该管的"组合键（用于诊断日志，避免每天打的字都进日志）。</summary>
+        /// <summary>
+        /// 是不是"我们该管的"组合键（用于诊断日志，避免每天打的字都进日志）。
+        /// 列表只跟钩子里**真吃键**的分支对齐：Ctrl+D / Ctrl+K / Ctrl+Q /
+        /// Ctrl+/ 一族 / 回车 / 上下键 / 空格。（Ctrl+Shift+L 与 Ctrl+Shift+↑↓
+        /// 分别于 v150、v149 删除，这里也一并摘掉了。）
+        /// </summary>
         private static bool IsWatchedHotkey(int vk) =>
-            vk == 'D' || vk == 'K' || vk == 'L' || vk == 'Q' ||
+            vk == 'D' || vk == 'K' || vk == 'Q' ||
             Native.IsSlashKey(vk) ||
             vk == Native.VK_RETURN || vk == Native.VK_UP || vk == Native.VK_DOWN ||
             vk == Native.VK_SPACE;
@@ -859,6 +829,16 @@ namespace VbeComplete
         /// </summary>
         private static bool IsHotkeyDiagVk(int vk) =>
             IsWatchedHotkey(vk) || (vk >= 0xBA && vk <= 0xDF);
+
+        /// <summary>
+        /// 候选窗"现在真的还能用"吗？
+        /// <para>★为什么要心跳而不是只看 <see cref="_popupVisible"/>：UI 线程一旦卡住
+        /// （COM 阻塞、Excel 弹模态框、调试断点），轮询就停了，而这个标志还是 true。
+        /// 那一整段时间里 ↑/↓/PgUp/PgDn/Esc/Tab 全被我们吞掉，屏幕上毫无反应 ——
+        /// 用户的感觉是"键盘死了"。3 秒没有心跳就当窗子已经不在，把键还给系统。</para>
+        /// </summary>
+        private bool PopupAlive =>
+            _popupVisible && Environment.TickCount64 - _popupBeat < 3000;
 
         private void Post(Action a)
         {
@@ -906,6 +886,8 @@ namespace VbeComplete
             {
                 bool focused = InVbeCodePane();
                 _codePaneFocused = focused;
+                // 心跳：只要 UI 线程还活着、轮询还在跑，候选窗的"可用性"就续期一次
+                if (_popupVisible) _popupBeat = Environment.TickCount64;
 
                 if (!focused)
                 {
@@ -1046,18 +1028,24 @@ namespace VbeComplete
                 _eng.Hide();
                 return;
             }
-            if (!_popup.Visible) _popup.Show();
-            _popup.PlaceAt(x, top, bottom);
+            // ★ShowAt 是"先定位、再显示"：分开写（Show 之后才 PlaceAt）会让窗口
+            //   在屏幕左上角闪一下再跳过来。
+            _popup.ShowAt(x, top, bottom);
         }
 
         // ------------------------------------------------------------------
         // 退出
         // ------------------------------------------------------------------
 
+        /// <summary>
+        /// 退出。★幂等：托盘"退出"和 `Application.Run` 返回后都会调一次，
+        /// 第二次再对已 Dispose 的窗子 Hide/Dispose 只会制造 ObjectDisposedException。
+        /// </summary>
         public void Shutdown()
         {
+            if (Interlocked.Exchange(ref _shutdownDone, 1) != 0) return;
             _running = false;
-            try { _timer?.Stop(); } catch { }
+            try { _timer?.Stop(); _timer?.Dispose(); _timer = null; } catch { }
             try { _recent.Flush(); } catch { }
             try
             {
@@ -1076,6 +1064,7 @@ namespace VbeComplete
             }
             catch { }
             Log.Write("已退出");
+            Log.Flush();          // 队列里最后几行别丢（后台线程是后台线程，进程一退就没了）
             ExitThread();
         }
     }

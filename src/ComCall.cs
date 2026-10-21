@@ -70,10 +70,11 @@ namespace VbeComplete
             IntPtr pDisp = IntPtr.Zero;
             IntPtr args = IntPtr.Zero;
             IntPtr ints = IntPtr.Zero;
+            IDispatchRaw disp = null;
             try
             {
                 pDisp = Marshal.GetIDispatchForObject(target);
-                var disp = (IDispatchRaw)Marshal.GetObjectForIUnknown(pDisp);
+                disp = (IDispatchRaw)Marshal.GetObjectForIUnknown(pDisp);
                 if (disp == null) return false;
 
                 int[] ids = new int[1];
@@ -122,6 +123,11 @@ namespace VbeComplete
             }
             finally
             {
+                // ★`GetObjectForIUnknown` 又 AddRef 了一次，必须配对释放。
+                //   这条路径在打字时每 50ms 走一次（每次读选区都调 GetSelection），
+                //   漏掉的话 RCW 的引用计数只增不减 —— 宿主（Excel）永远关不掉，
+                //   进程也会一直挂着。以前只 Release 了原始指针，漏的就是这一处。
+                if (disp != null) { try { Marshal.ReleaseComObject(disp); } catch { } }
                 if (ints != IntPtr.Zero) Marshal.FreeHGlobal(ints);
                 if (args != IntPtr.Zero) Marshal.FreeHGlobal(args);
                 if (pDisp != IntPtr.Zero) Marshal.Release(pDisp);

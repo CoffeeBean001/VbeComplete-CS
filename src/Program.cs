@@ -52,66 +52,42 @@ namespace VbeComplete
             // 这些输出同时会落盘成 UTF-8 日志，能对上才不会看错。
             try { Console.OutputEncoding = Encoding.UTF8; } catch { }
 
-            if (args.Length > 0 && args[0] == "--selftest")
+            // ★只接受**一个**开关。以前 `--selftest --enterprobe` 会静默只跑第一个，
+            //   `-enterprobe`（单横线）会直接当成"正常启动"—— 两种都会让人以为
+            //   "检查跑过了"，其实什么都没跑。多余 / 认不出的参数一律报错退出。
+            if (args.Length > 1)
             {
-                return SelfTest.Run();
+                Console.WriteLine("最多只接受一个开关，这次收到 " + args.Length + " 个：" +
+                    string.Join(" ", args));
+                return 2;
             }
-            if (args.Length > 0 && args[0] == "--probe")
+
+            if (args.Length == 1)
             {
-                return Probe();
+                switch (args[0])
+                {
+                    case "--selftest":    return SelfTest.Run();
+                    case "--probe":       return Probe();
+                    case "--yieldprobe":  return YieldProbe();
+                    case "--writetest":   return WriteTest();
+                    case "--uitest":      return UiTest();
+                    case "--carettest":   return CaretTest();
+                    case "--hktest":      return HkTest();
+                    case "--enterprobe":  return EnterProbe();
+                    case "--snipetest":   return SnippetTest();
+                    case "--dbtest":      return DbTest();
+                    case "--dump":        return DumpModule();
+                    case "--paretest":    return ParenTest();
+                    case "--enginetest":  return EngineTest();
+                    case "--startuptest": return StartupTest();
+                }
             }
-            // 只问"VBE 自带列表现在可见吗" —— 一次 ~2ms，不碰 COM，方便连测采样
-            if (args.Length > 0 && args[0] == "--yieldprobe")
-            {
-                return YieldProbe();
-            }
-            if (args.Length > 0 && args[0] == "--writetest")
-            {
-                return WriteTest();
-            }
-            if (args.Length > 0 && args[0] == "--uitest")
-            {
-                return UiTest();
-            }
-            if (args.Length > 0 && args[0] == "--carettest")
-            {
-                return CaretTest();
-            }
-            if (args.Length > 0 && args[0] == "--hktest")
-            {
-                return HkTest();
-            }
-            if (args.Length > 0 && args[0] == "--enterprobe")
-            {
-                return EnterProbe();
-            }
-            if (args.Length > 0 && args[0] == "--snipetest")
-            {
-                return SnippetTest();
-            }
-            if (args.Length > 0 && args[0] == "--dbtest")
-            {
-                return DbTest();
-            }
-            if (args.Length > 0 && args[0] == "--dump")
-            {
-                return DumpModule();
-            }
-            if (args.Length > 0 && args[0] == "--paretest")
-            {
-                return ParenTest();
-            }
-            if (args.Length > 0 && args[0] == "--enginetest")
-            {
-                return EngineTest();
-            }
-            if (args.Length > 0 && args[0] == "--startuptest")
-            {
-                return StartupTest();
-            }
-            // ★认不出的 `--xxx` 不能顺手当成"正常启动"：那会静默起一个托盘实例，
+
+            // ★认不出的参数不能顺手当成"正常启动"：那会静默起一个托盘实例，
             //   让人以为"检查跑过了"（其实什么都没跑）。打一行用法就退出。
-            if (args.Length > 0 && args[0].StartsWith("--", StringComparison.Ordinal))
+            //   单横线（`-enterprobe`）也算认不出 —— 以前的判据只认 `--`，于是
+            //   敲错一个横线就变成"悄悄启动一个常驻进程"。
+            if (args.Length > 0)
             {
                 const string usage =
                     "用法：VbeComplete.exe [开关]\r\n" +
@@ -121,6 +97,7 @@ namespace VbeComplete
                     "  --snipetest   片段库读写检查\r\n" +
                     "  --uitest      候选窗 / 片段窗离屏渲染出 PNG\r\n" +
                     "  --probe       打印当前 VBE 状态（只读）\r\n" +
+                    "  --yieldprobe  只采样一次「VBE 自带列表是否可见」（只读）\r\n" +
                     "  --dump        把当前代码窗全文写到 moddump.txt（只读）\r\n" +
                     "  --enginetest  用真机模块文本跑候选判定（只读）\r\n" +
                     "  --paretest    真机验证函数补括号（改完即还原）\r\n" +
@@ -157,8 +134,9 @@ namespace VbeComplete
             var app = new App();
             app.Start();
 
-            // Ctrl+C / 关控制台 时收干净
-            Console.CancelKeyPress += (s, e) => { e.Cancel = true; app.Shutdown(); };
+            // Ctrl+C / 关控制台 时收干净。★必须回 UI 线程：Shutdown 要释放 NotifyIcon
+            // 和窗口，从控制台线程直接 Dispose 是跨线程操作，托盘图标会残留。
+            Console.CancelKeyPress += (s, e) => { e.Cancel = true; app.RunOnUi(app.Shutdown); };
 
             Application.Run(app);
             app.Shutdown();
@@ -328,8 +306,9 @@ namespace VbeComplete
             {
                 try
                 {
-                    using (var ic = IconAssets.Get(s))
+                    // ★共享实例，不能 using —— 否则跑完检查就把缓存里的图标 Dispose 了
                     {
+                        var ic = IconAssets.Get(s);
                         // Icon.Width 报的是"选中那一帧"的尺寸，可能不等于请求值。
                         // ★唯一已知的例外：256 那一帧是 PNG 压缩的（ICO 规范允许），
                         //   .NET 的 Icon(stream, size) 挑不到它，会退回 128 —— 我们
@@ -346,18 +325,19 @@ namespace VbeComplete
 
             // 托盘那一份必须不是"通用空白图标"（和 SystemIcons.Application 尺寸相同但内容不同，
             // 这里只做存在性判断；真正的观感看 src/icon-preview.png）
-            using (var ti = IconAssets.Tray())
-                check("托盘图标可用", ti != null && ti.Width >= 16, "w=" + (ti == null ? -1 : ti.Width));
+            var ti = IconAssets.Tray();     // 共享实例，不 Dispose
+            check("托盘图标可用", ti != null && ti.Width >= 16, "w=" + (ti == null ? -1 : ti.Width));
             check("exe 路径可取", !string.IsNullOrEmpty(AutoStart.ExePath()), AutoStart.ExePath());
 
             // 把真正会挂到托盘上的那两个尺寸存成图片，肉眼确认"是不是那张蓝色 V"
             // （只看 log 里"加载成功"是不够的 —— 加载成功也可能是退回系统图标）
             try
             {
-                using (var i32 = IconAssets.Get(32))
+                // ★Icon 是共享实例（不 Dispose）；只有 ToBitmap 出来的 Bitmap 归我们。
+                var i32 = IconAssets.Get(32);
                 using (var b32 = i32.ToBitmap())
+                using (var canvas = new Bitmap(64 * 4 + 24, 80))
                 {
-                    var canvas = new Bitmap(64 * 4 + 24, 80);
                     using (var g = Graphics.FromImage(canvas))
                     {
                         g.Clear(Color.FromArgb(32, 34, 38));
@@ -365,12 +345,12 @@ namespace VbeComplete
                         g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
                         g.DrawImage(b32, new Rectangle(8, 8, 32, 32));
                         g.DrawImage(b32, new Rectangle(48, 8, 32, 32));
-                        using (var i16 = IconAssets.Get(16))
-                            g.DrawImage(i16.ToBitmap(), new Rectangle(88, 16, 16, 16));
+                        var i16 = IconAssets.Get(16);
+                        using (var b16 = i16.ToBitmap())
+                            g.DrawImage(b16, new Rectangle(88, 16, 16, 16));
                     }
                     canvas.Save(Path.Combine(Settings.Home, "icon-tray.png"),
                         System.Drawing.Imaging.ImageFormat.Png);
-                    canvas.Dispose();
                 }
             }
             catch (Exception e) { sb.AppendLine("  存 icon-tray.png 失败：" + e.Message); }
@@ -812,32 +792,9 @@ namespace VbeComplete
                     dropFrom();
                 }
 
-                // ---- 13. Ctrl+Shift+L 重排缩进（有选区 -> 只理选区）----
-                {
-                    var blk = new[]
-                    {
-                        "Sub VbcFmt()", "Dim n As Long", "If n > 0 Then",
-                        "n = n + 1", "Else", "n = n - 1", "End If", "End Sub",
-                    };
-                    int at = append(blk);
-                    // ★必须拉一个真选区：没选区时我们理的是**整篇**，那就会动用户的代码
-                    be.SetSelectionRange(at, 1, at + blk.Length - 1, blk[blk.Length - 1].Length + 1);
-                    bool r = Commands.FormatIndent(be);
-                    string f1 = be.LineAt(at + 1) ?? "";
-                    string f2 = be.LineAt(at + 2) ?? "";
-                    string f3 = be.LineAt(at + 3) ?? "";
-                    string f4 = be.LineAt(at + 4) ?? "";
-                    string f6 = be.LineAt(at + 6) ?? "";
-                    bool ok = r
-                              && f1 == "    Dim n As Long"
-                              && f2 == "    If n > 0 Then"
-                              && f3 == "        n = n + 1"
-                              && f4 == "    Else"
-                              && f6 == "    End If";
-                    check("Ctrl+Shift+L 格式化缩进", ok,
-                        "ret=" + r + " [" + f1 + "][" + f2 + "][" + f3 + "][" + f4 + "][" + f6 + "]");
-                    dropFrom();
-                }
+                // ---- 13. （原 Ctrl+Shift+L 格式化缩进）----
+                // v150 用户要求删除该功能，用例与实现一起移除。编号留着不复用，
+                // 免得跟历史日志 / 提交信息里的"第 13 条"对不上。
 
                 // ---- 14. v141：光标跳到别的行（鼠标单击 / 方向键）不许弹窗 ----
                 // 用户报的 bug："有时候鼠标单击到某个变量名，它会自动弹提示词框。"
@@ -1205,26 +1162,54 @@ namespace VbeComplete
             { IsBackground = true, Name = "enterprobe" };
 
             driver.Start();
-            Application.Run(app);
-            driver.Join(4000);
-
-            // 清理 + 逐字节比对
-            // ★这里不能再用 app.RunOnUi：Application.Run 已经返回，_disp 的窗口没了，
-            //   Invoke 会抛（被吞掉）—— 上一次就是因此把脚手架留在了用户模块里。
-            be.ForceReloadModule();
-            int removed = CleanupScratch(be);
-            be.ForceReloadModule();
-            string now = be.ModuleText();
-            bool restored = string.Equals(now, orig, StringComparison.Ordinal);
-            if (!restored) allOk = false;
-            lock (gate)
-                sb.AppendLine("cleanup 块 = " + removed + "   restored = " + restored +
-                              "   lines " + be.LineCount() + "/" + baseCount);
-
-            lock (gate)
+            // ★整段清理放进 finally：探针中途抛异常（COM 抖动、脚手架建失败）时
+            //   也绝不能把 `Sub VbcEnter()` 留在用户模块里。以前只有正常路径清理，
+            //   一旦半路炸掉，垃圾就永久留在用户的代码里。
+            bool joined = false;
+            try
             {
-                sb.AppendLine(allOk ? "RESULT: PASS" : "RESULT: FAIL");
-                File.WriteAllText(Path.Combine(Settings.Home, "enterprobe.log"), sb.ToString(), new UTF8Encoding(false));
+                Application.Run(app);
+            }
+            finally
+            {
+                try
+                {
+                    joined = driver.Join(4000);
+                    // ★这里不能再用 app.RunOnUi：Application.Run 已经返回，_disp 的
+                    //   窗口没了，Invoke 会抛（被吞掉）—— 上一次就是因此把脚手架
+                    //   留在了用户模块里。
+                    be.ForceReloadModule();
+                    int removed = CleanupScratch(be);
+                    be.ForceReloadModule();
+                    string now = be.ModuleText();
+                    bool restored = string.Equals(now, orig, StringComparison.Ordinal);
+                    if (!restored) allOk = false;
+                    lock (gate)
+                    {
+                        sb.AppendLine("cleanup 块 = " + removed + "   restored = " + restored +
+                                      "   lines " + be.LineCount() + "/" + baseCount +
+                                      (joined ? "" : "   ⚠️ driver 线程超时未结束"));
+                        sb.AppendLine(allOk ? "RESULT: PASS" : "RESULT: FAIL");
+                        File.WriteAllText(Path.Combine(Settings.Home, "enterprobe.log"),
+                            sb.ToString(), new UTF8Encoding(false));
+                    }
+                }
+                catch (Exception e)
+                {
+                    // 清理本身失败：至少把"没清干净"喊出来，别让人以为模块是干净的
+                    lock (gate)
+                    {
+                        sb.AppendLine("cleanup 异常：" + e.Message);
+                        sb.AppendLine("RESULT: FAIL");
+                        try
+                        {
+                            File.WriteAllText(Path.Combine(Settings.Home, "enterprobe.log"),
+                                sb.ToString(), new UTF8Encoding(false));
+                        }
+                        catch { }
+                    }
+                    allOk = false;
+                }
             }
             return allOk ? 0 : 1;
         }
@@ -2032,7 +2017,6 @@ namespace VbeComplete
                         Span = fh.Span,
                         Hits = fh.Positions,
                         HitKind = fh.Kind,
-                        Run = fh.Run,
                         ScopeKind = 3,
                         IsBuiltin = VbaBuiltins.IsKeyword(n),
                     });

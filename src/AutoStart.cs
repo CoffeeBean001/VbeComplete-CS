@@ -53,7 +53,14 @@ namespace VbeComplete
                 string p = Environment.ProcessPath;
                 if (!string.IsNullOrEmpty(p) &&
                     p.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
-                    return p;
+                {
+                    // ★`dotnet run` / `dotnet xxx.dll` 启动时 ProcessPath 是 dotnet.exe。
+                    //   把那个登记进 Run 键，开机只会跑一个什么参数都没有的 dotnet
+                    //   （窗口一闪就没了）。这种情况退回 apphost 路径。
+                    string stem = Path.GetFileNameWithoutExtension(p);
+                    if (!string.Equals(stem, "dotnet", StringComparison.OrdinalIgnoreCase))
+                        return p;
+                }
             }
             catch { }
             try { return System.Windows.Forms.Application.ExecutablePath; } catch { }
@@ -129,11 +136,50 @@ namespace VbeComplete
 
             string cmd = CommandLine;
             if (cmd == null) { Log.Write("开机自启：取不到 exe 路径，跳过"); return; }
-            if (IsRegistered(out string cur) && string.Equals(cur, cmd, StringComparison.OrdinalIgnoreCase))
+            bool registered = IsRegistered(out string cur);
+            if (registered && string.Equals(cur, cmd, StringComparison.OrdinalIgnoreCase))
                 return;                                  // 已经指向当前 exe，不用动
+
+            // ★"路径不一样就直接改写"是危险的：任何一次从 bin\Release、探针目录或
+            //   临时解压目录运行，都会把用户装好的**正式版**登记顶掉（真机上发生过
+            //   两次，表现为开机后跑的是调试产物、甚至跑不起来）。
+            //   规则改成：旧值指向的文件还在、且和当前 exe 不在同一个目录 ⇒ 只记日志，
+            //   绝不覆盖。只有"旧值已经失效"或"同一个目录里换了文件名"才自动修。
+            if (registered && !string.IsNullOrWhiteSpace(cur))
+            {
+                string oldExe = Unquote(cur);
+                bool oldAlive = !string.IsNullOrEmpty(oldExe) && File.Exists(oldExe);
+                if (oldAlive && !SameDir(oldExe, Unquote(cmd)))
+                {
+                    Log.Write("开机自启：注册表指向另一个目录的 {0}（文件还在），本次不覆盖；" +
+                              "要换成本目录的 exe，请在托盘菜单里关一次再打开", oldExe);
+                    return;
+                }
+            }
 
             if (Apply(true))
                 Log.Write("开机自启：已登记 {0}（原值 {1}）", cmd, cur ?? "无");
+        }
+
+        /// <summary>去掉命令行两端的引号（注册表值的常见写法）。</summary>
+        private static string Unquote(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            s = s.Trim();
+            if (s.Length >= 2 && s[0] == '"' && s[s.Length - 1] == '"')
+                s = s.Substring(1, s.Length - 2);
+            return s.Trim();
+        }
+
+        private static bool SameDir(string a, string b)
+        {
+            try
+            {
+                string da = Path.GetDirectoryName(Path.GetFullPath(a));
+                string db = Path.GetDirectoryName(Path.GetFullPath(b));
+                return string.Equals(da, db, StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
         }
 
         private static bool Apply(bool on)

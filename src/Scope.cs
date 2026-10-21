@@ -41,16 +41,10 @@ namespace VbeComplete
         public List<Decl> Decls = new List<Decl>();
         /// <summary>引用过、但没在本模块声明过的名字（隐式变量 / 宿主对象 / 控件）。
         /// 档位给 2：能用，但不如真声明过的名字靠前。
-        /// ★模块里有 `Option Explicit` 时这一组会大幅收窄（见 <see cref="HostObjects"/>）。</summary>
+        /// ★模块里有 `Option Explicit` 时这一组会大幅收窄：出现过 `名字.` 或
+        /// `Set 名字 =` 的（窗体控件 / Application / 隐式对象）仍然保留，
+        /// 凭"代码里没写 Dim"就剔除会把 UserForm 上的按钮名全删掉。</summary>
         public List<string> FreeIdents = new List<string>();
-
-        /// <summary>
-        /// 只有【像宿主对象的自由标识符】才留在这里：出现过 `名字.` 或 `Set 名字 =`。
-        /// 它们在 Option Explicit 的模块里也是合法的（窗体控件、Application、
-        /// 隐式声明的对象），凭"代码里没写 Dim"就剔除会把 UserForm 上的按钮名
-        /// 全删掉。
-        /// </summary>
-        public HashSet<string> HostObjects = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>模块头有没有 `Option Explicit`（= 强制声明变量）。</summary>
         public bool OptionExplicit;
@@ -117,6 +111,26 @@ namespace VbeComplete
             return map;
         }
 
+        /// <summary>
+        /// 本模块自己的**全部模块级成员**（含 Private），给 `Me.` 用。
+        ///
+        /// ★v150：`Me.` 后面 Private 成员完全合法（窗体里的 Private Sub、
+        ///   类模块里的 Private m_x），拿 <see cref="Exported"/> 去填是错的 ——
+        ///   那份名单是"别的模块看得见什么"，正好把 Private 全滤掉了，
+        ///   于是 `Me.` 后面收不到自己的私有过程。
+        /// ★不收过程的局部（`Proc != null`）和 `type:` 伪键：它们不是 Me 的成员。
+        /// </summary>
+        public Dictionary<string, KeyValuePair<string, int>> Members()
+        {
+            var map = new Dictionary<string, KeyValuePair<string, int>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var d in Decls)
+            {
+                if (d.Proc != null) continue;
+                Put(map, d.Name, 2);
+            }
+            return map;
+        }
+
         private static void Put(Dictionary<string, KeyValuePair<string, int>> map, string name, int rank)
         {
             if (string.IsNullOrEmpty(name)) return;
@@ -156,9 +170,15 @@ namespace VbeComplete
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         // 过程外不带 Dim 的声明：`Private x As Long` / `Public g As Long`
+        // ★v150：尾部那个 `(?=\s*(?:As|\(|$))` 前瞻必须去掉 —— 它要求**首名**
+        //   后面紧跟 As/(/行尾，于是 `Public a, b As Long` 这种逗号多名声明
+        //   整行匹配不上，a 和 b 就都没进过候选池（用户报的"公有变量不提示"）。
+        //   改成把修饰符之后**整段**交给 DeclTypes 按逗号切，与 Dim 分支同一套口径。
+        //   ⚠️ 负面前瞻仍然保留：`Public Sub` / `Private Type` / `Friend Const`
+        //   这些不是变量声明，交给后面的过程/Type/Const 分支各自处理。
         private static readonly Regex ReModuleBare = new Regex(
             @"^[ \t]*(Public|Private|Global|Friend)[ \t]+(?!(?:Sub|Function|Property|Declare|Type|Enum|Const|Dim|WithEvents|Event)\b)" +
-            @"(" + Id + @")(?=[ \t]*(?:As\b|\(|$))",
+            @"(.+)$",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         // 过程外的 Dim / Const / WithEvents（修饰符可有可无）
@@ -341,15 +361,13 @@ namespace VbeComplete
                 var bm = ReModuleBare.Match(code);
                 if (bm.Success)
                 {
-                    string v = Clean(bm.Groups[2].Value);
                     bool isPriv = bm.Groups[1].Value.Equals("Private", StringComparison.OrdinalIgnoreCase);
-                    if (v.Length > 0 && !VbaBuiltins.IsKeyword(v))
+                    // 多名声明 `Public a, b As Long` 在这里一起切开（VBA 口径：
+                    // 没写 As 的那个是 Variant，DeclTypes 已经这么处理了）。
+                    foreach (var v in DeclTypes(bm.Groups[2].Value))
                     {
-                        var tm2 = Regex.Match(code, @"\bAs[ \t]+(?:New[ \t]+)?(" + Id + ")",
-                            RegexOptions.IgnoreCase);
-                        string tn = tm2.Success ? Clean(tm2.Groups[1].Value) : null;
-                        ms.Decls.Add(new Decl { Name = v, Proc = null, IsPrivate = isPriv, TypeName = tn });
-                        if (tn != null) ms.VarTypes["|" + v] = tn;
+                        ms.Decls.Add(new Decl { Name = v.Key, Proc = null, IsPrivate = isPriv, TypeName = v.Value });
+                        if (v.Value != null) ms.VarTypes["|" + v.Key] = v.Value;
                     }
                     continue;
                 }
@@ -392,7 +410,6 @@ namespace VbeComplete
                     if (w.Length < 2 && w[0] < 0x80) continue;
 
                     bool host = LooksLikeHostObject(code, m);
-                    if (host) ms.HostObjects.Add(w);
 
                     // ★强制声明变量的模块：没写 Dim 的名字在 VBE 里直接编译不过，
                     //   把它当候选等于教用户写错代码。唯一例外是"像宿主对象"的

@@ -443,13 +443,6 @@ namespace VbeComplete
             string q = _search == null ? "" : _search.Text;
             _view = SnippetMatch.Filter(_rows, q);
 
-            _bulk = true;
-            try
-            {
-                _list.SetItems(_view);
-            }
-            finally { _bulk = false; }
-
             int target = -1;
             if (!string.IsNullOrEmpty(keep))
             {
@@ -458,9 +451,20 @@ namespace VbeComplete
             }
             if (target < 0 && _view.Count > 0) target = 0;
 
+            // ★选中动作必须也在 _bulk 里：`SelectedIndex = n` 会触发 OnPick，而 OnPick
+            //   在"代码框有未保存改动"时会弹模态确认框 —— 用户每敲一个搜索字符都可能
+            //   被弹一次（当前项恰好被过滤掉时）。选中只是刷新列表的结果，不是用户
+            //   在切换片段，绝不能走"切换会丢修改吗"那条路（v150 修）。
+            _bulk = true;
+            try
+            {
+                _list.SetItems(_view);
+                if (target >= 0) _list.SelectedIndex = target;
+            }
+            finally { _bulk = false; }
+
             if (target >= 0)
             {
-                _list.SelectedIndex = target;
                 // ★文本框里有未保存的改动时**不要**被搜索刷新覆盖掉
                 if (!IsDirty()) ShowSnippet(_view[target].Title);
             }
