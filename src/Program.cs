@@ -962,6 +962,7 @@ namespace VbeComplete
             app.Start();
 
             string diagA = "", diagA2 = "", diagB = "", diagC = "";
+            int imeModeAtStart = -1;   // 探针把输入法切到英数档前记下原模式，跑完还回去
 
             var driver = new Thread(() =>
             {
@@ -984,6 +985,24 @@ namespace VbeComplete
                     }
                     check("焦点在代码窗（钩子的第一道闸）", focused, "CodePaneFocused=" + focused);
                     if (!focused) return;
+
+                    // 输入法预检：B/C 是"逐字符打字"的用例，中文模式下每个字母都会被
+                    // 输入法拿去组字（实测敲出来是 `Fori= 1 To3` / `If下》 0 Then`），
+                    // 那不是程序坏了，是环境不对。这里直接把它切到英数档（走
+                    // WM_IME_CONTROL），跑完再恢复成用户原来的模式。
+                    int imeMode0 = Native.ImeConversionMode(Native.FocusedVbeWindow());
+                    bool alnum0 = Native.ImeAlphanumeric(Native.FocusedVbeWindow());
+                    if (!alnum0)
+                    {
+                        Native.ImeSetAlphanumeric(Native.FocusedVbeWindow());
+                        Thread.Sleep(200);
+                    }
+                    bool alnum1 = Native.ImeAlphanumeric(Native.FocusedVbeWindow());
+                    imeModeAtStart = imeMode0;
+                    lock (gate)
+                        sb.AppendLine("IME 英数模式 = " + alnum0 + " -> " + alnum1 +
+                            "（conv=0x" + imeMode0.ToString("X2") + "，跑完恢复）" +
+                            (alnum1 ? "" : "   ⚠️ 切不过去：B/C 会被输入法吃掉"));
 
                     // 2. 用例 A：现成的行，下面紧跟 End Sub，直接回车
                     Thread.Sleep(300);
@@ -1009,24 +1028,24 @@ namespace VbeComplete
                     // 4. 用例 B：空行上逐字符敲 For 行（模拟真人），最后一下立刻回车
                     RebuildScaffold(app, be, at, "");
                     Thread.Sleep(300);
-                    bool typedB = TypeText(app, "    For i = 1 To 3", 45);
+                    bool typedB = TypeTyping(app, "    For i = 1 To 3", 45, out string howB);
                     diagB = EnterDiag(app);
                     SendKeys(app, Native.VK_RETURN);
                     Thread.Sleep(700);
                     string[] b = ReadLines(app, be, at, 4);
                     check("B 逐字符敲 For + 立刻回车 -> 补 Next", typedB && b[3] == "    Next",
-                        "typed=" + typedB + " " + Tail(b) + "  diag{" + diagB + "}");
+                        "typed=" + typedB + " via=" + howB + " " + Tail(b) + "  diag{" + diagB + "}");
 
                     // 5. 用例 C：If … Then -> End If
                     RebuildScaffold(app, be, at, "");
                     Thread.Sleep(300);
-                    bool typedC = TypeText(app, "    If x > 0 Then", 45);
+                    bool typedC = TypeTyping(app, "    If x > 0 Then", 45, out string howC);
                     diagC = EnterDiag(app);
                     SendKeys(app, Native.VK_RETURN);
                     Thread.Sleep(700);
                     string[] c = ReadLines(app, be, at, 4);
                     check("C 逐字符敲 If … Then -> 补 End If", typedC && c[3] == "    End If",
-                        "typed=" + typedC + " " + Tail(c) + "  diag{" + diagC + "}");
+                        "typed=" + typedC + " via=" + howC + " " + Tail(c) + "  diag{" + diagC + "}");
 
                     // 6. 用例 D：单选 If（`If x Then y = 1`）—— 不该补 End If，
                     //    但**回车必须照常换行**（这一档走的是"先接管、判不过再还回去"，
@@ -1061,6 +1080,31 @@ namespace VbeComplete
                         && e1[1].Contains("n = 1")
                         && e2[1] == "    n = 1",
                         "加后=[" + e1[1] + "] 还原后=[" + e2[1] + "] want=[    n = 1]");
+
+                    // 8. 用例 F：**多行选区**批量注释 —— 用户报"Ctrl+/ 失效"的真因。
+                    //    旧实现第一句是 `be.Snapshot()`，而 Snapshot 对多行选区一律返回
+                    //    null（VbeBackend 里 `if (sl != el) return null`）⇒ 每次按都判成
+                    //    "拿不到快照"，键被吞、文档一个字不动。单选却一直是好的，所以
+                    //    这条必须单独验：选中两行 -> Ctrl+/ -> 两行都该加上撇号；
+                    //    再按一次（选区会被我们原样摆回去）-> 两行都该还原。
+                    RebuildScaffold(app, be, at, "    n = 1", "    n = 2");
+                    app.RunOnUi(() =>
+                    {
+                        be.ForceReloadModule();
+                        be.SetSelectionRange(at + 1, 1, at + 2, 1 + "    n = 2".Length + 100);
+                    });
+                    Thread.Sleep(300);
+                    SendCombo(app, Native.VK_OEM_2, ctrl: true);
+                    Thread.Sleep(800);
+                    string[] f1 = ReadLines(app, be, at, 4);
+                    SendCombo(app, Native.VK_OEM_2, ctrl: true);
+                    Thread.Sleep(800);
+                    string[] f2 = ReadLines(app, be, at, 4);
+                    check("F 多行选区 Ctrl+/ 批量注释（用户报的那一条）",
+                        f1[1].TrimStart().StartsWith("'", StringComparison.Ordinal)
+                        && f1[2].TrimStart().StartsWith("'", StringComparison.Ordinal)
+                        && f2[1] == "    n = 1" && f2[2] == "    n = 2",
+                        "加后=[" + f1[1] + "][" + f1[2] + "] 还原后=[" + f2[1] + "][" + f2[2] + "]");
                 }
                 catch (Exception e)
                 {
@@ -1069,6 +1113,8 @@ namespace VbeComplete
                 }
                 finally
                 {
+                    // 把输入法还给用户原来的状态（探针把它切到英数档才能逐字符打字）
+                    Native.ImeRestore(Native.FocusedVbeWindow(), imeModeAtStart);
                     app.RequestExit();
                 }
             })
@@ -1232,6 +1278,26 @@ namespace VbeComplete
             {
                 App.AcceptInjectedVk = 0;
             }
+        }
+
+        /// <summary>
+        /// 逐字符"打字"，但按当前输入法状态挑路：
+        ///   * 英数档 -> 真 vk（和人手一致，钩子的"快照落后"那一档会被真正压到）；
+        ///   * 中文档 -> Unicode 注入（绕过输入法，否则字母被拿去组字，
+        ///     敲出来是 `Fori= 1 To3` / `If下》 0 Then`，用例失败的原因会伪装成"程序坏了"）。
+        /// 返回实际用的方式，写进日志 —— 免得以后有人以为两条路验的是同一件事。
+        /// </summary>
+        private static bool TypeTyping(App app, string s, int delayMs, out string how)
+        {
+            bool alnum = Native.ImeAlphanumeric(Native.FocusedVbeWindow());
+            how = alnum ? "vk" : "unicode";
+            if (alnum) return TypeText(app, s, delayMs);
+            foreach (char ch in s)
+            {
+                Native.SendUnicodeChar(ch);
+                Thread.Sleep(delayMs);
+            }
+            return true;
         }
 
         private static bool CharToVk(char c, out int vk, out bool shift)

@@ -579,6 +579,7 @@ namespace VbeComplete
         // ------------------------------------------------------------------
         private const uint WM_IME_CONTROL = 0x0283;
         private const int IMC_GETCONVERSIONMODE = 0x0001;
+        private const int IMC_SETCONVERSIONMODE = 0x0002;
         private const int IME_CMODE_NATIVE = 0x0001;
         private const int IME_CMODE_FULLSHAPE = 0x0008;
         private const int IME_CMODE_SYMBOL = 0x0400;
@@ -619,6 +620,60 @@ namespace VbeComplete
             if (m < 0) return false;
             return (m & IME_CMODE_NATIVE) != 0 &&
                    (m & (IME_CMODE_SYMBOL | IME_CMODE_FULLSHAPE)) != 0;
+        }
+
+        /// <summary>
+        /// 输入法现在是不是"英数/半角"状态（<c>IME_CMODE_NATIVE</c> 没置位）。
+        /// ★只给真机探针用：打字类用例在中文模式下，每个字母都会被拿去组字，
+        ///   文本根本落不进文档 —— 那不是程序坏了，是环境不对，探针必须先说清楚。
+        ///   问不到（没有输入法 / 系统不答）按 true 处理，别让环境探测拖死用例。
+        /// </summary>
+        public static bool ImeAlphanumeric(IntPtr hwnd)
+        {
+            int m = ImeConversionMode(hwnd);
+            if (m < 0) return true;
+            return (m & IME_CMODE_NATIVE) == 0;
+        }
+
+        /// <summary>
+        /// 把窗口所属输入法切到"英数"档（只清 <c>IME_CMODE_NATIVE</c>，别的位不动）。
+        /// ★只给真机探针用：探针要"逐字符打字"才能验回车接管，中文模式下字母会被
+        ///   拿去组字（敲出来是 `Fori= 1 To3`），用例必然失败且原因假象为"程序坏了"。
+        ///   走的是 IME 窗口的 <c>WM_IME_CONTROL / IMC_SETCONVERSIONMODE</c>，
+        ///   与读取同一个通道、同样带 SMTO_ABORTIFHUNG —— 目标卡死也不会钉住我们。
+        ///   返回切完之后的模式（-1 = 没问到）。
+        /// </summary>
+        public static int ImeSetAlphanumeric(IntPtr hwnd)
+        {
+            try
+            {
+                int m = ImeConversionMode(hwnd);
+                if (m < 0) return -1;
+                if ((m & IME_CMODE_NATIVE) == 0) return m;
+                IntPtr ime = ImmGetDefaultIMEWnd(hwnd);
+                if (ime == IntPtr.Zero) return m;
+                IntPtr res;
+                SendMessageTimeout(ime, WM_IME_CONTROL,
+                    (IntPtr)IMC_SETCONVERSIONMODE, (IntPtr)(m & ~IME_CMODE_NATIVE),
+                    SMTO_ABORTIFHUNG, 300, out res);
+                return ImeConversionMode(hwnd);
+            }
+            catch { return -1; }
+        }
+
+        /// <summary>把输入法恢复成给定模式（探针跑完要把用户的输入法状态还回去）。</summary>
+        public static void ImeRestore(IntPtr hwnd, int mode)
+        {
+            if (mode < 0 || hwnd == IntPtr.Zero) return;
+            try
+            {
+                IntPtr ime = ImmGetDefaultIMEWnd(hwnd);
+                if (ime == IntPtr.Zero) return;
+                IntPtr res;
+                SendMessageTimeout(ime, WM_IME_CONTROL,
+                    (IntPtr)IMC_SETCONVERSIONMODE, (IntPtr)mode, SMTO_ABORTIFHUNG, 300, out res);
+            }
+            catch { }
         }
 
         /// <summary>

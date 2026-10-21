@@ -72,34 +72,46 @@ namespace VbeComplete
         /// <summary>Ctrl+/：整行注释开关。有选区就逐行处理。</summary>
         public static bool ToggleComment(VbeBackend be)
         {
-            var snap = be.Snapshot();
-            if (snap == null) return false;
-
-            int from = snap.Line, to = snap.Line;
+            // ★v144：**不要用 Snapshot()**。它有一条"多行选区一律返回 null"的判据
+            //   （见 VbeBackend.Snapshot 里 `if (sl != el) return null`），而 Ctrl+
+            //   的典型用法恰恰是"选中一段代码批量注释"—— 于是用户每次按都被判成
+            //   "拿不到快照"，键被吞掉、文档一个字不动，看起来就是"快捷键失效"。
+            //   Python 版一开始就是直接 GetSelection + 逐行读写（vbe_bridge
+            //   toggle_comment），所以同一个操作在那边一直是好的。
+            //   这里改成同一口径：选区自己取、行自己读、写完把选区原样摆回去。
             int sl, sc, el, ec;
-            if (be.TryGetSelection(out sl, out sc, out el, out ec))
-            {
-                from = Math.Min(sl, el);
-                to = Math.Max(sl, el);
-                if (ec == 1 && to > from) to--;
-            }
+            if (!be.TryGetSelection(out sl, out sc, out el, out ec)) return false;
+            if (sl < 1 || el < sl) return false;
+
+            // 选区跨行且停在**行首**（EndCol <= 1）：最后那一行其实没被真正选中，
+            // 那是"连着换行符一起拖下来"的结果。IDEA / Python 版都排除它。
+            int from = sl, to = el;
+            if (to > from && ec <= 1) to--;
+
+            // 模块末尾那个"虚拟空行"（行号 = CountOfLines + 1）。夹一下，别越界去读。
+            int count = be.LineCount();
+            if (count > 0 && to > count) to = count;
+            if (to < from) return false;
 
             var lines = new List<string>();
             for (int i = from; i <= to; i++)
             {
                 string t = be.LineAt(i);
-                if (t == null) break;
+                if (t == null) t = "";                 // 读失败就当空行，绝不中断整批
                 lines.Add(Rules.Rstrip(t));
             }
             if (lines.Count == 0) return false;
 
-            bool allCommented = true;
+            // 全是注释 -> 取消；否则整段加注释。空行不参与"算不算注释"的判断。
+            bool allCommented = true, anyContent = false;
             foreach (var l in lines)
             {
                 string tr = l.TrimStart();
                 if (tr.Length == 0) continue;
+                anyContent = true;
                 if (!tr.StartsWith("'", StringComparison.Ordinal)) { allCommented = false; break; }
             }
+            if (!anyContent) return false;             // 全空白：根本没得注释，把键还回去
 
             bool wrote = false;
             for (int i = 0; i < lines.Count; i++)
@@ -116,19 +128,27 @@ namespace VbeComplete
                     int indent = LeadingWs(l).Length;
                     nl = l.Substring(0, indent) + "'" + l.Substring(indent);
                 }
+                // 中途失败也继续写完：写一半停下会让文档卡在"部分注释"，比写完更糟。
                 if (be.ReplaceLineRaw(from + i, nl)) wrote = true;
             }
+            if (!wrote) return false;                   // 一行都没改成 -> 让调用方把键还回去
 
-            // ★v131c：`CodeModule.ReplaceLine` 写完会把光标推到【下一行】（真机实测：
-            //   在第 10 行 ReplaceLine，GetSelection 变成 (11,1)）。不还原的话，
-            //   连按两次 Ctrl+/，第二次读到的已经是下一行 ⇒ 去注释的是下一行，
-            //   用户看到的就是"快捷键乱来 / 像失效了"。
-            if (wrote)
+            // 摆光标 / 摆选区：行数没变，所以原来的行范围仍然有效。
+            // ★原来有选区就要**重新选中同样几行** —— 连按两次才能就地取消（IDEA 手感）。
+            bool hadSel = sl != el || sc != ec;
+            if (hadSel)
             {
-                string here = be.LineAt(snap.Line) ?? "";
-                be.SetCaret(snap.Line, Rules.CharColFromDisp(here, snap.CaretCol, 4));
+                string last = lines[lines.Count - 1];
+                int lastLen = allCommented ? Math.Max(1, last.Length) : last.Length + 1;
+                // 列给足，让 VBE 自己钳到行尾 —— 绝不自己算显示列（铁律）
+                be.SetSelectionRange(from, 1, to, lastLen + 100);
             }
-            return wrote;
+            else
+            {
+                string here = be.LineAt(from) ?? "";
+                be.SetCaret(from, Rules.CharColFromDisp(here, Math.Max(1, sc), 4));
+            }
+            return true;
         }
 
         /// <summary>

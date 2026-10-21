@@ -542,7 +542,7 @@ namespace VbeComplete
                     //   代码里插一个斜杠 —— 比"什么都没发生"更糟。VBE 里 Ctrl+/
                     //   本来也不做任何事，所以这里只是记一笔。
                     if (!Commands.ToggleComment(_be))
-                        Log.Write("Ctrl+/ 没做成：拿不到快照 / 无可改的行（键已吞掉，VBE 里本也无此功能）");
+                        Log.Write("Ctrl+/ 没做成：拿不到选区 / 整段全是空行 / 一行都没写成功（键已吞掉，VBE 里本也无此功能）");
                 });
                 return Swallow(vk);
             }
