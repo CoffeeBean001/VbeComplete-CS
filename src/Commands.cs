@@ -287,6 +287,40 @@ namespace VbeComplete
             return false;
         }
 
+        /// <summary>
+        /// `Ctrl+↑` / `Ctrl+↓`（**不带 Shift**）：过程内跳转，用户从 Python 版点名的两个键。
+        /// <para>↑：本过程里**最后一个 `Dim`** 语句的行尾（跨续行时落到语句结束行的行尾，
+        /// 不会停在 `Dim a, _` 那一行）；↓：过程收尾行（`End Sub`）**上方最后一条代码**的行尾。</para>
+        /// <para>光标不在任何过程里（模块声明区 / 两个过程之间 / 过程还没收尾）一律返回
+        /// false —— 调用方把键原样还给系统（VBE 原生 `Ctrl+↑/↓` 是"跳到上/下一个过程"，
+        /// 那是它自己的事）。判定不成立绝不吞键，这是全项目同一条规矩。</para>
+        /// <para>与 <see cref="CtrlNavJump"/>（带 Shift 的那一组）的区别：那一组的 `↑` 是
+        /// "光标**上方**最近的声明行"、`↓` 是"下方第一个**空白行**"；这一组问的是过程
+        /// 的**两端**——所以用户按不带 Shift 的组合时，拿到的必须是这两个端点，不能
+        /// 把两组实现混用。</para>
+        /// </summary>
+        public static bool CtrlProcJump(VbeBackend be, int dir)
+        {
+            var snap = be.Snapshot();
+            if (snap == null) return false;
+            string text = be.ModuleText();
+            if (text == null) return false;
+
+            var lines = Parser.SplitLines(text);
+            var procs = Parser.ExtractProcedures(text);
+            var proc = Parser.ProcOfLine(procs, snap.Line);
+            if (proc == null) return false;              // 过程外：不接管
+
+            int start = proc.StartLine, end = proc.EndLine;
+            if (start < 1 || end > lines.Length || end <= start) return false;
+
+            // 落点全在 Editing 的纯函数里（能被自检直接钉住），这里只管落光标。
+            int target = dir < 0
+                ? Editing.LastDimEndLine(lines, start, end)      // 最后一个 Dim 的语句结束行
+                : Editing.ProcLastCodeLine(lines, start, end);   // 收尾行上方最后一条代码
+            return target > 0 && be.CaretToLineEnd(target);
+        }
+
         /// <summary>把"显示列"的光标位置折成同一行靠左的合理字符列。</summary>
         private static int CharColOf(Snapshot s, string line)
         {

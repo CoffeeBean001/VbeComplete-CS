@@ -1007,6 +1007,77 @@ End Sub
             Ok("header-prefix/字符串里的 For 不算", !Editing.LooksLikeBlockHeaderPrefix("    MsgBox \"For\""));
             Ok("header-prefix/续行符不算", !Editing.LooksLikeBlockHeaderPrefix("    For i = _"));
             Ok("header-prefix/空行不算", !Editing.LooksLikeBlockHeaderPrefix(""));
+
+            // ---- 过程内跳转的两个落点（v148，Ctrl+↑ / Ctrl+↓）----
+            // 行号全是 1-based：过程头 = 1，收尾行 = 最后一行。
+            var nav = new List<string>
+            {
+                "Sub Foo()",             // 1
+                "    Dim a As Long",     // 2
+                "    x = 1",             // 3
+                "    Dim b As Long",     // 4  <- 最后一个 Dim
+                "    y = 2",             // 5
+                "End Sub",               // 6
+            };
+            Eq("nav/↑ 落到最后一个 Dim 行", 4, Editing.LastDimEndLine(nav, 1, nav.Count));
+            Eq("nav/↓ 落到收尾行上方最后一条代码", 5, Editing.ProcLastCodeLine(nav, 1, nav.Count));
+
+            // 跨续行的 Dim：行尾要取【语句结束行】，不能停在 `Dim a, _` 上
+            var navCont = new List<string>
+            {
+                "Sub Foo()",
+                "    Dim a, _",
+                "        b As Long",      // 3 <- 语句结束行
+                "End Sub",
+            };
+            Eq("nav/↑ 跨续行取语句结束行", 3,
+                Editing.LastDimEndLine(navCont, 1, navCont.Count));
+
+            // Const / Static 不是"Dim 行"：用户口径就是 dim 关键字
+            var navConst = new List<string>
+            {
+                "Sub Foo()",
+                "    Dim a As Long",     // 2 <- 最后一个（也是唯一的）Dim
+                "    Const N = 3",
+                "    Static s As Long",
+                "End Sub",
+            };
+            Eq("nav/↑ Const·Static 不抢 Dim 的位置", 2,
+                Editing.LastDimEndLine(navConst, 1, navConst.Count));
+
+            // 一条 Dim 都没有 / 全是注释 => 0（调用方据此把键还回去）
+            Eq("nav/↑ 没有 Dim 返回 0", 0, Editing.LastDimEndLine(
+                new List<string> { "Sub Foo()", "    ' Dim x", "    x = 1", "End Sub" }, 1, 4));
+
+            // 收尾行上方是空行：往上找最近一条代码，不能落在空行的行首
+            var navBlank = new List<string>
+            {
+                "Sub Foo()",
+                "    x = 1",             // 2
+                "",
+                "End Sub",
+            };
+            Eq("nav/↓ 跳过尾行上方的空行", 2,
+                Editing.ProcLastCodeLine(navBlank, 1, navBlank.Count));
+
+            // 空过程体：没有"上一行"可落
+            Eq("nav/↓ 空过程体返回 0", 0, Editing.ProcLastCodeLine(
+                new List<string> { "Sub Foo()", "End Sub" }, 1, 2));
+            Eq("nav/↑ 空过程体返回 0", 0, Editing.LastDimEndLine(
+                new List<string> { "Sub Foo()", "End Sub" }, 1, 2));
+
+            // 只在【本过程】里找：下一个过程的 Dim 绝不能被捞过来
+            var navTwo = new List<string>
+            {
+                "Sub A()",               // 1
+                "    x = 1",
+                "End Sub",               // 3
+                "Sub B()",
+                "    Dim z As Long",     // 5
+                "End Sub",
+            };
+            Eq("nav/↑ 不跨过程捞 Dim", 0, Editing.LastDimEndLine(navTwo, 1, 3));
+            Eq("nav/↑ 过程 B 自己的 Dim", 5, Editing.LastDimEndLine(navTwo, 4, 6));
         }
 
         // ------------------------------------------------------------------

@@ -1178,6 +1178,43 @@ namespace VbeComplete
                     check("H 空格收起候选窗（用户报的 set + 空格不收）",
                         shownH && hiddenH && h[1] == "     n = 1",
                         "唤出=" + shownH + " 空格后收起=" + hiddenH + " 行=[" + h[1] + "]");
+
+                    // 11. 用例 I：**Ctrl+↑ / Ctrl+↓（不带 Shift）** —— 用户从 Python 版
+                    //     点名要的两个过程内跳转。CS 版一直只搬了**带 Shift** 的那一组，
+                    //     而那一组的语义完全不同（↑ = 光标上方最近的声明行、↓ = 下方第一个
+                    //     空白行），所以不带 Shift 的这两下一直漏给 VBE 原生（=跳到上/下
+                    //     一个过程）。
+                    //     这条同时能证明"键到底有没有被路由进新分支"：判据不成立时会把键
+                    //     还回去（Ctrl 被物理按住 => 实际发出裸 ↑/↓），光标只会走一行，
+                    //     断言必然对不上。
+                    RebuildScaffold(app, be, at, "    x = 1",
+                        "    Dim a As Long", "    y = 2", "    Dim b As Long", "    z = 3");
+                    Thread.Sleep(300);
+                    SendCombo(app, Native.VK_UP, ctrl: true);
+                    Thread.Sleep(600);
+                    int upLine = 0, upCol = 0;
+                    app.RunOnUi(() =>
+                    {
+                        be.ForceReloadModule();
+                        be.TryGetSelection(out int l1, out int c1, out _, out _);
+                        upLine = l1; upCol = c1;
+                    });
+                    SendCombo(app, Native.VK_DOWN, ctrl: true);
+                    Thread.Sleep(600);
+                    int dnLine = 0, dnCol = 0;
+                    app.RunOnUi(() =>
+                    {
+                        be.ForceReloadModule();
+                        be.TryGetSelection(out int l2, out int c2, out _, out _);
+                        dnLine = l2; dnCol = c2;
+                    });
+                    const string lastDimLine = "    Dim b As Long";   // at+4
+                    const string lastCodeLine = "    z = 3";          // at+5
+                    check("I Ctrl+↑/↓ 跳过程内两个端点",
+                        upLine == at + 4 && upCol == lastDimLine.Length + 1
+                        && dnLine == at + 5 && dnCol == lastCodeLine.Length + 1,
+                        "↑=" + upLine + "," + upCol + " want " + (at + 4) + "," + (lastDimLine.Length + 1)
+                        + "  ↓=" + dnLine + "," + dnCol + " want " + (at + 5) + "," + (lastCodeLine.Length + 1));
                 }
                 catch (Exception e)
                 {

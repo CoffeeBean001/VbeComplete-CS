@@ -722,6 +722,59 @@ namespace VbeComplete
         // ------------------------------------------------------------------
 
         /// <summary>这个键按下去"本可能"往代码里写一个字符（数输入法组字用）。</summary>
+        // ------------------------------------------------------------------
+        // 过程内跳转（Ctrl+↑ / Ctrl+↓）
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// `Ctrl+↑` 认的"声明行"：**只有 `Dim`**。刻意不认 `Const` / `Static` ——
+        /// 用户的口径是"最后一个 dim 行"，收宽了就会把光标带到不是 Dim 的那一行。
+        /// （Python 版 v110 的 `_RE_V110_DIM` 也是只认 `Dim`。）
+        /// </summary>
+        private static readonly Regex ReDimDeclHead =
+            new Regex(@"^Dim\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        /// <summary>
+        /// `Ctrl+↑` 的落点：过程（<paramref name="startLine"/>..<paramref name="endLine"/>，
+        /// 1-based 闭区间，含过程头与收尾行）里**最后一个 `Dim`** 语句的【结束行】。
+        /// 找不到 / 形态说不清返回 0（调用方据此把键还回去）。
+        /// <para>跨续行的 Dim 要连续行一起跨过去：`Dim a, _` / `b As String` 的"行尾"
+        /// 是 `b As String` 那一行 —— 落在 `Dim a, _` 上等于落在半条语句里。</para>
+        /// </summary>
+        public static int LastDimEndLine(IList<string> lines, int startLine, int endLine)
+        {
+            if (lines == null || lines.Count == 0) return 0;
+            int end = Math.Min(endLine, lines.Count);
+            for (int i = end - 1; i > startLine; i--)      // 过程头 / 收尾行本身不扫
+            {
+                string code = Parser.CodeOnly(lines[i - 1]).Trim();
+                if (code.Length == 0) continue;
+                if (!ReDimDeclHead.IsMatch(code)) continue;
+
+                int last = i;
+                while (last < end && Indent.IsContinuation(Parser.CodeOnly(lines[last - 1]).Trim()))
+                    last++;
+                return last >= end ? 0 : last;            // 续行拖到收尾行：不猜
+            }
+            return 0;
+        }
+
+        /// <summary>
+        /// `Ctrl+↓` 的落点：过程收尾行**上方最后一条非空代码**的行号（1-based）。
+        /// 空白行不当落点（落到空行的"行尾"就是行首，对用户毫无意义）；
+        /// 过程体为空（收尾行紧挨着过程头）返回 0。
+        /// </summary>
+        public static int ProcLastCodeLine(IList<string> lines, int startLine, int endLine)
+        {
+            if (lines == null || lines.Count == 0) return 0;
+            int end = Math.Min(endLine, lines.Count);
+            int target = end - 1;
+            while (target > startLine &&
+                   Parser.CodeOnly(lines[target - 1]).Trim().Length == 0)
+                target--;
+            return target <= startLine ? 0 : target;
+        }
+
         public static bool IsTextKey(int vk)
         {
             if (vk == 0x20) return true;                       // Space

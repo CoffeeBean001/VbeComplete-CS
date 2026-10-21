@@ -588,6 +588,29 @@ namespace VbeComplete
                 return Swallow(vk);
             }
 
+            // ==============================================================
+            // 4c. Ctrl+↑ / Ctrl+↓（**不带 Shift**）：过程内的两个端点
+            //     ↑ 落到本过程【最后一个 Dim 行】的行尾；
+            //     ↓ 落到【过程收尾行上方最后一条代码】的行尾。
+            //     ★用户从 Python 版点名要的两个键 —— CS 版一直只搬了带 Shift 的
+            //       那一组（那是"上方最近的声明行 / 下方第一个空白行"，语义完全不同），
+            //       于是不带 Shift 的这两下一直漏到 VBE 原生（=跳到上/下一个过程）。
+            //     ⚠️ 必须排在带 Shift 的那条之后：两条互斥（一条要 shift、一条要
+            //       !shift），但写在前面的那条会先 return，顺序写反就永远轮不到这条。
+            // ==============================================================
+            if (ctrl && !shift && !alt && (vk == Native.VK_UP || vk == Native.VK_DOWN) && !NoCtrlNav)
+            {
+                int dir = vk == Native.VK_UP ? -1 : 1;
+                Post(() =>
+                {
+                    // 判据不成立（光标在声明区 / 过程里没有 Dim / 过程体为空）就把键
+                    // 还回去。SendVk 在"Ctrl 正被物理按住"时不合成 Ctrl，所以实际
+                    // 发出的是裸 ↑/↓ —— 与 Ctrl+Shift 那两条的失败路径完全一致。
+                    if (!Commands.CtrlProcJump(_be, dir)) Native.SendVk(vk, true, false);
+                });
+                return Swallow(vk);
+            }
+
             // ⚠️ Ctrl+Shift+L 排在 Ctrl+D / Ctrl+K 之后：那两条都要求 !shift，互不干扰
             if (ctrl && shift && !alt && vk == 'L' && !NoFormatIndent)
             {
