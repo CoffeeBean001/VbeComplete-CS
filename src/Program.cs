@@ -81,6 +81,10 @@ namespace VbeComplete
             {
                 return HkTest();
             }
+            if (args.Length > 0 && args[0] == "--enterprobe")
+            {
+                return EnterProbe();
+            }
             if (args.Length > 0 && args[0] == "--snipetest")
             {
                 return SnippetTest();
@@ -123,6 +127,7 @@ namespace VbeComplete
                     "  --carettest   真机验证中文名光标落点（改完即还原）\r\n" +
                     "  --writetest   真机验证写入链路（改完即还原）\r\n" +
                     "  --hktest      真机验证行操作快捷键（改完即还原）\r\n" +
+                    "  --enterprobe  真机验证「回车自动补结构」（走真键盘钩子，改完即还原）\r\n" +
                     "  --startuptest 图标 + 开机自启的登记/回滚（会短暂改注册表，随后还原）\r\n";
                 Console.WriteLine("未知开关：" + args[0]);
                 Console.WriteLine(usage);
@@ -900,6 +905,320 @@ namespace VbeComplete
             sb.AppendLine(allOk ? "RESULT: PASS" : "RESULT: FAIL");
             File.WriteAllText(Path.Combine(Settings.Home, "hktest.log"), sb.ToString(), Encoding.UTF8);
             return allOk ? 0 : 1;
+        }
+
+        /// <summary>
+        /// 真机"回车补结构"探针 —— **走真键盘钩子**。
+        ///
+        /// ★为什么非要有这一条：`--hktest` 是直接调 `VbeBackend.NewLineBelow`（等于
+        ///   只验后端），而用户真正的路径是
+        ///   `WH_KEYBOARD_LL → FreshHookSnap → EnterIndentWanted → Post → NewLineBelow`。
+        ///   v137 就是栽在这上面：后端 15 条全 PASS，真机上回车照样不补 `Next`
+        ///   （用户第二次报同一个问题）。所以这里把真 `App` 起起来（真钩子 + 真轮询），
+        ///   用 SendInput 敲键，再回读模块——**验的是用户手指走的那条路**。
+        ///
+        /// 用例：
+        ///   A) 光标停在现成的 `    For i = 1 To 3` 行尾，按一下回车；
+        ///   B) 从空行**逐字符敲** `    For i = 1 To 3`，最后一个字符后 0ms 立刻回车
+        ///      （模拟真人手速：这条专门盯着 `_pendingKeys` 那个"输入法组字"判据）；
+        ///   C) 同上敲 `    If x > 0 Then`，验 `End If`。
+        /// </summary>
+        private static int EnterProbe()
+        {
+            var sb = new StringBuilder();
+            var gate = new object();
+            bool allOk = true;
+            Action<string, bool, string> check = (name, ok, detail) =>
+            {
+                if (!ok) allOk = false;
+                lock (gate) sb.AppendLine((ok ? "  PASS  " : "  FAIL  ") + name + "   " + detail);
+            };
+
+            sb.AppendLine("=== enter probe（真机 / 走真钩子） ===");
+
+            var app = new App();
+            var be = new VbeBackend();          // 主线程（STA）自己持有，不用 RunOnUi 绕
+            int leftover = CleanupScratch(be);
+            string orig = be.ModuleText();
+            int baseCount = be.LineCount();
+
+            sb.AppendLine("module lines = " + baseCount + "  len = " + (orig == null ? -1 : orig.Length) +
+                          "  上次残留块清理 = " + leftover);
+            // baseCount 可以是 0（空模块）：探针往里插脚手架再删干净，正好也能验
+            if (baseCount < 0 || orig == null)
+            {
+                sb.AppendLine("no code module, skip");
+                File.WriteAllText(Path.Combine(Settings.Home, "enterprobe.log"), sb.ToString(), new UTF8Encoding(false));
+                return 1;
+            }
+
+            // 造一段固定的脚手架：一个 Sub + 一行现成的 For + End Sub
+            int at = baseCount + 1;
+            RebuildScaffold(app, be, at, "    For i = 1 To 3");
+            be.FocusVbe();
+
+            // ★Start() 必须显式调用：装钩子 / 起托盘 / 起轮询定时器都在它里面
+            app.Start();
+
+            string diagA = "", diagA2 = "", diagB = "", diagC = "";
+
+            var driver = new Thread(() =>
+            {
+                try
+                {
+                    // 1. 等轮询把"焦点在代码窗"跑出来 —— 钩子的第一道闸就是它。
+                    //    ★从 bash / 计划任务起的进程 SetForegroundWindow 会被系统拒掉，
+                    //      所以每轮都硬抢一次（AttachThreadInput 那套），抢到为止。
+                    bool focused = false;
+                    for (int i = 0; i < 40 && !focused; i++)
+                    {
+                        app.RunOnUi(() =>
+                        {
+                            Native.ForceForeground(Native.FindWindow("wndclass_desked_gsk", null));
+                            be.SetCaret(at + 1, 19);
+                            be.InvalidateSnapshot();
+                        });
+                        Thread.Sleep(250);
+                        focused = app.CodePaneFocused;
+                    }
+                    check("焦点在代码窗（钩子的第一道闸）", focused, "CodePaneFocused=" + focused);
+                    if (!focused) return;
+
+                    // 2. 用例 A：现成的行，下面紧跟 End Sub，直接回车
+                    Thread.Sleep(300);
+                    diagA = EnterDiag(app);
+                    SendKeys(app, Native.VK_RETURN);
+                    Thread.Sleep(700);
+                    string[] a = ReadLines(app, be, at, 4);
+                    check("A 现成 For 行 + 回车 -> 补 Next", a[3] == "    Next",
+                        Tail(a) + "  diag{" + diagA + "}");
+
+                    // 3. 用例 A2（★用户报的那一条）：过程中间插一个 For，
+                    //    下面压着同级的旧语句 —— Python 版会补，C# 旧口径不补。
+                    RebuildScaffold(app, be, at, "    For i = 1 To 3", "    x = 1", "    y = 2");
+                    Thread.Sleep(300);
+                    diagA2 = EnterDiag(app);
+                    SendKeys(app, Native.VK_RETURN);
+                    Thread.Sleep(700);
+                    string[] a2 = ReadLines(app, be, at, 6);
+                    check("A2 同级旧代码压着也要补 Next（用户报的那一条）",
+                        a2[3] == "    Next" && a2[4] == "    x = 1",
+                        "[" + a2[1] + "][" + a2[2] + "][" + a2[3] + "][" + a2[4] + "]  diag{" + diagA2 + "}");
+
+                    // 4. 用例 B：空行上逐字符敲 For 行（模拟真人），最后一下立刻回车
+                    RebuildScaffold(app, be, at, "");
+                    Thread.Sleep(300);
+                    bool typedB = TypeText(app, "    For i = 1 To 3", 45);
+                    diagB = EnterDiag(app);
+                    SendKeys(app, Native.VK_RETURN);
+                    Thread.Sleep(700);
+                    string[] b = ReadLines(app, be, at, 4);
+                    check("B 逐字符敲 For + 立刻回车 -> 补 Next", typedB && b[3] == "    Next",
+                        "typed=" + typedB + " " + Tail(b) + "  diag{" + diagB + "}");
+
+                    // 5. 用例 C：If … Then -> End If
+                    RebuildScaffold(app, be, at, "");
+                    Thread.Sleep(300);
+                    bool typedC = TypeText(app, "    If x > 0 Then", 45);
+                    diagC = EnterDiag(app);
+                    SendKeys(app, Native.VK_RETURN);
+                    Thread.Sleep(700);
+                    string[] c = ReadLines(app, be, at, 4);
+                    check("C 逐字符敲 If … Then -> 补 End If", typedC && c[3] == "    End If",
+                        "typed=" + typedC + " " + Tail(c) + "  diag{" + diagC + "}");
+
+                    // 6. 用例 D：单选 If（`If x Then y = 1`）—— 不该补 End If，
+                    //    但**回车必须照常换行**（这一档走的是"先接管、判不过再还回去"，
+                    //    最容易写出"吞了却什么都没发生"的就是这条路）。
+                    RebuildScaffold(app, be, at, "    If x Then y = 1");
+                    int beforeD = 0;
+                    app.RunOnUi(() => { be.ForceReloadModule(); beforeD = be.LineCount(); });
+                    Thread.Sleep(300);
+                    SendKeys(app, Native.VK_RETURN);
+                    Thread.Sleep(800);
+                    string[] d = ReadLines(app, be, at, 4);
+                    int afterD = 0;
+                    app.RunOnUi(() => { be.ForceReloadModule(); afterD = be.LineCount(); });
+                    check("D 单选 If 回车：不补 End If 但必须换行",
+                        afterD == beforeD + 1 && d[1] == "    If x Then y = 1" && d[2].Trim() == "",
+                        "lines " + beforeD + "->" + afterD + " " + Tail(d));
+                }
+                catch (Exception e)
+                {
+                    lock (gate) sb.AppendLine("EXCEPTION " + e);
+                    allOk = false;
+                }
+                finally
+                {
+                    app.RequestExit();
+                }
+            })
+            { IsBackground = true, Name = "enterprobe" };
+
+            driver.Start();
+            Application.Run(app);
+            driver.Join(4000);
+
+            // 清理 + 逐字节比对
+            // ★这里不能再用 app.RunOnUi：Application.Run 已经返回，_disp 的窗口没了，
+            //   Invoke 会抛（被吞掉）—— 上一次就是因此把脚手架留在了用户模块里。
+            be.ForceReloadModule();
+            int removed = CleanupScratch(be);
+            be.ForceReloadModule();
+            string now = be.ModuleText();
+            bool restored = string.Equals(now, orig, StringComparison.Ordinal);
+            if (!restored) allOk = false;
+            lock (gate)
+                sb.AppendLine("cleanup 块 = " + removed + "   restored = " + restored +
+                              "   lines " + be.LineCount() + "/" + baseCount);
+
+            lock (gate)
+            {
+                sb.AppendLine(allOk ? "RESULT: PASS" : "RESULT: FAIL");
+                File.WriteAllText(Path.Combine(Settings.Home, "enterprobe.log"), sb.ToString(), new UTF8Encoding(false));
+            }
+            return allOk ? 0 : 1;
+        }
+
+        /// <summary>
+        /// 删掉探针留下的 `Sub VbcEnter()` … `End Sub` 块（成功跑完要删、上一次
+        /// 中途炸掉也要删 —— 探针绝不能把垃圾留在用户的模块里）。
+        /// </summary>
+        private static int CleanupScratch(VbeBackend be)
+        {
+            int removed = 0;
+            for (int guard = 0; guard < 20; guard++)
+            {
+                be.ForceReloadModule();
+                int cnt = be.LineCount();
+                int head = -1, tail = -1;
+                for (int i = cnt; i >= 1; i--)
+                {
+                    if (string.Equals((be.LineAt(i) ?? "").Trim(), "Sub VbcEnter()",
+                        StringComparison.OrdinalIgnoreCase)) { head = i; break; }
+                }
+                if (head < 0) break;
+                for (int i = head + 1; i <= Math.Min(cnt, head + 40); i++)
+                {
+                    if (string.Equals((be.LineAt(i) ?? "").Trim(), "End Sub",
+                        StringComparison.OrdinalIgnoreCase)) { tail = i; break; }
+                }
+                if (tail < 0) break;
+                be.DeleteLines(head, tail - head + 1);
+                removed++;
+            }
+            return removed;
+        }
+
+        /// <summary>
+        /// 把 at 之后的模块内容整段重建成：
+        /// `Sub VbcEnter()` / <paramref name="header"/> / 逗号给的几行 / `End Sub`，
+        /// 光标停在 header 行尾（header 为空则停在行首）。
+        /// </summary>
+        private static void RebuildScaffold(App app, VbeBackend be, int at, string header,
+            params string[] extra)
+        {
+            app.RunOnUi(() =>
+            {
+                be.ForceReloadModule();
+                int cnt = be.LineCount();
+                if (cnt >= at) be.DeleteLines(at, cnt - at + 1);
+
+                var body = new List<string> { "Sub VbcEnter()", header };
+                body.AddRange(extra);
+                body.Add("End Sub");
+                for (int i = body.Count - 1; i >= 0; i--) be.InsertLines(at, body[i]);
+
+                be.SetCaret(at + 1, header.Length + 1);
+                be.InvalidateSnapshot();
+            });
+        }
+
+        /// <summary>读回脚手架的前几行（探针用）。</summary>
+        private static string[] ReadLines(App app, VbeBackend be, int at, int n)
+        {
+            string[] res = null;
+            app.RunOnUi(() =>
+            {
+                be.ForceReloadModule();
+                res = new string[n];
+                for (int i = 0; i < n; i++) res[i] = be.LineAt(at + i) ?? "";
+            });
+            return res ?? new string[n];
+        }
+
+        private static string Tail(string[] lines)
+        {
+            var sb = new StringBuilder();
+            for (int i = 1; i < lines.Length; i++) sb.Append("[").Append(lines[i]).Append("]");
+            return sb.ToString();
+        }
+
+        /// <summary>钩子那一侧此刻看到的判据 —— 失败时把这一串打进日志，一眼看出卡在哪。</summary>
+        private static string EnterDiag(App app)
+        {
+            var s = app.HookSnap;
+            if (s == null) return "snap=null";
+            string text = s.Text ?? "";
+            bool wanted = Editing.EnterIndentWanted(text, s.CaretCol);
+            return string.Format("popup={0} pending={1} age={2}ms L{3} col={4} dispEnd={5} want={6} line=[{7}]",
+                app.PopupVisible, app.PendingKeys, app.HookSnapAgeMs, s.Line, s.CaretCol,
+                Rules.DispCol(text, text.Length), wanted, text);
+        }
+
+        /// <summary>发一个键（只放行这一下注入）。</summary>
+        private static void SendKeys(App app, int vk, bool shift = false)
+        {
+            App.AcceptInjectedVk = vk;
+            try { Native.SendVk(vk, false, shift); }
+            finally
+            {
+                Thread.Sleep(120);
+                App.AcceptInjectedVk = 0;
+            }
+        }
+
+        /// <summary>逐字符敲一串文本（用真 vk，模拟真人按键；注入标记在探针里放行）。</summary>
+        private static bool TypeText(App app, string s, int delayMs)
+        {
+            App.AcceptInjectedVk = -1;
+            try
+            {
+                foreach (char ch in s)
+                {
+                    if (!CharToVk(ch, out int vk, out bool shift)) return false;
+                    Native.SendVk(vk, false, shift);
+                    Thread.Sleep(delayMs);
+                }
+                return true;
+            }
+            finally
+            {
+                App.AcceptInjectedVk = 0;
+            }
+        }
+
+        private static bool CharToVk(char c, out int vk, out bool shift)
+        {
+            shift = false;
+            if (c >= 'a' && c <= 'z') { vk = c - 'a' + 'A'; return true; }
+            if (c >= 'A' && c <= 'Z') { vk = c; shift = true; return true; }
+            if (c >= '0' && c <= '9') { vk = c; return true; }
+            switch (c)
+            {
+                case ' ': vk = 0x20; return true;
+                case '=': vk = 0xBB; return true;                 // VK_OEM_PLUS
+                case '+': vk = 0xBB; shift = true; return true;
+                case '-': vk = 0xBD; return true;                 // VK_OEM_MINUS
+                case '.': vk = 0xBE; return true;                 // VK_OEM_PERIOD
+                case '>': vk = 0xBE; shift = true; return true;
+                case ',': vk = 0xBC; return true;                 // VK_OEM_COMMA
+                case '<': vk = 0xBC; shift = true; return true;
+                case '"': vk = 0xDE; shift = true; return true;   // VK_OEM_7
+                case '\'': vk = 0xDE; return true;
+            }
+            vk = 0;
+            return false;
         }
 
         /// <summary>

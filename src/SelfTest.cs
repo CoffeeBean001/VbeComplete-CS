@@ -937,17 +937,54 @@ End Sub
             Ok("string/注释里的引号不算", !Editing.UnterminatedString("x = 1  ' 他说\"你好"));
             Ok("string/双写引号是转义", !Editing.UnterminatedString("x = \"a\"\"b\""));
 
-            // ---- 补收尾（保守口径）----
+            // ---- 补收尾（v142：移植 Python 版 v80a/v82/v86 的完整口径）----
+            // ★改动的原因：旧实现是"同级一律不补"的极简版，用户真机上报的就是它
+            //   ——先写一个 For（回车补了 Next），再回到它上面补一个新的 For 按回车，
+            //   新 For 下面压着同级的旧代码，于是 Next 永远补不出来。
+            var noAbove = new List<string>();
             Ok("closer-needed/下面是 End Sub 就补",
-                Editing.CloserNeeded(new List<string> { "End Sub" }, "Next", 4));
-            Ok("closer-needed/下面已有 Next 不补",
-                !Editing.CloserNeeded(new List<string> { "    Next" }, "Next", 4));
-            Ok("closer-needed/块里已有内容不补",
-                !Editing.CloserNeeded(new List<string> { "        x = 1" }, "Next", 4));
-            Ok("closer-needed/同缩进的别的东西不补",
-                !Editing.CloserNeeded(new List<string> { "    y = 2" }, "Next", 4));
+                Editing.CloserNeeded(new List<string> { "End Sub" }, "Next", 4, "for", noAbove));
+            Ok("closer-needed/下面已挂着本块的 Next 不补",
+                !Editing.CloserNeeded(new List<string> { "    Next" }, "Next", 4, "for", noAbove));
+            Ok("closer-needed/块里已有内容且已有 End If 不补",
+                !Editing.CloserNeeded(new List<string> { "        x = 1", "    End If" }, "End If", 4, "if", noAbove));
+            Ok("closer-needed/同级旧代码压着也补（新 For 压在旧 For 上）",
+                Editing.CloserNeeded(
+                    new List<string> { "    For j = 1 To 2", "        x = 1", "    Next j" },
+                    "Next", 4, "for", noAbove));
+            Ok("closer-needed/同级普通语句也补（过程中间插一个块）",
+                Editing.CloserNeeded(new List<string> { "    y = 2" }, "Next", 4, "for", noAbove));
             Ok("closer-needed/空行与注释跳过",
-                Editing.CloserNeeded(new List<string> { "", "    ' 注释", "End Sub" }, "Next", 4));
+                Editing.CloserNeeded(new List<string> { "", "    ' 注释", "End Sub" }, "Next", 4, "for", noAbove));
+            Ok("closer-needed/更浅的 Next 属于外层 For -> 补",
+                Editing.CloserNeeded(new List<string> { "    Next" }, "Next", 8, "for",
+                    new List<string> { "Sub Foo()", "    For i = 1 To 10" }));
+            Ok("closer-needed/更浅的 Next 没人认领 -> 不补（防双份）",
+                !Editing.CloserNeeded(new List<string> { "    Next" }, "Next", 8, "for",
+                    new List<string> { "Sub Foo()" }));
+            Ok("closer-needed/Else 不是块结束，继续往下找 End If",
+                !Editing.CloserNeeded(
+                    new List<string> { "    Else", "        y = 1", "    End If" },
+                    "End If", 4, "if", noAbove));
+            Ok("closer-needed/顶格行标签与 #If 指令整行跳过",
+                Editing.CloserNeeded(new List<string> { "1:", "#If VBA7 Then", "    End Sub" },
+                    "Next", 4, "for", noAbove));
+            Ok("closer-needed/旧口径（不传 kind）保持不变",
+                !Editing.CloserNeeded(new List<string> { "    y = 2" }, "Next", 4));
+
+            // ---- 回车接管用的"块头前缀"宽松判据（v142）----
+            // 快照落后一格时（`For i = 1 To ` 少个 3 / `If x > 0 The` 少个 n），
+            // 只靠第一个词判断"像不像块头"，先接管、再让 UI 线程用真数据复核。
+            Ok("header-prefix/半截 For", Editing.LooksLikeBlockHeaderPrefix("    For i = 1 To "));
+            Ok("header-prefix/半截 Then", Editing.LooksLikeBlockHeaderPrefix("    If x > 0 The"));
+            Ok("header-prefix/Select Case", Editing.LooksLikeBlockHeaderPrefix("    Select Case x"));
+            Ok("header-prefix/#If", Editing.LooksLikeBlockHeaderPrefix("#If VBA7 Then"));
+            Ok("header-prefix/Private Sub", Editing.LooksLikeBlockHeaderPrefix("Private Sub Foo("));
+            Ok("header-prefix/整行注释", Editing.LooksLikeBlockHeaderPrefix("    ' 说明"));
+            Ok("header-prefix/普通语句不算", !Editing.LooksLikeBlockHeaderPrefix("    x = 1"));
+            Ok("header-prefix/字符串里的 For 不算", !Editing.LooksLikeBlockHeaderPrefix("    MsgBox \"For\""));
+            Ok("header-prefix/续行符不算", !Editing.LooksLikeBlockHeaderPrefix("    For i = _"));
+            Ok("header-prefix/空行不算", !Editing.LooksLikeBlockHeaderPrefix(""));
         }
 
         // ------------------------------------------------------------------

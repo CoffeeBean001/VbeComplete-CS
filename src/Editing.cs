@@ -12,12 +12,12 @@
 //   / _pair_insertion / _unterminated_string / _indent_unit_for
 //
 // ★两个"故意不一样"的地方（都是为了少改坏用户代码，见各函数注释）：
-//   1. `CloserNeeded` 用的是【保守口径】：只有光标下方再没有"本块之外的东西"
-//      才补收尾。Python 版那套按缩进配平的判据更聪明，但分支更多、更容易在
-//      边缘情况上多补一条 `End If`（双份收尾 = 直接编译不过）。宁可少补一条
-//      （用户自己敲一下就好），也绝不凭空变出一条。
-//   2. 缩进单位不做"按工程反推 tabw/wide2"的拟合：Tab 一律按 4 列算。列语义
+//   1. 缩进单位不做"按工程反推 tabw/wide2"的拟合：Tab 一律按 4 列算。列语义
 //      的拟合一旦猜错，光标就会落进词中间（Python 版第 19 条铁律）。
+//   ~~2. CloserNeeded 用保守口径~~ —— ★v142 作废：那条"同级一律不补"的极简口径
+//      就是用户报的"按回车不补结构结尾"（先写一个 For、再回到它上面补一个新 For，
+//      下面压着同级的旧代码 -> 新块的 Next 永远补不出来）。现已按 Python 版
+//      v80a/v82/v86 的完整口径移植（OwnCloserBelow / OwnerAboveAt / IndentBlind）。
 
 using System;
 using System.Collections.Generic;
@@ -367,32 +367,182 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 下方到底要不要补 closer（保守口径，见文件头说明）：
-        /// 只有"下方没有任何本块之外的东西"才补 —— 也就是说：
-        ///   * 已经挂着一个本块的收尾（缩进 ≥ 块头）-> 不补（否则双份收尾，编译不过）；
-        ///   * 下面还有更深的东西 -> 块里已经有内容了，不补（补了就插进用户代码中间）；
-        ///   * 下面有同缩进的、又不是任何块收尾的东西 -> 本块早结束了，不补。
-        /// 空行与整行注释一律跳过（它们不影响结构）。
+        /// 下方到底要不要补 closer —— 移植 Python 版 v80a/v82/v86 的完整口径
+        /// （C# 之前是"同级一律不补"的极简版，用户在真机上撞的就是这一条）。
+        ///
+        /// 传了 <paramref name="kind"/>（生产路径一定传）时：
+        ///   * 下方【已经挂着本块自己的收尾】-> 不补（见 <see cref="OwnCloserBelow"/>）；
+        ///   * 下方第一个非空行是本块的同类收尾、且缩进比块头【更浅】-> 再问一句
+        ///     <see cref="OwnerAboveAt"/>：那是外层块的收尾（本块该补）还是用户自己写歪的（不补）；
+        ///   * 其余 -> 补。
+        /// 空行 / 整行注释 / 块内分支行 / 行标签 / `#` 条件编译指令一律跳过
+        /// （它们的缩进不代表结构层级）。
+        ///
+        /// ★为什么必须改成这样（用户真机报的）：先写了一个 `For`（回车补了 `Next`），
+        ///   再回到它【上面】补一个新的 `For` 按回车 —— 新 `For` 下面压着的正是原来那个
+        ///   `For`（同级）。旧口径"同级一律不补（只有模块级缩进 0 才补）"，于是新 `For`
+        ///   的 `Next` 永远补不出来，用户看到的就是"只换行缩进、不补收尾"。
+        ///   Python 版 v80a 就是为这个 bug 写的，C# 版当时砍成了极简版，于是又犯了一遍。
+        ///
+        /// 不传 kind 时保持旧口径（只有下面的老测试在用）。
         /// </summary>
         public static bool CloserNeeded(IList<string> below, string closer, int baseIndent)
+            => CloserNeeded(below, closer, baseIndent, null, null);
+
+        public static bool CloserNeeded(IList<string> below, string closer, int baseIndent,
+            string kind, IList<string> above)
         {
             if (string.IsNullOrEmpty(closer) || below == null) return false;
+
+            string first = null;
             foreach (var raw in below)
             {
-                if (string.IsNullOrEmpty(raw) || raw.Trim().Length == 0) continue;
-                if (CodePart(raw).Trim().Length == 0) continue;          // 整行注释
+                if (!string.IsNullOrEmpty(raw) && raw.Trim().Length > 0) { first = raw; break; }
+            }
 
-                int w = IndentWidth(raw);
-                if (w > baseIndent) return false;                        // 块里已经有内容
-                if (IsCloserText(raw, closer)) return false;             // 本块的收尾已在下面
-                if (!IsBlockCloserLine(raw)) return false;               // 同缩进的别的东西 = 块已结束
+            if (kind == null)
+            {
+                // ---- 旧口径（v79b）：不看 kind，只看"下方第一个非空行" ----
+                foreach (var raw in below)
+                {
+                    if (string.IsNullOrEmpty(raw) || raw.Trim().Length == 0) continue;
+                    if (CodePart(raw).Trim().Length == 0) continue;      // 整行注释
+
+                    int w = IndentWidth(raw);
+                    if (w > baseIndent) return false;                    // 块里已经有内容
+                    if (IsCloserText(raw, closer)) return false;         // 本块的收尾已在下面
+                    if (!IsBlockCloserLine(raw)) return false;           // 同缩进的别的东西 = 块已结束
+                }
+                return true;
+            }
+
+            // ---- 完整口径（v80a）----
+            if (OwnCloserBelow(below, closer, kind, baseIndent)) return false;
+            if (first != null)
+            {
+                int w = IndentWidth(first);
+                if (IsCloserText(first, closer) && w < baseIndent)
+                    return OwnerAboveAt(above, kind, w);
             }
             return true;
         }
 
+        /// <summary>
+        /// 下方是不是已经挂着【本块自己的】收尾？（移植 Python `_own_closer_below`）
+        ///
+        /// 只按"和块头同一缩进"的行来配平：同缩进的同类块头 +1、同类收尾 -1。
+        ///   * 配平到 0 时遇到的同类收尾 -> 就是本块的，下面已经挂着了；
+        ///   * 同缩进的其它东西（普通语句 / 别种块头 / 别种收尾）-> 本块早就结束了；
+        ///   * 缩进更浅 -> 已经出了这一层；
+        ///   * 缩进更深的同类块头 / 收尾另用 deeper 配平（免得把内层 `Next` 当成
+        ///     "用户写歪的收尾"而少补一条）；
+        ///   * 空行 / 注释 / 分支行（Else、Case）/ 行标签 / `#` 指令 -> 整行跳过。
+        /// </summary>
+        private static bool OwnCloserBelow(IList<string> below, string closer, string kind, int baseIndent)
+        {
+            int depth = 0;      // 同缩进的同类块头（本块下面嵌着的同类块）
+            int deeper = 0;     // 真正嵌套（缩进更深）的同类块头
+
+            foreach (var raw in below)
+            {
+                if (string.IsNullOrEmpty(raw) || raw.Trim().Length == 0) continue;
+                if (IsCommentOnly(raw) || BranchWord(raw) != null || IndentBlind(raw)) continue;
+
+                int w = IndentWidth(raw);
+                if (w < baseIndent) return false;                 // 出了这一层
+
+                if (IsCloserText(raw, closer))
+                {
+                    if (w == baseIndent)
+                    {
+                        if (depth == 0) return true;              // 这个收尾就是本块的
+                        depth--;
+                    }
+                    else if (deeper > 0) deeper--;                // 闭合的是更深的那个同类块
+                    else return true;                             // 孤零零一个更深的同类收尾：别再补
+                    continue;
+                }
+
+                if (string.Equals(BlockKind(raw), kind, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (w == baseIndent) depth++;
+                    else deeper++;
+                    continue;
+                }
+
+                if (w == baseIndent) return false;                // 同缩进的其它东西 -> 本块已结束
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// 上方有没有一个【同类、仍未闭合】的块头，缩进正好在 <paramref name="indent"/>？
+        /// （移植 Python `_closer_owner_above`）—— 用来判断"下面那个更浅的同类收尾"
+        /// 到底是外层块的，还是用户自己写歪的（写歪的再补一条就成了双份收尾）。
+        /// </summary>
+        private static bool OwnerAboveAt(IList<string> above, string kind, int indent)
+        {
+            string closer;
+            if (!Closers.TryGetValue(kind, out closer)) return false;
+            if (above == null) return false;
+
+            int depth = 0;
+            for (int i = above.Count - 1; i >= 0; i--)
+            {
+                string raw = above[i];
+                if (string.IsNullOrEmpty(raw) || raw.Trim().Length == 0) continue;
+
+                if (IsCloserText(raw, closer)) { depth++; continue; }
+                if (!string.Equals(BlockKind(raw), kind, StringComparison.OrdinalIgnoreCase)) continue;
+                if (depth == 0) return IndentWidth(raw) == indent;
+                depth--;
+            }
+            return false;
+        }
+
+        /// <summary>这一行的缩进【不代表结构层级】：行标签（`1:`）与 `#` 条件编译指令。</summary>
+        private static bool IndentBlind(string line)
+            => IsLabelLine(line) || DirectiveWord(line) != null;
+
         // ------------------------------------------------------------------
         // 钩子线程用的三个"要不要接管"判据
         // ------------------------------------------------------------------
+
+        /// <summary>
+        /// 这一行"看起来像块头 / 整行注释"——**允许只写了半截**。
+        ///
+        /// ★v142 为什么要这个：钩子线程只能拿轮询留下的快照，而用户经常是
+        ///   `For i = 1 To 3` 敲完最后一个字符**立刻**回车 —— 那一瞬间快照还停在
+        ///   `    For i = 1 To `（少一个 `3`），`_pendingKeys > 0`，
+        ///   `EnterIndentWanted` 因为"光标不在行尾"判 false ⇒ 回车原样放给 VBE
+        ///   ⇒ 只换行、不补收尾。真机上这就是用户说的"按回车不会自动补全结构的结尾"。
+        ///
+        ///   所以这里给一个**宽松**的判据：只看这一行的第一个词是不是块关键字
+        ///   （`If` 没写完 `Then` 也算，`#If` 也算），或者整行是注释。
+        ///   它只用于"要不要先接管这一下回车"；真正的决定交给 UI 线程 ——
+        ///   `NewLineBelow` 会拿**真 COM 数据**再判一次，判不过就把回车原样还回去
+        ///   （绝不"吞了却什么都没发生"）。误判的代价只是那一下回车晚十几毫秒。
+        /// </summary>
+        public static bool LooksLikeBlockHeaderPrefix(string line)
+        {
+            string code = CodePart(line);
+            if (code.Length == 0) return IsCommentOnly(line);
+            if (code.EndsWith("_", StringComparison.Ordinal)) return false;
+
+            string low = Collapse(code).ToLowerInvariant();
+            string[] words = low.Split(' ');
+            int i = 0;
+            while (i < words.Length && IsModWord(words[i])) i++;
+            string first = i < words.Length ? words[i].TrimStart('#') : "";
+            switch (first)
+            {
+                case "if": case "for": case "do": case "while": case "with":
+                case "select": case "sub": case "function": case "property":
+                case "type": case "enum":
+                    return true;
+            }
+            return false;
+        }
 
         /// <summary>
         /// 这一下回车值不值得由我们接管。只有两种情形：整行注释、块结构开头；

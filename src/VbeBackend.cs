@@ -562,6 +562,12 @@ namespace VbeComplete
                 string lineText = LineAt(anchor);
                 if (lineText == null) lineText = "";
 
+                // ★v142：真正的"要不要接管"在这里用**真 COM 数据**再判一次。
+                //   钩子那一侧可能因为快照落后而"先接管了再说"（见 App 的回车分支），
+                //   所以这里必须自己兜住：不是块头 / 整行注释、光标不在行尾、行内
+                //   有 Tab —— 一律 false，调用方会把回车原样还给 VBE。
+                if (smart && !Editing.EnterIndentWanted(lineText, ec)) return false;
+
                 string closerText = null;
                 string fixedLine = null;
                 string indent;
@@ -655,7 +661,10 @@ namespace VbeComplete
             if (closer == null) return null;
             string baseWs = Editing.LeadingWs(lineText);
             var below = LinesBelow(all, anchor);
-            if (!Editing.CloserNeeded(below, closer, Editing.IndentWidth(baseWs))) return null;
+            // ★必须把 kind 与"上方各行"一起传：判据要靠 kind 分辨"下面那个同类收尾
+            //   是本块的还是外层块的/用户写歪的"（见 Editing.CloserNeeded 的说明）。
+            if (!Editing.CloserNeeded(below, closer, Editing.IndentWidth(baseWs),
+                    Editing.BlockKind(lineText), above)) return null;
             return baseWs + closer;
         }
 

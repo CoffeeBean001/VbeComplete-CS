@@ -62,8 +62,16 @@ pane**, and its message loop costs nothing when idle.
   much). `Sub` gets a space, `Function` gets `()` with the caret inside — and so do the functions
   from the word databases (`MsgBox` / `Split` …), even at the very start of a line. Type names
   (`String`) never get parens. Silent inside comments and string literals.
-- **Enter auto-indent**: block openers indent one level deeper and add `End If` / `Next` / `Loop`;
-  `Else` / `Case` lines are re-aligned first.
+- **Enter auto-indent *and* auto-close**: block openers (`If…Then` / `For` / `Do` / `While` /
+  `With` / `Select Case` / `Sub` / `Function` / `Property` / `Type` / `Enum`) indent the new line
+  one level deeper and insert `End If` / `Next` / `Loop` / `Wend` / `End With` / `End Select` /
+  `End Sub` … below it; `Else` / `Case` lines are re-aligned first. The closer decision follows the
+  Python build's v80a rules: sibling code sitting right below no longer suppresses the closer
+  (writing one `For`, then going back up to add another `For` above it is the common case), and it
+  never invents a second closer when one already belongs to this block. Hitting Enter *immediately*
+  after the last character is handled too: the hook only takes the key, the real decision happens on
+  the UI thread with live COM data (and the newline is replayed if it turns out not to be a header);
+  while an IME composition is active the key is never taken (there Enter commits the composition).
 - **Shift+Enter** starts a new line below without splitting the current one.
 - **Backspace, two jobs**: deletes a whitespace-only line, or removes an empty pair `()` / `""`.
 - **Auto-pairing** `(` `"` — full-width `（）` / `“”` under a Chinese-punctuation IME; the closing
@@ -96,9 +104,9 @@ pane**, and its message loop costs nothing when idle.
   tool; they are fully independent of the Python edition, sharing no file with it.
 - Every shortcut follows one rule: **if the action fails, the original key is replayed**, so keys
   are never silently swallowed.
-- 344 self-checks (fuzzy matching, scopes, `Option Explicit`, Chinese identifiers, member completion,
+- 360 self-checks (fuzzy matching, scopes, `Option Explicit`, Chinese identifiers, member completion,
   highlight splitting, call-site detection, `As`/`New` suppression, line-by-line re-indent) plus
-  word-DB, snippet-store, icon/autostart and off-screen rendering checks, and six live probes
+  word-DB, snippet-store, icon/autostart and off-screen rendering checks, and seven live probes
   (including `Ctrl+Shift+L`) keep the logic honest.
 
 ## Cons

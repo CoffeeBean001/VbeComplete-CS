@@ -126,6 +126,47 @@ namespace VbeComplete
         [DllImport("user32.dll", SetLastError = true)]
         public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
+        // ---- 抢前台（只有探针用）----
+        // ★SetForegroundWindow 对"当前不在前台的进程"会被系统直接拒掉（返回 false），
+        //   这是 Windows 防焦点窃取的规则。绕法是先把自己的输入队列 Attach 到
+        //   前台窗口所在线程，借它的"前台资格"再 SetForegroundWindow —— 探针要
+        //   把 VBE 抢到前台才能让键盘钩子真的路由按键（钩子第一道闸就是焦点）。
+        [DllImport("user32.dll")]
+        public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo,
+            [MarshalAs(UnmanagedType.Bool)] bool fAttach);
+
+        [DllImport("user32.dll")]
+        public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("user32.dll")]
+        public static extern bool BringWindowToTop(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr SetFocus(IntPtr hWnd);
+
+        /// <summary>把某个窗口强行弄到前台（探针专用，返回是否成功）。</summary>
+        public static bool ForceForeground(IntPtr h)
+        {
+            if (h == IntPtr.Zero) return false;
+            IntPtr fg = GetForegroundWindow();
+            if (fg == h) return true;
+            uint tidFg = fg == IntPtr.Zero ? 0 : GetWindowThreadProcessId(fg, out _);
+            uint tidMe = GetCurrentThreadId();
+            bool attached = tidFg != 0 && tidFg != tidMe && AttachThreadInput(tidMe, tidFg, true);
+            try
+            {
+                ShowWindow(h, 9);              // SW_RESTORE：最小化的也拉出来
+                BringWindowToTop(h);
+                SetForegroundWindow(h);
+                SetFocus(h);
+            }
+            finally
+            {
+                if (attached) AttachThreadInput(tidMe, tidFg, false);
+            }
+            return GetForegroundWindow() == h;
+        }
+
         [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
 
@@ -419,6 +460,48 @@ namespace VbeComplete
             gti.cbSize = Marshal.SizeOf(typeof(GUITHREADINFO));
             if (!GetGUIThreadInfo(tid, ref gti)) return IntPtr.Zero;
             return gti.hwndFocus;
+        }
+
+        /// <summary>VBE 线程里当前拥有键盘焦点的那个窗口（没有 VBE 就是 Zero）。</summary>
+        public static IntPtr FocusedVbeWindow()
+        {
+            IntPtr frame = FindWindow("wndclass_desked_gsk", null);
+            if (frame == IntPtr.Zero) return IntPtr.Zero;
+            uint pid;
+            uint tid = GetWindowThreadProcessId(frame, out pid);
+            return FocusedHwndOf(tid);
+        }
+
+        // ---- 输入法组字状态 ----
+        // ★v142：以前判"输入法正在组字"用的是"按了键但文档没变"这个计数，
+        //   可它同时也把"刚敲完最后一个字符就按回车"（快照还没追上）算进去了 ——
+        //   于是回车被放行，结构收尾补不出来（用户报的 bug 就在这儿）。
+        //   直接问输入法：有组字串 = 回车是【上屏键】，绝不能抢；没有 = 放心接管。
+        [DllImport("imm32.dll")]
+        private static extern IntPtr ImmGetContext(IntPtr hWnd);
+
+        [DllImport("imm32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool ImmReleaseContext(IntPtr hWnd, IntPtr hIMC);
+
+        [DllImport("imm32.dll", CharSet = CharSet.Unicode)]
+        private static extern int ImmGetCompositionStringW(IntPtr hIMC, int dwIndex,
+            byte[] lpBuf, int dwBufLen);
+
+        private const int GCS_COMPSTR = 0x0008;
+
+        /// <summary>这个窗口此刻有没有输入法组字串？没有/拿不到一律 false。</summary>
+        public static bool ImeComposing(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero) return false;
+            try
+            {
+                IntPtr himc = ImmGetContext(hwnd);
+                if (himc == IntPtr.Zero) return false;
+                try { return ImmGetCompositionStringW(himc, GCS_COMPSTR, null, 0) > 0; }
+                finally { ImmReleaseContext(hwnd, himc); }
+            }
+            catch { return false; }
         }
 
         /// <summary>当前插入符的屏幕矩形：(x, top, bottom)。VBE 是自绘的，但它仍然

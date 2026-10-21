@@ -55,6 +55,23 @@ namespace VbeComplete
         private volatile IntPtr _snippetHwnd;
         private long _lastKeyTs;
 
+        // ---- 探针专用（--enterprobe）：默认 0 = 注入键一律不理，与生产行为一致 ----
+        // ★为什么需要它：真实的按键路径是"钩子 → 判据 → Post → COM"，而 SendInput
+        //   发出来的键带 LLKHF_INJECTED 标记，钩子会（也必须）跳过它们 —— 否则我们
+        //   自己补的空格 / 括号会自己触发自己。真机探针要验的正是这条路，于是给它
+        //   开一个**只对测试键**生效的放行口：0 = 全不理，-1 = 全放行（模拟连续打字），
+        //   其它值 = 只放行这一个 vk。
+        internal static volatile int AcceptInjectedVk;
+
+        // ---- 探针用的只读视图（生产路径一个都不读） ----
+        internal bool CodePaneFocused => _codePaneFocused;
+        internal bool PopupVisible => _popupVisible;
+        internal int PendingKeys => _pendingKeys;
+        internal Snapshot HookSnap => _hookSnap;
+        internal long HookSnapAgeMs => Environment.TickCount64 - _hookSnapTicks;
+        internal void RunOnUi(Action a) { try { _disp.Invoke(a); } catch { } }
+        internal void RequestExit() { try { _disp.BeginInvoke((Action)ExitThread); } catch { } }
+
         // ---- 钩子 ----
         private Thread _hookThread;
         private IntPtr _hookHandle = IntPtr.Zero;
@@ -347,7 +364,9 @@ namespace VbeComplete
                 lParam, typeof(Native.KBDLLHOOKSTRUCT));
 
             // 注入的键（我们自己发的空格/括号/回车）不算"用户按键"：否则会自己触发自己
-            if ((kb.flags & Native.LLKHF_INJECTED) != 0)
+            // （探针 --enterprobe 通过 AcceptInjectedVk 单独放行它要发的那几个键）
+            if ((kb.flags & Native.LLKHF_INJECTED) != 0 &&
+                AcceptInjectedVk != -1 && (int)kb.vkCode != AcceptInjectedVk)
                 return Native.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
 
             int vk = (int)kb.vkCode;
@@ -458,9 +477,12 @@ namespace VbeComplete
                 {
                     // ★回车【不】确认候选 —— 回车在 VBE 里是换行，误触发代价太大
                     //   （Python 版是用户在真机上明确要求去掉的："确认键只用 Tab"）。
-                    //   这里只收起列表，回车原样交给 VBE 去换行。
+                    //   这里只收起列表。
+                    // ★v142：**不要在这里 return**。用户敲完 `If x > 0 Then` 立刻回车时，
+                    //   轮询还没看到最后那个 `n`，候选窗正巧还挂着（"The" 匹配到 "Then"），
+                    //   在这里 return 就等于把回车整个交回 VBE —— 于是"只换行、不补 End If"。
+                    //   改成"收起候选窗 + 继续往下走"，让下面的回车分支自己判。
                     Post(() => _eng.Hide());
-                    return Native.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
                 }
                 if (vk == Native.VK_ESCAPE)
                 {
@@ -571,8 +593,33 @@ namespace VbeComplete
             {
                 string lineText;
                 int caretDisp;
-                if (FreshHookSnap(out lineText, out caretDisp) &&
-                    Editing.EnterIndentWanted(lineText, caretDisp))
+                bool fresh = FreshHookSnap(out lineText, out caretDisp);
+                if (fresh && Editing.EnterIndentWanted(lineText, caretDisp))
+                {
+                    Post(() =>
+                    {
+                        _eng.Hide();
+                        if (!_be.NewLineBelow(true, !NoAutoClose, !NoBranchAlign))
+                            Native.SendVk(Native.VK_RETURN);
+                    });
+                    return Swallow(vk);
+                }
+
+                // ★v142：快照"落后一两格"时也要接管 —— 这是用户报的那个 bug 的真因。
+                //   用户敲完 `For i = 1 To 3` 的最后一个字符【立刻】回车：那一瞬间
+                //   轮询还没把这一格读回来（`_pendingKeys > 0`、行文本少一个 `3`），
+                //   上面的判据必然 false ⇒ 回车原样交给 VBE ⇒ 只换行、不补 `Next`。
+                //   打字越快越常撞上，所以用户的感觉就是"根本不会补"。
+                //
+                //   这一档不猜结论，只做"先接管"，然后交给 UI 线程用【真 COM 数据】判：
+                //   NewLineBelow 内部会重新读行、重新判（不是块头 / 光标不在行尾 /
+                //   后面还有内容 -> 一律返回 false），判不过就把回车原样还回去 ——
+                //   绝不"吞了却什么都没发生"。
+                //   ⚠️ 输入法正在组字时**绝不接管**：那一下回车是"上屏"，抢了就成了
+                //      "字没上屏反而多一行"。这一问走 Win32（ImmGetContext），不碰 COM。
+                if (!Native.ImeComposing(Native.FocusedVbeWindow()) &&
+                    Editing.LooksLikeBlockHeaderPrefix(lineText) &&
+                    caretDisp + 16 >= Rules.DispCol(lineText, (lineText ?? "").Length))
                 {
                     Post(() =>
                     {
@@ -701,12 +748,14 @@ namespace VbeComplete
             // 800ms：与 Python 版的 ENTER_CTX_MAX_AGE 同口径。在代码窗里打字时
             // 轮询是 50ms 一轮，这个上限其实是"轮询卡住了 / 刚切过焦点"的兜底。
             if (Environment.TickCount64 - _hookSnapTicks > 800) return false;
+            // ★v142：出参先填上（即便最后返回 false）—— 回车的"快照落后"那一档
+            //   还要拿这行的文本去判"看起来像不像块头"，见 HookProc 里的说明。
+            lineText = s.Text ?? "";
+            caretDisp = s.CaretCol;
             // 计数超过 2 秒还挂着 ⇒ 不是"输入法在组字"，是那次变化我们没采到。
             // 不清掉的话回车缩进 / 退格接管会被永久挡死（宁可放过这一次）。
             if (_pendingKeys > 0 && Environment.TickCount64 - _pendingAt > 2000) _pendingKeys = 0;
             if (_pendingKeys > 0) return false;
-            lineText = s.Text ?? "";
-            caretDisp = s.CaretCol;
             return caretDisp > 0;
         }
 
