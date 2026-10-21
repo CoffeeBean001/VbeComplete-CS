@@ -5,7 +5,7 @@
 //   System32 下自带 winsqlite3.dll，导出的就是标准 SQLite C API。
 //
 // ★这一层只管"把 SQL 跑掉、把列读回来"，不认识任何业务表。
-//   snippets.db / keywords.db / functions.db 都建在它上面。
+//   snippets-cs.db / keywords-cs.db / functions-cs.db 都建在它上面。
 //
 // ★写出去的必须是**真·SQLite 文件**：用户会用 DB Browser 之类去编辑词库，
 //   自造的 JSON 格式在这个需求面前没有意义。

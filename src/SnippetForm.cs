@@ -66,7 +66,7 @@ namespace VbeComplete
             _onInsert = onInsert;
 
             // 标题带上库文件名：一眼就能确认"当前用的是 C# 版自己的库"，
-            // 不会跟 Python 版的 snippets.db 混起来。
+            // 项目里只有一个片段库，不存在跟 PY 版混起来的可能。
             Text = "代码片段 — " + System.IO.Path.GetFileName(SnippetStore.DbPath());
             try { Icon = IconAssets.Window(); } catch { }
             StartPosition = FormStartPosition.Manual;

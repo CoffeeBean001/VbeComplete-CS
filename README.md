@@ -54,9 +54,8 @@ pane**, and its message loop costs nothing when idle.
 - **Line commands**: `Ctrl+/` comment toggle · `Ctrl+D` duplicate · `Ctrl+K` delete ·
   `Ctrl+Shift+Enter` insert above · `Ctrl+Shift+↑/↓` jump to the last declaration / closing line.
 - **`Ctrl+Q` snippet library** — its own `snippets-cs.db` (SQLite; the window title shows that
-  file name). On first run the contents of an old `snippets.db` are copied over **once**, after
-  which the two files are unrelated. Two-line list on the left (title + first code line,
-  per-character search highlighting), editor on the right, `Ctrl+N` new / `Ctrl+S` save /
+  file name), the only snippet file in the project. Two-line list on the left (title + first code
+  line, per-character search highlighting), editor on the right, `Ctrl+N` new / `Ctrl+S` save /
   `Enter` or `Ctrl+Enter` to insert at the caret.
 - **Adaptive polling**: 50 ms while typing, 150 ms when idle, 250 ms outside the VBE. Text changes
   caused by a paste or by another program only dismiss the popup — they never open it

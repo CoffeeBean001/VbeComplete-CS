@@ -224,7 +224,7 @@ namespace VbeComplete
                 sb.AppendLine("注意：");
                 sb.AppendLine("  * 枚举常量一律不收（vbRed / xlUp 之类）—— 数量太大，提示出来只会干扰。");
                 sb.AppendLine("  * 想加自己的常用函数，往 functions 里插一行即可，程序不区分是不是 VBA 内置的。");
-                sb.AppendLine("  * 两个库与 Python 版的 snippets.db 完全无关，不要相互拷贝。");
+                sb.AppendLine("  * 两个库与 Python 版完全无关，文件名各带 -cs，不要相互拷贝。");
                 File.WriteAllText(p, sb.ToString(), new UTF8Encoding(true));
             }
             catch { }

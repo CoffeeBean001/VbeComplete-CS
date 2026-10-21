@@ -851,7 +851,7 @@ namespace VbeComplete
         /// <summary>
         /// 片段库自检（不需要 Excel、不需要桌面）：在**临时库**上跑一遍增删改查，
         /// 顺便报告真实库的路径与条数。
-        /// ★刻意不碰用户的 snippets.db —— 自检绝不允许改坏用户攒下来的片段。
+        /// ★刻意不碰用户的 snippets-cs.db —— 自检绝不允许改坏用户攒下来的片段。
         /// </summary>
         private static int SnippetTest()
         {

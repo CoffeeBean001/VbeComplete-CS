@@ -27,12 +27,7 @@ recent.json
 recent.json.tmp
 
 # ---- 用户数据：代码片段库（Ctrl+Q）----
-# 里面是你自己一条条攒的片段。程序首次运行会自动建库；旧 snippets.db 会被
-# 一次性导入过来（只读，不改旧文件）。不进仓库。
-snippets.db
-snippets.db-journal
-snippets.db-wal
-snippets.db-shm
+# 里面是你自己一条条攒的片段。程序首次运行会自动建库。不进仓库。
 snippets-cs.db
 snippets-cs.db-journal
 snippets-cs.db-wal

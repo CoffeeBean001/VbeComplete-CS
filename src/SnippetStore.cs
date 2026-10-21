@@ -1,9 +1,9 @@
 // 代码片段库：SQLite 两列表（title 主键 + code），外加标题模糊匹配。
 //
-// ★这是 C# 版**自己的**库：`snippets-cs.db`。与 Python 版的 `snippets.db`
-//   不是同一个文件、也不互相读写 —— 两个是独立项目，谁也别指望对方的字段布局。
-//   首次运行若发现旧的 `snippets.db`（历史遗留 / 从 PY 拷过来的），会做**一次性**
-//   导入，之后两个文件再无关系。
+// ★这是 C# 版**自己的**库：`snippets-cs.db`，只有这一个文件。
+//   与 Python 版没有任何读写关系 —— 两个是独立项目，谁也别指望对方的字段布局。
+//   （v136 起删掉了"从旧 snippets.db 一次性导入"那段：数据早已搬完，留着只会让人
+//     以为还有第二个库；项目里也不该再出现指向 PY 版文件的代码。）
 //
 // 表结构：
 //     CREATE TABLE IF NOT EXISTS snippets (title TEXT PRIMARY KEY, code TEXT NOT NULL)
@@ -47,11 +47,8 @@ namespace VbeComplete
             return DefaultPath();
         }
 
-        /// <summary>库里认的默认文件名（带 `-cs`，永不与 Python 版的 `snippets.db` 撞名）。</summary>
+        /// <summary>库里认的默认文件名（带 `-cs`，永不与 Python 版撞名）。</summary>
         private static string DefaultPath() => System.IO.Path.Combine(Settings.Home, "snippets-cs.db");
-
-        /// <summary>历史文件名（只用于第一次迁移，之后再也不碰）。</summary>
-        private static string LegacyPath() => System.IO.Path.Combine(Settings.Home, "snippets.db");
 
         private bool Open()
         {
@@ -68,48 +65,7 @@ namespace VbeComplete
                 _lastError = "建表失败：" + _db.LastError();
                 Log.Write("{0}", _lastError);
             }
-            MigrateLegacy();
             return true;
-        }
-
-        /// <summary>
-        /// 一次性迁移：新库是空的、而同级目录还有旧的 `snippets.db` 时，把里面的
-        /// 片段拷过来。**只拷不改**，旧文件原样留着（那是用户攒了很久的东西）。
-        /// 迁移过一次之后 `snippets-cs.db` 里就有数据了，这里再也不会命中。
-        /// </summary>
-        private void MigrateLegacy()
-        {
-            try
-            {
-                // ★只有"我们自己那个库文件"才做迁移。换成别的路径（SNIPPET_DB 指到别处、
-                //   --snipetest 用临时库）时一律不迁移 —— 否则临时库会被旧库的记录灌满，
-                //   测试里"刚建的库应该是 0 条"这条断言永远不成立。
-                if (!string.Equals(System.IO.Path.GetFullPath(DbPath()),
-                        System.IO.Path.GetFullPath(DefaultPath()), StringComparison.OrdinalIgnoreCase))
-                    return;
-
-                string legacy = LegacyPath();
-                if (string.Equals(System.IO.Path.GetFullPath(legacy),
-                        System.IO.Path.GetFullPath(DbPath()), StringComparison.OrdinalIgnoreCase))
-                    return;
-                if (!File.Exists(legacy)) return;
-                if (_db.Scalar("SELECT COUNT(*) FROM snippets") > 0) return;
-
-                using (var old = new SqliteDb())
-                {
-                    if (!old.Open(legacy)) return;
-                    var rows = old.Query("SELECT title, code FROM snippets", 0);
-                    int n = 0;
-                    foreach (var r in rows)
-                    {
-                        if (r.Length < 2 || string.IsNullOrEmpty(r[0])) continue;
-                        if (_db.Write("INSERT OR IGNORE INTO snippets (title, code) VALUES (?, ?)",
-                                r[0], r[1])) n++;
-                    }
-                    if (n > 0) Log.Write("片段库迁移：从 {0} 导入 {1} 条到 {2}", legacy, n, DbPath());
-                }
-            }
-            catch (Exception e) { Log.Write("片段库迁移失败（不影响使用）：{0}", e.Message); }
         }
 
         // ------------------------------------------------------------------
