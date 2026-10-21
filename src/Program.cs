@@ -1946,7 +1946,7 @@ namespace VbeComplete
                     //   VBE 的 `CaretCol` 是显示列，直接拿去切字符下标，含全角/Tab 的行
                     //   会切出空词，症状是"这一行根本不弹候选"。所以用"打完还没补全"
                     //   的那一行做样本：把词尾的显示列换算成字符列再取词，必须还是原词。
-                    int wordEndDisp = Rules.DispCol(inserted, at0 + c.Item3.Length, 4);
+                    int wordEndDisp = Rules.DispCol(inserted, at0 + c.Item3.Length);
                     int ws;
                     string wordSeen = Rules.WordBefore(inserted,
                         Rules.CharColFromDisp(inserted, wordEndDisp), out ws);
@@ -1964,8 +1964,8 @@ namespace VbeComplete
                     int idx = actual.IndexOf('(');
                     bool hasParens = idx >= 0;
                     int want = hasParens
-                        ? Rules.DispCol(actual, idx + 1, 4)          // `)` 之前
-                        : Rules.DispCol(actual, at0 + c.Item4.Length, 4);
+                        ? Rules.DispCol(actual, idx + 1)          // `)` 之前
+                        : Rules.DispCol(actual, at0 + c.Item4.Length);
 
                     // 约定（与 Python 版 `_set_caret` 一致）：列 C = "字符 C-1 之前"，
                     // ★但 C 是【显示列】—— 全角/ Tab 行上不能直接减 1，要先换回字符列。

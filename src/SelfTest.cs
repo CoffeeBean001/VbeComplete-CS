@@ -86,6 +86,16 @@ namespace VbeComplete
             Eq("dispcol/tab", Rules.DispCol("\tabc", 3), 7);
             Eq("dispcol/宽字符", Rules.DispCol("中文a", 3), 6);
 
+            // ★v157：Tab 宽度可配置（默认 4，settings.ini 的 TAB_WIDTH 可改）
+            int oldTab = Rules.TabWidth;
+            try
+            {
+                Rules.TabWidth = 8;
+                Eq("dispcol/tab 宽度可配置（8）", Rules.DispCol("\tabc", 3), 11);
+                Eq("char-col/tab 宽度可配置（8）", Rules.CharColFromDisp("\tabc", 11), 4);
+            }
+            finally { Rules.TabWidth = oldTab; }
+
             Eq("find-end/同位置", Rules.FindCompletionEnd("    abc = 1", "abc", 7, 7), 7);
             Eq("find-end/被重排后", Rules.FindCompletionEnd("MsgBox \"已\", vbEx: Exit Sub", "Sub", 24, 22), 26);
             // ★v131b：整词匹配 —— 右边还出现同名子串时，旧实现（±12 窗口 +
@@ -254,6 +264,19 @@ End Type
 
             var p = Parser.ProcOfLine(procs, 6);
             Ok("procs/第 6 行在 Main 里", p != null && p.Name == "Main", p?.ToString());
+
+            // ---- v157：单行过程 / 缺 End Sub 的过程边界 ----
+            var sp1 = Parser.ExtractProcedures("Sub A(): x = 1: End Sub\r\nDim q As Long\r\n");
+            Ok("procs/单行过程只占一行",
+                sp1.Count == 1 && sp1[0].StartLine == 1 && sp1[0].EndLine == 1,
+                sp1.Count + ":" + (sp1.Count > 0 ? sp1[0].StartLine + "-" + sp1[0].EndLine : ""));
+            Ok("procs/单行过程之后的行不在过程里",
+                Parser.ProcOfLine(sp1, 2) == null);
+
+            var sp2 = Parser.ExtractProcedures("Sub A()\r\n    x = 1\r\nSub B()\r\n    y = 2\r\nEnd Sub\r\n");
+            Ok("procs/缺 End Sub 时在下一个过程头前收尾",
+                sp2.Count == 2 && sp2[0].EndLine == 2 && sp2[1].StartLine == 3 && sp2[1].EndLine == 5,
+                string.Join(",", sp2.Select(x => x.Name + ":" + x.StartLine + "-" + x.EndLine)));
 
             var decl = Parser.ExtractDeclared(Sample);
             Ok("decl/多声明 a", decl.Contains("a"));

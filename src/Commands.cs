@@ -170,10 +170,10 @@ namespace VbeComplete
                 //   注释光标左移一格、每按一次解除右移一格（来回切换不守恒）。
                 //   先按旧行算出旧字符列，再按增删补偏移，最后换回显示列。
                 string oldLine = lines[0];
-                int oldCharCol = Rules.CharColFromDisp(oldLine, Math.Max(1, sc), 4);
+                int oldCharCol = Rules.CharColFromDisp(oldLine, Math.Max(1, sc));
                 int newCharCol = Editing.AfterCommentCharCol(oldLine, oldCharCol, allCommented);
                 string here = be.LineAt(from) ?? "";
-                be.SetCaret(from, Rules.CaretColForCharCol(here, newCharCol, 4));
+                be.SetCaret(from, Rules.CaretColForCharCol(here, newCharCol));
             }
             return true;
         }

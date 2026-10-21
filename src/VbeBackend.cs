@@ -59,6 +59,8 @@ namespace VbeComplete
             new Dictionary<string, ModuleScope>(StringComparer.OrdinalIgnoreCase);
         private List<ModuleScope> _scopesList = new List<ModuleScope>();
         private static long _lastSelFailLog;    // GetSelection 失败日志的限流时刻
+        private string _lastLineText;           // 上一次读到的那一行（判"行文本变了"）
+        private string _projectKey;             // 当前工程身份（Name|FileName），换工程要清缓存
         private int _scopesSig = int.MinValue;
         private DateTime _scopesAt = DateTime.MinValue;
         private readonly double _scopesTtl = Settings.Double("SCOPE_TTL", 2.0);
@@ -191,6 +193,18 @@ namespace VbeComplete
                     _modCount = -1;
                     _modAt = DateTime.MinValue;
                 }
+                // ★v157：**行文本变了也要作废模块全文缓存**。上面那句注释一直是这么
+                //   写的，但代码只判了模块名 —— 结果是 1.5 秒内刚写的 `Dim foo`
+                //   看不见：`ModuleText()` 直接返回旧全文，池子里根本没有 foo，
+                //   用户会以为"新变量不提示"。判据放在"真的读了当前行"这条路径上
+                //   （缓存命中时不重读行，不额外付 COM）。
+                else if (_modText != null && !string.IsNullOrEmpty(_lastLineText) &&
+                         !string.Equals(text, _lastLineText, StringComparison.Ordinal))
+                {
+                    _modCount = -1;
+                    _modAt = DateTime.MinValue;
+                }
+                _lastLineText = text;
                 return s;
             }
             catch (Exception e) { Fail(e); return null; }
@@ -277,6 +291,28 @@ namespace VbeComplete
             return list;
         }
 
+        /// <summary>
+        /// 当前工程的身份：`Name|FileName`。取不到返回空串（调用方据此跳过校验）。
+        /// <para>FileName 对"从没保存过的工作簿"会抛 COM 异常 —— 那种情况只用 Name。
+        /// 代价是两次 COM（Name + FileName），但只在作用域重算（默认 2 秒一次）时调。</para>
+        /// </summary>
+        private static string ProjectKey()
+        {
+            try
+            {
+                dynamic vbe = ComCtx.Vbe();
+                if (ReferenceEquals(vbe, null)) return "";
+                dynamic proj = vbe.ActiveVBProject;
+                if (ReferenceEquals(proj, null)) return "";
+                string name = Convert.ToString(proj.Name) ?? "";
+                string file = "";
+                try { file = Convert.ToString(proj.FileName) ?? ""; } catch { }
+                if (name.Length == 0 && file.Length == 0) return "";
+                return name + "|" + file;
+            }
+            catch { return ""; }
+        }
+
         // ------------------------------------------------------------------
         // 读：全工程作用域
         // ------------------------------------------------------------------
@@ -294,6 +330,24 @@ namespace VbeComplete
         /// </summary>
         public List<ModuleScope> ProjectScopes(out int signature)
         {
+            // ★v157：先认工程身份。两个 .xlsm 的工程名都叫 `VBAProject`、组件也
+            //   都叫 `Module1`/`Sheet1`，只按模块名做缓存键会把上本工作簿的
+            //   Private 过程当成当前工程的（PY 版用 `(Name, FileName)` + 首尾组件名
+            //   做这套隔离）。换工程就整体作废，宁可多解析一次。
+            string pkey = ProjectKey();
+            if (!string.IsNullOrEmpty(pkey) && !string.Equals(pkey, _projectKey, StringComparison.Ordinal))
+            {
+                _modScopes.Clear();
+                _scopesList = new List<ModuleScope>();
+                _scopesSig = int.MinValue;
+                _scopesAt = DateTime.MinValue;
+                _modName = null;
+                _modCount = -1;
+                _modAt = DateTime.MinValue;
+                _comps = null;
+                _projectKey = pkey;
+            }
+
             if (_scopesSig != int.MinValue &&
                 (DateTime.UtcNow - _scopesAt).TotalSeconds < _scopesTtl)
             {

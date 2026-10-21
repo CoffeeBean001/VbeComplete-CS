@@ -74,12 +74,21 @@ namespace VbeComplete
         }
 
         /// <summary>
+        /// VBE 编辑器里一个 Tab 等于几个显示列。出厂值是 4。
+        /// <para>★v157：从 settings.ini 的 `TAB_WIDTH` 读。三个换算函数传
+        /// `tabw &lt;= 0` 就表示"用这个全局值" —— 用户把 VBE 的制表符宽度
+        /// 从 4 改成 8 之后，候选取词和光标落点才继续对得上（以前写死 4）。</para>
+        /// </summary>
+        public static int TabWidth = Settings.Int("TAB_WIDTH", 4, 1, 16);
+
+        /// <summary>
         /// 字符下标 -> VBE 认的"显示列"（1-based）。
         /// VBE 的 SetSelection 列是按 Tab 展开后的格数算的：不做换算，光标
         /// 在有 Tab 或缺省缩进（VBE 用 Tab）的行上会落进词的中间。
         /// </summary>
-        public static int DispCol(string text, int charIndex, int tabw = 4)
+        public static int DispCol(string text, int charIndex, int tabw = -1)
         {
+            if (tabw <= 0) tabw = TabWidth;
             if (string.IsNullOrEmpty(text)) return 1;
             if (charIndex > text.Length) charIndex = text.Length;
             if (charIndex < 0) charIndex = 0;
@@ -100,7 +109,7 @@ namespace VbeComplete
         ///   所以第 charCol 个字符之前 = DispCol(charCol - 1)。差这一格，真机上
         ///   就是"光标永远比你以为的右一格"。
         /// </summary>
-        public static int CaretColForCharCol(string text, int charCol, int tabw = 4)
+        public static int CaretColForCharCol(string text, int charCol, int tabw = -1)
         {
             if (charCol < 1) charCol = 1;
             return DispCol(text, charCol - 1, tabw);
@@ -120,8 +129,9 @@ namespace VbeComplete
         ///   症状是"这一行根本不弹候选"。凡是吃 `snap.CaretCol` 的判据，
         ///   都必须先过这一道。
         /// </summary>
-        public static int CharColFromDisp(string text, int dispCol, int tabw = 4)
+        public static int CharColFromDisp(string text, int dispCol, int tabw = -1)
         {
+            if (tabw <= 0) tabw = TabWidth;
             if (string.IsNullOrEmpty(text) || dispCol <= 1) return 1;
             int col = 0;
             for (int i = 0; i < text.Length; i++)

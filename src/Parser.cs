@@ -52,6 +52,15 @@ namespace VbeComplete
             @"^[ \t]*End[ \t]+(?:Sub|Function|Property)\b",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+        /// <summary>
+        /// 单行过程：过程头之后**同一行里**还有 `: End Sub`（/Function/Property）。
+        /// VBE 允许 `Sub A(): x = 1: End Sub`，而 <see cref="ReEndProc"/> 锚在行首，
+        /// 认不出行尾那个 `End`（v157）。
+        /// </summary>
+        private static readonly Regex ReInlineEnd = new Regex(
+            @":[ \t]*End[ \t]+(?:Sub|Function|Property)\b",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
         private static readonly Regex ReDeclHead = new Regex(
             @"^[ \t]*(?:(?:Public|Private|Friend|Global|Static)[ \t]+)*(?:Dim|Const|ReDim|WithEvents)[ \t]+",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -155,6 +164,18 @@ namespace VbeComplete
                     int n;
                     used.TryGetValue(name, out n);
                     used[name] = ++n;
+
+                    // ★v157：新过程头出现时，上一个**还没等到 `End Sub`** 的过程要在这里
+                    //   强制收尾。以前它的 EndLine 一直停留在"模块最后一行"，于是后面
+                    //   整段代码都算在它名下（模块级声明被当成过程局部、别的过程的变量
+                    //   跨过程泄漏、`Ctrl+↓` 也跳错位置）。PY 版同样有这个问题。
+                    if (open.Count > 0)
+                    {
+                        foreach (var prev in open)
+                            if (prev.EndLine > i) prev.EndLine = Math.Max(prev.StartLine, i);
+                        open.Clear();
+                    }
+
                     var p = new ProcInfo
                     {
                         Name = name,
@@ -163,8 +184,18 @@ namespace VbeComplete
                         EndLine = lines.Length,
                         ScopeKey = n > 1 ? name + "#" + n : name,
                     };
-                    open.Add(p);
                     list.Add(p);
+
+                    // ★v157：单行过程 `Sub A(): x = 1: End Sub` —— 行尾的 End 不是
+                    //   行首，`ReEndProc`（锚在 `^`）认不出来，于是这个过程一路吃到
+                    //   模块末尾。这里按"同一行里还有 `: End Sub`"判掉，别进 open。
+                    if (ReInlineEnd.IsMatch(code))
+                    {
+                        p.EndLine = i + 1;
+                        continue;
+                    }
+
+                    open.Add(p);
                     continue;
                 }
 

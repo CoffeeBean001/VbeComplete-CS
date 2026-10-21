@@ -87,6 +87,11 @@ namespace VbeComplete
         // 这一次触发时"光标前的词是不是已经打全了"（空格确认要用）
         private bool _wordComplete;
 
+        // ★v157：让位给 VBE 成员列表时的宽限状态（键 = 模块|行|显示列）。
+        private string _yieldKey;
+        private long _yieldUntil;
+        private const int YieldGraceMs = 250;
+
         // ★v151：这一轮候选是"哪个模块、哪一行、从哪个字符列起、什么词"算出来的。
         //   AcceptName 拿它复核：候选算出来之后用户可能按了 Home / End，或者
         //   用鼠标点到了同一行的别处 —— 行列变了但我们手里还是旧候选，
@@ -269,7 +274,28 @@ namespace VbeComplete
             // VBE 自己的成员列表正画着 —— 一律让位。让位不是"不提示"：
             // 它的列表比我们的更准（有真类型信息），等它关掉之后下一次触发
             // 我们再补位（Python 版同一套口径）。
-            if (!manual && YieldToVbe != null && YieldToVbe()) { Hide(); return false; }
+            //
+            // ★v157：让位带一个 250ms 的宽限期（对齐 PY 的 YIELD_GRACE）。VBE 的
+            //   列表要等一个 WM_TIMER 才 Show，我们往往比它先跑完 —— 只判"此刻
+            //   可见"的话，我们会在它前面闪一下再被压住。同一位置让过一次后，
+            //   接下来 250ms 内继续让；过了就照常弹，不会"这里永远不提示"。
+            if (!manual)
+            {
+                string ykey = (snap.Module ?? "") + "|" + snap.Line + "|" + snap.CaretCol;
+                if (YieldToVbe != null && YieldToVbe())
+                {
+                    _yieldKey = ykey;
+                    _yieldUntil = Environment.TickCount64 + YieldGraceMs;
+                    Hide();
+                    return false;
+                }
+                if (string.Equals(_yieldKey, ykey, StringComparison.Ordinal) &&
+                    Environment.TickCount64 < _yieldUntil)
+                {
+                    Hide();
+                    return false;
+                }
+            }
 
             string line = snap.Text ?? "";
             // ★GetSelection 给的是**显示列**，后面所有取词/判据都按字符列算
