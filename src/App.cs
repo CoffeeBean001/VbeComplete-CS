@@ -42,6 +42,7 @@ namespace VbeComplete
         // ---- 跨线程共享的状态（钩子线程只读，UI 线程写） ----
         private volatile bool _codePaneFocused;
         private volatile bool _popupVisible;
+        private long _lastYieldLog;               // "让位"日志限速（每 2 秒最多一条）
         private volatile bool _running = true;
         private volatile Snapshot _hookSnap;      // 最近一次轮询拿到的快照（钩子线程只读）
         private volatile int _pendingKeys;        // 按了"可能写字"的键、文档却没变（输入法组字）
@@ -812,6 +813,23 @@ namespace VbeComplete
                     _hookSnap = null;
                     SetInterval(150);
                     return;
+                }
+
+                // ★v139：VBE 自己的提示词列表一出现，我们立刻收 —— 不能只靠
+                //   "下次触发时让位"。触发那一刻 VBE 的列表往往还没画出来（它等
+                //   WM_TIMER 才 Show），两边会并排挂在屏幕上几百毫秒，用户看到的
+                //   就是一个压着另一个。这里每轮（打字时 50ms）查一次，
+                //   缓存 150ms，开销约 0。
+                if (_popupVisible && Native.VbeMemberListVisible())
+                {
+                    _eng.Hide();
+                    // 日志限速：每 2 秒最多一条，别把 log 刷满
+                    long now = Environment.TickCount64;
+                    if (now - _lastYieldLog > 2000)
+                    {
+                        _lastYieldLog = now;
+                        Log.Write("让位：VBE 的成员列表已出现，收起我们的候选窗");
+                    }
                 }
 
                 bool typing = Environment.TickCount64 - _lastKeyTs < 900;

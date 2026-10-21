@@ -60,6 +60,11 @@ namespace VbeComplete
             {
                 return Probe();
             }
+            // 只问"VBE 自带列表现在可见吗" —— 一次 ~2ms，不碰 COM，方便连测采样
+            if (args.Length > 0 && args[0] == "--yieldprobe")
+            {
+                return YieldProbe();
+            }
             if (args.Length > 0 && args[0] == "--writetest")
             {
                 return WriteTest();
@@ -1607,12 +1612,47 @@ namespace VbeComplete
             sb.AppendLine("VIEW_ROWS = " + Settings.Int("VIEW_ROWS", 8));
             sb.AppendLine("--- win32 ---");
             sb.AppendLine("inVbeCodePane(win32) = " + App_invbe());
+            // v139：让位判据（App.PollOnce 每轮都问这一个函数）
+            try
+            {
+                sb.AppendLine("vbeMemberListVisible = " + Native.VbeMemberListVisible());
+                var rects = Native.VbePopupRects();
+                sb.AppendLine("vbePopupRects = " + (rects == null || rects.Length == 0 ? "(none)" :
+                    string.Join(" | ", rects.Select(r => r.Left + "," + r.Top + "-" + r.Right + "," + r.Bottom))));
+            }
+            catch (Exception e) { sb.AppendLine("vbeMemberListVisible ERR " + e.Message); }
             File.WriteAllText(Path.Combine(Settings.Home, "probe-cs.log"), sb.ToString(), Encoding.UTF8);
             return 0;
         }
 
-        private static string App_invbe()
+        /// <summary>
+        /// 只采样一次"让位判据"（App.PollOnce 用的同一个函数）。
+        /// 不碰 COM，一次约 2ms —— 真机上要连测"VBE 的列表出现时我们能不能看见"，
+        /// 走 --probe 太重（要过一遍 COM，几秒钟）。
+        /// </summary>
+        private static int YieldProbe()
         {
+            var sb = new StringBuilder();
+            int visible = 0, seen = 0;
+            for (int i = 0; i < 5; i++)
+            {
+                seen++;
+                bool vis = Native.VbeMemberListVisible();
+                if (vis) visible++;
+                var rects = Native.VbePopupRects();
+                sb.AppendLine(DateTime.Now.ToString("HH:mm:ss.fff") +
+                              " memberListVisible=" + vis +
+                              " rects=" + (rects == null || rects.Length == 0 ? "(none)" :
+                                  string.Join(" | ", rects.Select(r => r.Left + "," + r.Top + "-" + r.Right + "," + r.Bottom))));
+                Thread.Sleep(200);      // 缓存 150ms，睡久一点才能读到新采样
+            }
+            sb.AppendLine("RESULT: " + (visible > 0 ? "VBE-LIST-VISIBLE" : "VBE-LIST-NOT-VISIBLE") +
+                          " (" + visible + "/" + seen + ")");
+            File.WriteAllText(Path.Combine(Settings.Home, "yieldprobe.log"), sb.ToString(), Encoding.UTF8);
+            return visible > 0 ? 0 : 1;
+        }
+
+        private static string App_invbe()        {
             IntPtr frame = Native.FindWindow("wndclass_desked_gsk", null);
             if (frame == IntPtr.Zero) return "no vbe frame";
             uint pid;

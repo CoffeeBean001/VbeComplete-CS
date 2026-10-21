@@ -310,7 +310,8 @@ namespace VbeComplete
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
 
-        private static long _popupRectsAt = long.MinValue;
+        private static long _popupRectsAt;
+        private static bool _hasPopupCache;
         private static RECT[] _popupRectsCache = Array.Empty<RECT>();
         private static bool _memberListVisible;
 
@@ -334,7 +335,13 @@ namespace VbeComplete
         public static RECT[] VbePopupRects()
         {
             long now = Environment.TickCount64;
-            if (now - _popupRectsAt < 150) return _popupRectsCache;
+            // ★v139：原来这里写的是 `_popupRectsAt = long.MinValue`，配上
+            //   `now - _popupRectsAt < 150` —— 减法**溢出**成负数，永远小于 150，
+            //   于是每次都当成"缓存还新鲜"，`_popupRectsCache` 一直是初始的空数组。
+            //   后果不是"少让位一次"，而是让位判据**从头到尾没生效过**：
+            //   VbeMemberListVisible() 永远 false、避让 VBE 参数窗永远不挪。
+            //   改用显式的 _hasPopupCache 标记，不再拿哨兵值做算术。
+            if (_hasPopupCache && now - _popupRectsAt < 150) return _popupRectsCache;
 
             var found = new List<RECT>(4);
             bool memberList = false;
@@ -373,6 +380,7 @@ namespace VbeComplete
             _popupRectsCache = found.ToArray();
             _memberListVisible = memberList;
             _popupRectsAt = now;
+            _hasPopupCache = true;
             return _popupRectsCache;
         }
 

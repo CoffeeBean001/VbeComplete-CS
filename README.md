@@ -19,8 +19,8 @@ pane**, and its message loop costs nothing when idle.
 - **Live candidates** for identifiers, declarations, procedures, modules, forms, controls, and the
   keywords / functions from the two word databases.
 - **Fuzzy matching** ranked as contiguous block > prefix > camel-hump initials > scattered, with
-  **per-character highlighting** — typing `ds` lights up the `D` and `S` of `dataSheet`, not a whole
-  slice of the name.
+  **per-character emphasis** — typing `ds` bolds the `D` and `S` of `dataSheet`, not a whole slice
+  of the name.
 - **Chinese identifiers just work**: `Sub 汇总()` / `Dim 学生 As String` enter the pool, highlight
   per character, and the caret lands in the right place after `Tab` (verified live).
 - **IDEA-style ordering**: match quality > first hit position > hit span > scope proximity
@@ -42,10 +42,13 @@ pane**, and its message loop costs nothing when idle.
   better one. `Ctrl+Space` still asks for our list on purpose; `MEMBER_POPUP=1` restores the old
   behaviour (narrowed to the declared type when `Dim c As Cls1` / `Set c = New Cls1` is in the
   code, full project pool otherwise).
-- **Popup**: fixed width (30 characters, so it never jumps sideways), 15 rows max, per-character
-  highlights, hover highlight, draggable scrollbar, and a detail line only when a name is truncated.
-  Owner-drawn and it **never steals focus**.
-- **Never fights the VBE for space**: it yields as soon as VBE's own member list appears, and moves
+- **Popup styled after the VBE's own list** (v139): white background, black text in the editor font
+  at the editor size, 15 px rows, one icon per row, a 1 px raised border, and the selected row marked
+  with a dotted rectangle instead of a blue bar. Width follows the longest candidate (640 px cap),
+  15 rows max, matched letters are **bold** rather than coloured. Owner-drawn and it **never steals
+  focus**.
+- **Never fights the VBE for space**: it yields the moment VBE's own member list appears — even if
+  ours is already on screen, it is taken down within one poll tick — and moves
   below VBE's parameter-info popup instead of covering it.
 - **`Tab` is the only accept key** — `Enter` still inserts a newline (a wrong completion costs too
   much). `Sub` gets a space, `Function` gets `()` with the caret inside — and so do the functions
@@ -105,3 +108,5 @@ pane**, and its message loop costs nothing when idle.
 - Live verification: `--enginetest` runs against a **synthetic project** (no host, no open code
   window), so it always really runs. `--paretest` / `--carettest` / `--hktest` do need an open VBA
   project and code window; with no host available those three skip instead of running.
+  `--yieldprobe` samples the "is the VBE's own list on screen right now" check five times in a row —
+  run it while a member list is up if the yielding ever looks wrong.
