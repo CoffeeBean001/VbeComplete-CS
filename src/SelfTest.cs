@@ -719,11 +719,14 @@ End Sub
                 !selfShown || !selfEng.Items.Any(c => c.Name == "myNewVar"),
                 selfShown ? string.Join(",", selfEng.Items.Select(c => c.Name)) : "(不弹)");
 
-            // 宿主对象（点了点号的 / Set 的）在 Option Explicit 下仍要留
+            // 宿主对象（点了点号的）在 Option Explicit 下仍要留
             var host = Scope.Analyze("M", HostObjSample);
             Ok("explicit/控件名（带点号）保留", host.FreeIdents.Contains("CommandButton1"),
                 string.Join(",", host.FreeIdents));
-            Ok("explicit/Set 的对象名保留", host.FreeIdents.Contains("按钮"),
+            // ★v156：`Set 按钮 = ...` 的"按钮"是**被赋值的变量**，不是宿主给的对象。
+            //   Option Explicit 下没 Dim 它就是编译错误，不能放行（原来的"前面是 Set
+            //   就算宿主对象"那条豁免已经删掉）。
+            Ok("explicit/Set 的未声明变量不再放行（按钮）", !host.FreeIdents.Contains("按钮"),
                 string.Join(",", host.FreeIdents));
 
             // ---- 成员名（点号后面的）绝不进自由标识符池 ----
@@ -959,6 +962,18 @@ End Sub
             var msH2 = Scope.Analyze("M", "Sub T()\r\n    range = 1\r\n    n2 = range * 2\r\nEnd Sub\r\n");
             Ok("host/被赋过值的同名照常收", msH2.FreeIdents.Contains("range"),
                 string.Join(",", msH2.FreeIdents));
+
+            // ---- v156：命名参数（`f(Name:=1)`）不是变量 ----
+            var msNA = Scope.Analyze("M", "Sub T()\r\n    MsgBox Prompt:=x1, Buttons:=2\r\nEnd Sub\r\n");
+            Ok("free/命名参数不进池（Prompt / Buttons）",
+                !msNA.FreeIdents.Contains("Prompt") && !msNA.FreeIdents.Contains("Buttons"),
+                string.Join(",", msNA.FreeIdents));
+
+            // ---- v156：声明过的 `Set x = ...` 目标靠 Decls 进池（不靠 Set 豁免） ----
+            var msSet = Scope.Analyze("M",
+                "Option Explicit\r\nSub T()\r\n    Dim b As Object\r\n    Set b = CreateObject(\"X\")\r\nEnd Sub\r\n");
+            Ok("explicit/声明过的 Set 目标仍在 Decls",
+                msSet.Decls.Any(d => d.Name == "b"), string.Join(",", msSet.FreeIdents));
 
             // ---- v155：隐式变量只在"首次出现的过程"里可见（PY 的 scope="proc"）----
             const string twoProcs = "Sub A()\r\n    num = 1\r\nEnd Sub\r\n\r\nSub B()\r\n    nu\r\nEnd Sub\r\n";

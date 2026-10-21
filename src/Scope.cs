@@ -567,6 +567,7 @@ namespace VbeComplete
                         PrevWordIs(code, m, "GoSub") ||
                         PrevWordIs(code, m, "Resume")) continue;             // GoTo 标签
                     if (IsLabelDefinition(code, m)) continue;                // `错误处理:`
+                    if (IsNamedArg(code, m)) continue;                       // `f(Name:=1)`
 
                     if (VbaBuiltins.IsKeyword(w)) continue;
                     // ★v154：词库里有的名字（函数 / 类型 / 关键字）不需要再从"全量
@@ -694,6 +695,18 @@ namespace VbeComplete
         }
 
         /// <summary>
+        /// 后面紧跟 `:=` —— 命名参数（`MsgBox Prompt:=x`），不是变量。
+        /// 与行标签 `名字:` 的区别就是多了一个等号（对齐 PY 的
+        /// `_usage_candidates` 里"后面跟 `(` 或 `:` 都跳过"那条）。
+        /// </summary>
+        private static bool IsNamedArg(string code, Match m)
+        {
+            int after = m.Index + m.Length;
+            while (after < code.Length && (code[after] == ' ' || code[after] == '\t')) after++;
+            return after + 1 < code.Length && code[after] == ':' && code[after + 1] == '=';
+        }
+
+        /// <summary>
         /// 这个名字是不是数字字面量的一部分：`&HFF` 的 `HFF`、`1E10` 的 `E10`。
         /// 只看前一个字符（`&` 或数字），不做进制的额外推断。
         /// </summary>
@@ -732,28 +745,18 @@ namespace VbeComplete
 
         /// <summary>
         /// 这个名字像不像"宿主给的对象"（窗体控件、Application、隐式全局）？
-        /// 两条判据，都只认最直接的语法证据：
-        ///   * 后面紧跟点号 —— `CommandButton1.Caption`
-        ///   * 前面是 `Set` —— `Set btn = ...`
+        /// 只认一条最直接的语法证据：**后面紧跟点号**（`CommandButton1.Caption`）。
+        /// <para>★v156：**去掉**了原来"前面是 `Set`"那条。`Set x = ...` 的 x 是
+        /// **被赋值的变量**，不是宿主给的对象 —— 在 `Option Explicit` 模块里它没
+        /// `Dim` 就是编译错误，把它当宿主对象放行等于教用户写错代码。真正的宿主
+        /// 对象（控件本身、Application）都会以 `控件.成员` 的形式出现，走点号那条。</para>
         /// 不做类型推断：拿不准就按普通自由标识符处理。
         /// </summary>
         private static bool LooksLikeHostObject(string code, Match m)
         {
             int after = m.Index + m.Length;
             while (after < code.Length && (code[after] == ' ' || code[after] == '\t')) after++;
-            if (after < code.Length && code[after] == '.') return true;
-
-            int p = m.Index - 1;
-            while (p >= 0 && (code[p] == ' ' || code[p] == '\t')) p--;
-            if (p >= 2)
-            {
-                string head = code.Substring(0, p + 1).TrimEnd();
-                if (head.Length >= 3 &&
-                    head.Substring(head.Length - 3).Equals("Set", StringComparison.OrdinalIgnoreCase) &&
-                    (head.Length == 3 || !char.IsLetterOrDigit(head[head.Length - 4])))
-                    return true;
-            }
-            return false;
+            return after < code.Length && code[after] == '.';
         }
 
         /// <summary>`a, b(1 To 3) As Long` -> [(a, Long), (b, Long)]</summary>
