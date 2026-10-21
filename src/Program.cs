@@ -935,6 +935,7 @@ namespace VbeComplete
             };
 
             sb.AppendLine("=== enter probe（真机 / 走真钩子） ===");
+            sb.AppendLine("（回车补结构 与 Ctrl+/ 注释都在这条真路径上验：钩子 -> 判据 -> Post -> COM）");
 
             var app = new App();
             var be = new VbeBackend();          // 主线程（STA）自己持有，不用 RunOnUi 绕
@@ -1042,6 +1043,24 @@ namespace VbeComplete
                     check("D 单选 If 回车：不补 End If 但必须换行",
                         afterD == beforeD + 1 && d[1] == "    If x Then y = 1" && d[2].Trim() == "",
                         "lines " + beforeD + "->" + afterD + " " + Tail(d));
+
+                    // 7. 用例 E：Ctrl+/ 注释开关 —— 走【同一条真键盘路径】。
+                    //    ★命令本身另有 --hktest 直接调 Commands 验过；这里要验的是
+                    //      "钩子有没有把 Ctrl+/ 路由进那个分支、有没有把键吞了却没做事"。
+                    //      用户报"Ctrl+/ 失效"时，只有这条路能证明卡在哪。
+                    RebuildScaffold(app, be, at, "    n = 1");
+                    Thread.Sleep(300);
+                    SendCombo(app, Native.VK_OEM_2, ctrl: true);
+                    Thread.Sleep(700);
+                    string[] e1 = ReadLines(app, be, at, 3);
+                    SendCombo(app, Native.VK_OEM_2, ctrl: true);
+                    Thread.Sleep(700);
+                    string[] e2 = ReadLines(app, be, at, 3);
+                    check("E Ctrl+/ 整行注释开关（真钩子路径）",
+                        e1[1].TrimStart().StartsWith("'", StringComparison.Ordinal)
+                        && e1[1].Contains("n = 1")
+                        && e2[1] == "    n = 1",
+                        "加后=[" + e1[1] + "] 还原后=[" + e2[1] + "] want=[    n = 1]");
                 }
                 catch (Exception e)
                 {
@@ -1174,6 +1193,23 @@ namespace VbeComplete
             finally
             {
                 Thread.Sleep(120);
+                App.AcceptInjectedVk = 0;
+            }
+        }
+
+        /// <summary>
+        /// 发一个"组合键"（Ctrl+某键），只放行目标键这一下注入。
+        /// ★Ctrl 的 down/up 也是注入的，会被钩子的 LLKHF_INJECTED 那道闸滤掉 ——
+        ///   但它们照样会进系统，所以 Down(VK_CONTROL) 在目标键到达时是真的。
+        ///   目标键本身通过 AcceptInjectedVk 单点放行，钩子走的就是用户手按那条路。
+        /// </summary>
+        private static void SendCombo(App app, int vk, bool ctrl = false, bool shift = false)
+        {
+            App.AcceptInjectedVk = vk;
+            try { Native.SendVk(vk, ctrl, shift); }
+            finally
+            {
+                Thread.Sleep(150);
                 App.AcceptInjectedVk = 0;
             }
         }

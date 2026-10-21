@@ -1098,6 +1098,13 @@ End Sub
             // 什么都没变 -> 不弹
             Ok("auto-trigger/没变化不弹",
                 !Rules.AutoTriggerWanted(false, false, true, false));
+
+            // Ctrl+/ 的 `/` 键识别（v143）：主键盘与小键盘除号都算，别的符号键不算。
+            // ★这条来自用户报的"Ctrl+/ 失效"—— 钩子只认 VK_OEM_2，小键盘除号
+            //   （VK_DIVIDE）按下去就像没发生一样。判定收在 Native.IsSlashKey 一处。
+            Ok("auto-trigger/主键盘 / 算 slash 键", Native.IsSlashKey(Native.VK_OEM_2));
+            Ok("auto-trigger/小键盘除号也算 slash 键", Native.IsSlashKey(Native.VK_DIVIDE));
+            Ok("auto-trigger/别的符号键不算 slash", !Native.IsSlashKey(0xBC) && !Native.IsSlashKey('D'));
         }
 
         // ------------------------------------------------------------------

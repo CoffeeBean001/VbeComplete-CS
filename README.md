@@ -76,7 +76,8 @@ pane**, and its message loop costs nothing when idle.
 - **Backspace, two jobs**: deletes a whitespace-only line, or removes an empty pair `()` / `""`.
 - **Auto-pairing** `(` `"` — full-width `（）` / `“”` under a Chinese-punctuation IME; the closing
   char steps over an existing one; a selection gets wrapped.
-- **Line commands**: `Ctrl+/` comment toggle · `Ctrl+D` duplicate · `Ctrl+K` delete ·
+- **Line commands**: `Ctrl+/` comment toggle (the numpad `/` and `Ctrl+Shift+/` count too) ·
+  `Ctrl+D` duplicate · `Ctrl+K` delete ·
   `Ctrl+Shift+Enter` insert above · `Ctrl+Shift+↑/↓` jump to the last declaration / closing line ·
   `Ctrl+Shift+L` **re-indent the whole module** (or just the selection when it spans lines). Only
   leading whitespace is rewritten — not a single character inside a line — so the worst case is a
@@ -104,7 +105,7 @@ pane**, and its message loop costs nothing when idle.
   tool; they are fully independent of the Python edition, sharing no file with it.
 - Every shortcut follows one rule: **if the action fails, the original key is replayed**, so keys
   are never silently swallowed.
-- 360 self-checks (fuzzy matching, scopes, `Option Explicit`, Chinese identifiers, member completion,
+- 363 self-checks (fuzzy matching, scopes, `Option Explicit`, Chinese identifiers, member completion,
   highlight splitting, call-site detection, `As`/`New` suppression, line-by-line re-indent) plus
   word-DB, snippet-store, icon/autostart and off-screen rendering checks, and seven live probes
   (including `Ctrl+Shift+L`) keep the logic honest.

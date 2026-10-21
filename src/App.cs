@@ -411,7 +411,7 @@ namespace VbeComplete
             bool snipActive = SnippetFormActive();
             if (!_codePaneFocused || snipActive)
             {
-                if (ctrl && IsWatchedHotkey(vk))
+                if (ctrl && IsHotkeyDiagVk(vk))
                     Log.Write("热键被跳过：焦点判定=不在 VBE 代码窗（vk=0x{0:X2} shift={1} codePane={2} snippet={3}）",
                         vk, shift, _codePaneFocused, snipActive);
                 return Native.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
@@ -527,9 +527,23 @@ namespace VbeComplete
             //   失败 / 没有可落的位置）就把键原样送回去 —— 绝不"吞了但什么都没
             //   发生"，那正是用户报"快捷键都没了"时屏幕上的样子。
             // ==============================================================
-            if (ctrl && !shift && !alt && vk == Native.VK_OEM_2 && !NoComment)
+            // ★v143：`/` 的识别要放宽一点。用户报"Ctrl+/ 失效"时，最省事的解释
+            //   就是 vk 没对上：主键盘 `/` 是 VK_OEM_2，但**小键盘除号**是
+            //   VK_DIVIDE；而法语 AZERTY 这类布局里 `/` 本身就带 Shift。
+            //   以前 `!shift` 那条一挡，钩子就当没看见这个键 —— 快捷键没坏，
+            //   是我们不认。这里改成"两个 vk 都认、允许 Shift、排除 Alt"。
+            //   Ctrl+Shift+/ 在 VBE 里没有任何原生用途，多认这一种不会撞车。
+            if (ctrl && !alt && Native.IsSlashKey(vk) && !NoComment)
             {
-                Post(() => { if (!Commands.ToggleComment(_be)) Native.SendVk(Native.VK_OEM_2, true, false); });
+                Post(() =>
+                {
+                    // ★别在失败时补发一个裸 `/`：SendVk 遇到"Ctrl 正被物理按住"
+                    //   会刻意不发 Ctrl，于是补发的其实是"/"这个字符，直接往用户
+                    //   代码里插一个斜杠 —— 比"什么都没发生"更糟。VBE 里 Ctrl+/
+                    //   本来也不做任何事，所以这里只是记一笔。
+                    if (!Commands.ToggleComment(_be))
+                        Log.Write("Ctrl+/ 没做成：拿不到快照 / 无可改的行（键已吞掉，VBE 里本也无此功能）");
+                });
                 return Swallow(vk);
             }
             // ⚠️ Shift+D / Shift+K 绝不能接管 —— 那是输入大写字母
@@ -688,7 +702,7 @@ namespace VbeComplete
 
             // 只记录"按了 Ctrl 却没命中任何分支"的、与该管的热键相关的键 ——
             // 用来排查"快捷键不生效"。日常打字（Ctrl+C / Ctrl+V 之类）不进日志。
-            if (ctrl && IsWatchedHotkey(vk))
+            if (ctrl && IsHotkeyDiagVk(vk))
                 Log.Write("热键未命中：vk=0x{0:X2} ctrl={1} shift={2} alt={3} popup={4}",
                     vk, ctrl, shift, alt, _popupVisible);
 
@@ -803,9 +817,20 @@ namespace VbeComplete
 
         /// <summary>是不是"我们该管的"组合键（用于诊断日志，避免每天打的字都进日志）。</summary>
         private static bool IsWatchedHotkey(int vk) =>
-            vk == 'D' || vk == 'K' || vk == 'L' || vk == 'Q' || vk == Native.VK_OEM_2 ||
+            vk == 'D' || vk == 'K' || vk == 'L' || vk == 'Q' ||
+            Native.IsSlashKey(vk) ||
             vk == Native.VK_RETURN || vk == Native.VK_UP || vk == Native.VK_DOWN ||
             vk == Native.VK_SPACE;
+
+        /// <summary>
+        /// 诊断用：Ctrl + **任何一个符号键**（OEM 键区 0xBA~0xDF 与小键盘除号）
+        /// 没命中任何分支时也要留痕。
+        /// ★v143：以前只有 <see cref="IsWatchedHotkey"/> 里那几个 vk 会被记录，
+        ///   于是"用户按的其实是另一个 vk"这种情况日志里一个字都没有 ——
+        ///   排查"快捷键失效"时最怕的正是这个盲区。
+        /// </summary>
+        private static bool IsHotkeyDiagVk(int vk) =>
+            IsWatchedHotkey(vk) || (vk >= 0xBA && vk <= 0xDF);
 
         private void Post(Action a)
         {

@@ -29,6 +29,14 @@ namespace VbeComplete
         public const int VK_DOWN = 0x28;
         public const int VK_DELETE = 0x2E;
         public const int VK_OEM_2 = 0xBF;   // /
+        public const int VK_DIVIDE = 0x6F;  // 小键盘 /
+
+        /// <summary>
+        /// 这个 vk 是不是"`/` 键"—— 主键盘与**小键盘除号**都算。
+        /// ★v143：用户报"Ctrl+/ 失效"，而代码里只认 VK_OEM_2；小键盘除号是
+        ///   VK_DIVIDE，两者差着一个键区。判定只此一处，别再散落到各处比 ==。
+        /// </summary>
+        public static bool IsSlashKey(int vk) => vk == VK_OEM_2 || vk == VK_DIVIDE;
         public const int VK_OEM_5 = 0xDC;   // \
         public const int VK_SHIFT = 0x10;
         public const int VK_CONTROL = 0x11;
