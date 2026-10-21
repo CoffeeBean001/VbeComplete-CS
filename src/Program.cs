@@ -429,6 +429,9 @@ namespace VbeComplete
                 ("    x = Spl", 13, "Split", "    x = Split()", 15),
                 // 类型名：绝不能补括号
                 ("    Dim y As Str", 17, "String", "    Dim y As String", 20),
+                // ★v152（对标 IDEA）：光标停在词**中间**时，替换的是整个标识符
+                //   —— 只换光标左边那一截会得到 `    MsgBoxx`。
+                ("    MsgBx", 9, "MsgBox", "    MsgBox()", 12),
             };
 
             try

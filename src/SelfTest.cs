@@ -584,6 +584,9 @@ Global f
             public string Text;
             public Snapshot Snap;
             public List<ModuleScope> Extra = new List<ModuleScope>();
+            // 上一次 ApplyCompletion 收到的参数（自检要断言"替换了哪一段"）
+            public int LastStartCol, LastEndCol;
+            public string LastCompletion;
             public Snapshot Snapshot(bool verify = true) => Snap;
             public string ModuleText() => Text;
             public List<string> ComponentNames() => new List<string>();
@@ -593,7 +596,13 @@ Global f
                 return Extra;
             }
             public bool ApplyCompletion(int lineNo, int wordStartCol, int endCol,
-                string completion, bool wantParens, bool wantSpace, string enclosingProc) => true;
+                string completion, bool wantParens, bool wantSpace, string enclosingProc)
+            {
+                LastStartCol = wordStartCol;
+                LastEndCol = endCol;
+                LastCompletion = completion;
+                return true;
+            }
             public string EnclosingProcName() => null;
         }
 
@@ -792,6 +801,47 @@ End Sub
             var items2 = eng2.Trigger(false, be2.Snap) ? eng2.Items.ToList() : new List<Candidate>();
             Ok("guard/局部与内建同名时不吞掉内建", items2.Any(c => c.Name == "Date"),
                 string.Join(",", items2.Select(c => c.Name)));
+
+            // ---- 3. 替换的是**整个标识符**（对标 IDEA）----
+            // 光标停在 `MsgB|ox` 中间按 Tab：只换光标左边那一截会写成 `MsgBoxox`。
+            const string mid = "Private Sub T()\r\n    MsgBox\r\nEnd Sub\r\n";
+            var be3 = new FakeBackend
+            {
+                Text = mid,
+                Snap = new Snapshot { Line = 2, Text = "    MsgBox", Module = "M", CaretCol = 8 },
+            };
+            var eng3 = new Engine { Recent = new Recent(), Backend = be3 };
+            eng3.Trigger(false, be3.Snap);
+            eng3.AcceptName("MsgBox");
+            // "    MsgBox" 长 10：抓取区间应是 [5, 11) —— 整词，不是 [5, 8)
+            Ok("guard/替换整个标识符（光标在词中间）",
+                be3.LastStartCol == 5 && be3.LastEndCol == 11,
+                "start=" + be3.LastStartCol + " end=" + be3.LastEndCol);
+
+            // ---- 4. 注释里手动唤出也不弹（对标 IDEA）----
+            var be4 = new FakeBackend
+            {
+                Text = "Private Sub T()\r\n    ' 说明文字\r\nEnd Sub\r\n",
+                Snap = new Snapshot { Line = 2, Text = "    ' 说明文字", Module = "M", CaretCol = 11 },
+            };
+            var eng4 = new Engine { Recent = new Recent(), Backend = be4 };
+            Ok("guard/注释里 Ctrl+Space 也不弹", !eng4.Trigger(true, be4.Snap));
+
+            // ---- 5. 命中过多时截断到 240（对标 IDEA 的"列表有上限"）----
+            var bulk = new StringBuilder("Private Sub T()\r\n");
+            for (int i = 0; i < 300; i++)
+                bulk.Append("    Dim name" + i.ToString("D3") + " As Long\r\n");
+            bulk.Append("End Sub\r\n");
+            var be5 = new FakeBackend
+            {
+                Text = bulk.ToString(),
+                Snap = new Snapshot { Line = 302, Text = "    ", Module = "M", CaretCol = 5 },
+            };
+            var eng5 = new Engine { Recent = new Recent(), Backend = be5 };
+            bool shown5 = eng5.Trigger(true, be5.Snap);
+            Ok("guard/命中过多时列表截断到 240",
+                shown5 && eng5.Items.Count <= 240 && eng5.TruncatedFrom > 240,
+                "shown=" + shown5 + " items=" + eng5.Items.Count + " total=" + eng5.TruncatedFrom);
         }
 
         private static void TestMember()

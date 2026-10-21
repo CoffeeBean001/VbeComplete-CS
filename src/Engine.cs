@@ -100,6 +100,12 @@ namespace VbeComplete
         public int SelectedIndex => _sel;
         public int TopIndex => _top;
 
+        /// <summary>
+        /// 上一次触发里被**截断掉**的命中总数（0 = 没截断）。
+        /// 池子可能几百条，列表只留前 240 条 —— 这个数给自检与日志用。
+        /// </summary>
+        public int TruncatedFrom { get; private set; }
+
         // ------------------------------------------------------------------
         // 池子
         // ------------------------------------------------------------------
@@ -261,9 +267,10 @@ namespace VbeComplete
             int caret = Rules.CharColFromDisp(line, snap.CaretCol);
 
             // 注释（`'` 或 `Rem`）里 / 字符串里一律不弹 —— 判据见 Rules.InDeadZone。
-            // 原来这里只过 InCommentOrString，它不认 `Rem`，于是 `Rem 说明 |`
-            // 照样弹全工程候选、按 Tab 还能把这行注释改写掉。
-            if (!manual && Rules.InDeadZone(line, caret)) { Hide(); return false; }
+            // ★v152（对标 IDEA）：手动 Ctrl+Space 也拦。IDEA 在注释/字符串里同样不给
+            //   代码补全 —— 那里弹出的候选按 Tab 只会把注释或字符串内容改写掉，
+            //   没有任何语义价值。以前 `!manual` 的豁免让这条路原样保留着。
+            if (Rules.InDeadZone(line, caret)) { Hide(); return false; }
             // ★声明位置一律不弹（含 `As` 之后、裸声明 `Public x` 之后）。
             //   见 Rules.InDeclarationPosition 的说明。
             if (!manual && !DeclPopup && Rules.InDeclarationPosition(line, caret)) { Hide(); return false; }
@@ -386,6 +393,15 @@ namespace VbeComplete
             if (hits.Count == 0) { Hide(); return false; }
 
             hits.Sort(Cmp);
+
+            // ★v152（对标 IDEA）：命中太多就截断。池子里光词库就 261 条，打一两个
+            //   字母很容易命中几百个 —— 滚动条长得没有意义，每次重画也白费。
+            //   排序已经保证"最像的"在前 240 条里，继续输入一个字母就能收窄。
+            //   ★截断只发生在**给 UI 的列表**上；自检要看全部命中就看 TruncatedFrom。
+            const int MaxCandidates = 240;
+            TruncatedFrom = hits.Count > MaxCandidates ? hits.Count : 0;
+            if (hits.Count > MaxCandidates)
+                hits.RemoveRange(MaxCandidates, hits.Count - MaxCandidates);
             // 完全相同的名字只留一条（工程名与内建表可能重名），保留排在前面的那条
             var dedup = new List<Candidate>(hits.Count);
             var seenName = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -665,6 +681,12 @@ namespace VbeComplete
             Rules.WordBefore(acceptLine, acceptCaret, out wordStart);
             int endCol = acceptCaret;
             if (wordStart > endCol) wordStart = endCol;
+            // ★v152（对标 IDEA）：补全替换的是**整个标识符**，不是"光标左边那一截"。
+            //   光标停在 `MsgB|ox` 中间按 Tab 时，旧实现只换 [wordStart, caret)，
+            //   结果是 `MsgBoxox`。IDEA 在这里也是整词替换 —— 右侧连续的标识符字符
+            //   一并吃掉（遇到 `(` `.` `,` 等就停）。
+            while (endCol <= acceptLine.Length && Rules.IsIdentChar(acceptLine[endCol - 1]))
+                endCol++;
 
             // ★v151：复核"现在这个位置还是当初算候选的那个位置吗"。
             //   候选窗开着时按 Home/End、或鼠标点到同一行的别处，行文本没变、

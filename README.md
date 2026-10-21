@@ -65,7 +65,9 @@ pane**, and its message loop costs nothing when idle.
 - **`Tab` is the only accept key** — `Enter` still inserts a newline (a wrong completion costs too
   much). `Sub` gets a space, `Function` gets `()` with the caret inside — and so do the functions
   from the word databases (`MsgBox` / `Split` …), even at the very start of a line. Type names
-  (`String`) never get parens. Silent inside comments and string literals.
+  (`String`) never get parens. The **whole identifier** is replaced (Tab in the middle of
+  `MsgB|ox` yields `MsgBox`, not `MsgBoxox`). Silent inside comments and string literals, manual
+  `Ctrl+Space` included.
 - **Enter auto-indent *and* auto-close**: block openers (`If…Then` / `For` / `Do` / `While` /
   `With` / `Select Case` / `Sub` / `Function` / `Property` / `Type` / `Enum`) indent the new line
   one level deeper and insert `End If` / `Next` / `Loop` / `Wend` / `End With` / `End Select` /

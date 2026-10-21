@@ -52,7 +52,9 @@ C# 版存在的理由只有一个：**不在 VBE 代码窗里时，一个 COM �
   （形参签名）画在光标下方时，候选窗整体下移，两个窗不互相遮挡。
 - **只认 `Tab` 补全**：`Enter` 仍然是换行（误补全的代价太大）；`Sub` 补空格、
   `Function` 补 `()` 且光标在括号里；词库里的函数（`MsgBox` / `Split`…）一样补，
-  行首直接写函数名也照样补；类型名（`String`）绝不补括号。注释 / 字符串里不打扰。
+  行首直接写函数名也照样补；类型名（`String`）绝不补括号。替换的是**整个标识符**
+  （光标停在词中间按 Tab 不会写成 `MsgBoxox`）。注释 / 字符串里不打扰，手动
+  `Ctrl+Space` 同样不打扰。
 - **回车自动缩进 + 补结构收尾**：块结构开头（`If…Then` / `For` / `Do` / `While` / `With` /
   `Select Case` / `Sub` / `Function` / `Property` / `Type` / `Enum`）回车后新行深一级，并在下面
   补出 `End If` / `Next` / `Loop` / `Wend` / `End With` / `End Select` / `End Sub` …
