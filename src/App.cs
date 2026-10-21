@@ -1058,8 +1058,22 @@ namespace VbeComplete
                 }
                 else if (_popupVisible)
                 {
-                    // 光标可能在同一行里移动了：跟着走
-                    ShowPopupAtCaret();
+                    // 文本没变、光标动了 —— 那是"移动光标"，不是打字。
+                    // ★v159：以前这里无条件 `ShowPopupAtCaret()`（把窗子挪到新光标处），
+                    //   于是**在同一行里点一下鼠标 / 按左右方向键 / 按 Home**，候选窗
+                    //   就跟着光标跑、列表一直挂着。用户报的"打 sh4 弹出 Sheet4 之后
+                    //   点别处，提示不消失还跟着鼠标走"就是这条。
+                    //   v147 修空格时绕过它（空格特判自己收窗），但病根在这里：
+                    //   "移动光标"一律该收起本次补全，跟按 ←/→ 的处理保持一致。
+                    //   光标真没动（轮询空转）就什么都不做，窗子留在原位。
+                    if (_lastSnap == null || _lastSnap.CaretCol != snap.CaretCol)
+                    {
+                        if (_popupVisible)
+                            Log.Write("收起候选窗：光标在行内移动（列 {0}->{1}），不是打字",
+                                _lastSnap == null ? -1 : _lastSnap.CaretCol, snap.CaretCol);
+                        _eng.Hide();
+                    }
+                    _lastSnap = snap;      // 让比较基准前进，别每轮都判成"动了"
                 }
             }
             catch (Exception e)
