@@ -998,6 +998,17 @@ End Sub
             Ok("explicit/声明过的 Set 目标仍在 Decls",
                 msSet.Decls.Any(d => d.Name == "b"), string.Join(",", msSet.FreeIdents));
 
+            // ---- v161：同名隐式变量在**两个过程里各有一份**，各自都要可见 ----
+            //   （用户报的 getTitle / getTitle2 里都有 `Set dic = ...`，
+            //     旧实现只记第一次出现的过程，getTitle2 里就提示不出 dic）
+            const string twoDic = "Function A()\r\n    Set dic = CreateObject(\"x\")\r\nEnd Function\r\n\r\n" +
+                                  "Function B()\r\n    Set dic = CreateObject(\"x\")\r\n    di\r\nEnd Function\r\n";
+            var msD = Scope.Analyze("M", twoDic);
+            Ok("free/同名隐式变量在两个过程都可见",
+                msD.Visible("A").ContainsKey("dic") && msD.Visible("B").ContainsKey("dic"),
+                "A=" + string.Join(",", msD.Visible("A").Keys) +
+                " | B=" + string.Join(",", msD.Visible("B").Keys));
+
             // ---- v155：隐式变量只在"首次出现的过程"里可见（PY 的 scope="proc"）----
             const string twoProcs = "Sub A()\r\n    num = 1\r\nEnd Sub\r\n\r\nSub B()\r\n    nu\r\nEnd Sub\r\n";
             var msP = Scope.Analyze("M", twoProcs);

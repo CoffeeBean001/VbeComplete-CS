@@ -1,11 +1,5 @@
-﻿=== pool dump ===
-module   = Sheet3  lines = 9
+﻿=== pool dump (module pub, lines 46) ===
 optionExplicit = False
-caret    = L10 C1  line = []
-curProc  = (null)
-procs    = Worksheet_SelectionChange:1-9(Worksheet_SelectionChange)
-decls    = Worksheet_SelectionChange@-, Target@Worksheet_SelectionChange
-free     = setValidity@Worksheet_SelectionChange
-visible  = Worksheet_SelectionChange
-trigger  = False  items = 0
-cands    = 
+procs    = getTitle:4-13(getTitle), getTitle2:15-27(getTitle2), setValidity:29-45(setValidity)
+decls    = SP@-, getTitle@-, ws@getTitle, r1@getTitle, r2@getTitle, getTitle2@-, ws@getTitle2, r1@getTitle2, r2@getTitle2, setValidity@-, cell@setValidity, col@setValidity
+free     = dic@getTitle/getTitle2, lastCol1@getTitle2, lastCol2@getTitle2, lastCol@getTitle2, s1@getTitle2, s2@getTitle2

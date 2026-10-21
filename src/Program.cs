@@ -55,14 +55,15 @@ namespace VbeComplete
             // ★只接受**一个**开关。以前 `--selftest --enterprobe` 会静默只跑第一个，
             //   `-enterprobe`（单横线）会直接当成"正常启动"—— 两种都会让人以为
             //   "检查跑过了"，其实什么都没跑。多余 / 认不出的参数一律报错退出。
-            if (args.Length > 1)
+            // ★v161：`--pooldump <模块名>` 是唯一允许带参数的开关（离线诊断用）。
+            if (args.Length > 1 && !(args.Length == 2 && args[0] == "--pooldump"))
             {
                 Console.WriteLine("最多只接受一个开关，这次收到 " + args.Length + " 个：" +
                     string.Join(" ", args));
                 return 2;
             }
 
-            if (args.Length == 1)
+            if (args.Length >= 1)
             {
                 switch (args[0])
                 {
@@ -79,7 +80,7 @@ namespace VbeComplete
                     case "--dump":        return DumpModule();
                     // ★v160：诊断用 —— 把当前模块的解析结果 + 光标处的候选全打出来，
                     //   池子里"该有的名字没有"时让用户跑一次，比来回猜快得多。
-                    case "--pooldump":    return PoolDump();
+                    case "--pooldump":    return PoolDump(args.Length > 1 ? args[1] : null);
                     case "--paretest":    return ParenTest();
                     case "--enginetest":  return EngineTest();
                     case "--startuptest": return StartupTest();
@@ -190,9 +191,12 @@ namespace VbeComplete
         /// "进了但被 Option Explicit 拦了"。比来回猜快得多。</para>
         /// 全程只读，不改任何代码。
         /// </summary>
-        private static int PoolDump()
+        private static int PoolDump(string onlyModule)
         {
             var sb = new StringBuilder();
+            // 带模块名时：读那个模块的全文做"离线解析"（不跑 Trigger，只回答
+            // "这个名字到底进没进 FreeIdents / 挂在哪个过程"）。
+            if (!string.IsNullOrEmpty(onlyModule)) return PoolDumpNamed(onlyModule, sb);
             try
             {
                 var be = new VbeBackend();
@@ -220,9 +224,12 @@ namespace VbeComplete
                     ms.Decls.Select(d => d.Name + "@" + (d.Proc ?? "-"))));
                 sb.AppendLine("free     = " + string.Join(", ", ms.FreeIdents.Select(f =>
                 {
-                    string p;
-                    ms.FreeIdentProc.TryGetValue(f, out p);
-                    return f + "@" + (p ?? "-");
+                    HashSet<string> ps;
+                    ms.FreeIdentProc.TryGetValue(f, out ps);
+                    string where = ps == null || ps.Count == 0
+                        ? "-"
+                        : string.Join("/", ps.Select(x => x.Length == 0 ? "(模块级)" : x));
+                    return f + "@" + where;
                 })));
                 sb.AppendLine("visible  = " + string.Join(", ", ms.Visible(procName).Keys.Take(80)));
 
@@ -238,6 +245,49 @@ namespace VbeComplete
             }
             File.WriteAllText(Path.Combine(Settings.Home, "pooldump.txt"), sb.ToString(), Encoding.UTF8);
             return 0;
+        }
+
+        /// <summary>按模块名离线解析（不需要那个代码窗是活动的）。</summary>
+        private static int PoolDumpNamed(string name, StringBuilder sb)
+        {
+            try
+            {
+                dynamic vbe = ComCtx.Vbe();
+                if (ReferenceEquals(vbe, null)) { sb.AppendLine("no VBE"); return 1; }
+                dynamic comps = vbe.ActiveVBProject.VBComponents;
+                int n = Convert.ToInt32(comps.Count);
+                for (int i = 1; i <= n; i++)
+                {
+                    dynamic c = comps.Item(i);
+                    string nm = Convert.ToString(c.Name) ?? "";
+                    if (!string.Equals(nm, name, StringComparison.OrdinalIgnoreCase)) continue;
+                    dynamic cm = c.CodeModule;
+                    int cnt = Convert.ToInt32(cm.CountOfLines);
+                    string text = cnt > 0 ? Convert.ToString(cm.Lines(1, cnt)) : "";
+                    var ms = Scope.Analyze(nm, text ?? "");
+                    sb.AppendLine("=== pool dump (module " + nm + ", lines " + cnt + ") ===");
+                    sb.AppendLine("optionExplicit = " + ms.OptionExplicit);
+                    sb.AppendLine("procs    = " + string.Join(", ",
+                        ms.Procs.Select(p => p.Name + ":" + p.StartLine + "-" + p.EndLine + "(" + p.ScopeKey + ")")));
+                    sb.AppendLine("decls    = " + string.Join(", ",
+                        ms.Decls.Select(d => d.Name + "@" + (d.Proc ?? "-"))));
+                    sb.AppendLine("free     = " + string.Join(", ", ms.FreeIdents.Select(f =>
+                    {
+                        HashSet<string> ps;
+                        ms.FreeIdentProc.TryGetValue(f, out ps);
+                        string where = ps == null || ps.Count == 0
+                            ? "-"
+                            : string.Join("/", ps.Select(x => x.Length == 0 ? "(模块级)" : x));
+                        return f + "@" + where;
+                    })));
+                    File.WriteAllText(Path.Combine(Settings.Home, "pooldump.txt"), sb.ToString(), Encoding.UTF8);
+                    return 0;
+                }
+                sb.AppendLine("module not found: " + name);
+            }
+            catch (Exception e) { sb.AppendLine("EXCEPTION " + e); }
+            File.WriteAllText(Path.Combine(Settings.Home, "pooldump.txt"), sb.ToString(), Encoding.UTF8);
+            return 1;
         }
 
         private static int WriteTest()
@@ -1748,6 +1798,14 @@ namespace VbeComplete
             //   `Set dic = CreateObject(...)` / `dic.Add s, i` 之后，在
             //   `set getTitle2=di|` 里打 di 提示不出 dic。
             const string modUser2 =
+                // ★v161：用户真实模块里 getTitle 和 getTitle2 **都有** `Set dic = ...`
+                //   —— 同名隐式变量在两个过程里各有一份，只记第一次出现的那个过程，
+                //   getTitle2 里就再也看不见它了。
+                "Function getTitle(ws, r1)\n" +
+                "    Set dic = CreateObject(\"scripting.dictionary\")\n" +
+                "    Set getTitle = dic\n" +
+                "End Function\n" +
+                "\n" +
                 "Function getTitle2(ws, r1, r2)\n" +
                 "    Set dic = CreateObject(\"scripting.dictionary\")\n" +
                 "    lastCol1 = ws.Cells(r1, Cells.Columns.Count).End(xlToLeft).Column\n" +
@@ -1856,7 +1914,7 @@ namespace VbeComplete
             sb.AppendLine("  [诊断] Procs: " + string.Join(",", dbg.Procs.Select(p => p.Name + ":" + p.StartLine + "-" + p.EndLine)));
             sprobe("Set 出来的隐式变量能提示（condi| -> conditions）", "模块3", 7,
                 "        If isMeet(condi", 24, true, new[] { "conditions" }, null);
-            sprobe("同函数内 Set 出来的 dic 能提示（di| -> dic）", "模块4", 12,
+            sprobe("同函数内 Set 出来的 dic 能提示（di| -> dic）", "模块4", 17,
                 "    set getTitle2=di", 20, true, new[] { "dic" }, null);
 
             // ---- 3. A/B 对照：去掉 Option Explicit，同一个探针就该收进来 ----

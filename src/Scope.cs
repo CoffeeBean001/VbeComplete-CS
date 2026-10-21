@@ -52,8 +52,12 @@ namespace VbeComplete
         /// 就是它首次出现的过程 —— A 过程里 `num = 1`、B 过程里也写 `num`，那是
         /// 两个变量。把 A 的那个提示到 B 去，等于教用户写一行运行时报错的代码。</para>
         /// </summary>
-        public readonly Dictionary<string, string> FreeIdentProc =
-            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        /// <para>★v161：值是**过程集合**，不是单个过程。同一个隐式变量名可以在多个
+        /// 过程里各出现一次（VBA 里它们本来就是各自独立的变量）—— 只记第一次出现的
+        /// 那个过程，第二个过程就再也看不见它了。用户报的 `getTitle`/`getTitle2`
+        /// 里都有 `Set dic = ...`，结果 getTitle2 里打 di 提示不出 dic。</para>
+        public readonly Dictionary<string, HashSet<string>> FreeIdentProc =
+            new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>模块头有没有 `Option Explicit`（= 强制声明变量）。</summary>
         public bool OptionExplicit;
@@ -105,11 +109,15 @@ namespace VbeComplete
             }
             foreach (var n in FreeIdents)
             {
-                // 隐式变量只在"它首次出现的过程"里可见（过程外的那些全模块可见）
-                string p;
-                if (FreeIdentProc.TryGetValue(n, out p) && !string.IsNullOrEmpty(p) &&
-                    !string.Equals(p, cur, StringComparison.OrdinalIgnoreCase))
-                    continue;
+                // 隐式变量只在"出现过它的过程"里可见（过程外的那些全模块可见）。
+                // ★v161：按**集合**判 —— 同名变量可能在多个过程里各有一份。
+                HashSet<string> procs;
+                if (FreeIdentProc.TryGetValue(n, out procs) && procs.Count > 0)
+                {
+                    bool shows = procs.Contains("") ||
+                                 (!string.IsNullOrEmpty(cur) && procs.Contains(cur));
+                    if (!shows) continue;
+                }
                 Put(map, n, 2);
             }
             return map;
@@ -531,7 +539,6 @@ namespace VbeComplete
                 if (nw.Length > 0) written.Add(nw);
             }
 
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             bool inFreeTypeBlock = false;              // Type 块里的成员不能当裸名（只能 p.X 访问）
             for (int ln = 0; ln < lines.Length; ln++)
             {
@@ -639,14 +646,20 @@ namespace VbeComplete
                     //   那些（控件名 / Application / 隐式对象）—— 它们本来就不用声明。
                     if (HonorExplicit && ms.OptionExplicit && !host) continue;
 
-                    if (seen.Add(w))
+                    // ★v161：记住"这个名字在**哪些过程**里出现过"，不能只记第一个 ——
+                    //   同名隐式变量在不同过程里是**各自的变量**，只留第一次出现的那条，
+                    //   后面的过程就看不见它了（用户报的 getTitle2 里的 dic）。
+                    //   FreeIdents 本身仍然只放一份（UI/池子按名字去重）。
+                    string fproc = (ln + 1) < owner.Length ? (owner[ln + 1] ?? "") : "";
+                    HashSet<string> fset;
+                    bool firstForName = !ms.FreeIdentProc.TryGetValue(w, out fset);
+                    if (firstForName)
                     {
-                        ms.FreeIdents.Add(w);
-                        // ★v155（对齐 PY 的 scope="proc"）：未声明变量的作用域是它
-                        // **首次出现的过程** —— VBA 里 A 过程的 num 和 B 过程的 num
-                        // 是两个独立变量，把 A 的提示到 B 去等于教用户写错代码。
-                        ms.FreeIdentProc[w] = (ln + 1) < owner.Length ? owner[ln + 1] : null;
+                        fset = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        ms.FreeIdentProc[w] = fset;
                     }
+                    if (!fset.Add(fproc)) continue;      // 这一对 (名字, 过程) 已经记过
+                    if (firstForName) ms.FreeIdents.Add(w);
                 }
             }
             return ms;
