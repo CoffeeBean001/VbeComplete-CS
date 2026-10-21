@@ -53,6 +53,12 @@ namespace VbeComplete
                 { "while",    "Wend" },
             };
 
+        /// <summary>
+        /// 块名 -> 收尾文本。格式化（Indent.cs）要反查"这一行是哪个块的收尾"，
+        /// 所以必须能读；但外面不许改（拿着去 Add 一个就会影响回车补收尾）。
+        /// </summary>
+        public static IReadOnlyDictionary<string, string> CloserTable => Closers;
+
         // 收符号表：开符号 -> 收符号。半角与全角（中文标点输入法）都要能配对。
         private static readonly Dictionary<char, char> PairClose =
             new Dictionary<char, char>

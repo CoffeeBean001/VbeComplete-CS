@@ -86,6 +86,7 @@ namespace VbeComplete
         private readonly bool NoAutoClose = Settings.Flag("NO_AUTOCLOSE", false);
         private readonly bool NoBranchAlign = Settings.Flag("NO_BRANCH_ALIGN", false);
         private readonly bool NoShiftNav = Settings.Flag("NO_SHIFT_NAV", false);
+        private readonly bool NoFormatIndent = Settings.Flag("NO_FORMAT_INDENT", false);
         private readonly bool NoAutoPair = Settings.Flag("NO_AUTOPAIR", false);
         private readonly bool NoBsDelLine = Settings.Flag("NO_BS_DELLINE", false);
         private readonly bool NoBsDelPair = Settings.Flag("NO_BS_DELPAIR", false);
@@ -534,6 +535,17 @@ namespace VbeComplete
                 return Swallow(vk);
             }
 
+            // ⚠️ Ctrl+Shift+L 排在 Ctrl+D / Ctrl+K 之后：那两条都要求 !shift，互不干扰
+            if (ctrl && shift && !alt && vk == 'L' && !NoFormatIndent)
+            {
+                Post(() =>
+                {
+                    _eng.Hide();
+                    if (!Commands.FormatIndent(_be)) Native.SendVk('L', true, true);
+                });
+                return Swallow(vk);
+            }
+
             // ==============================================================
             // 5. Shift+Enter：在下方新起一行（不拆行），缩进对齐 + 补收尾
             //    ⚠️ 必须排在"回车自动缩进"之前，两条判据互斥（这条要求 Shift）
@@ -741,7 +753,7 @@ namespace VbeComplete
 
         /// <summary>是不是"我们该管的"组合键（用于诊断日志，避免每天打的字都进日志）。</summary>
         private static bool IsWatchedHotkey(int vk) =>
-            vk == 'D' || vk == 'K' || vk == 'Q' || vk == Native.VK_OEM_2 ||
+            vk == 'D' || vk == 'K' || vk == 'L' || vk == 'Q' || vk == Native.VK_OEM_2 ||
             vk == Native.VK_RETURN || vk == Native.VK_UP || vk == Native.VK_DOWN ||
             vk == Native.VK_SPACE;
 

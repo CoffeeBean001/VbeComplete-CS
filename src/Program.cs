@@ -832,6 +832,33 @@ namespace VbeComplete
                         " [" + l1 + "][" + l2 + "][" + l3 + "]");
                     dropFrom();
                 }
+
+                // ---- 13. Ctrl+Shift+L 重排缩进（有选区 -> 只理选区）----
+                {
+                    var blk = new[]
+                    {
+                        "Sub VbcFmt()", "Dim n As Long", "If n > 0 Then",
+                        "n = n + 1", "Else", "n = n - 1", "End If", "End Sub",
+                    };
+                    int at = append(blk);
+                    // ★必须拉一个真选区：没选区时我们理的是**整篇**，那就会动用户的代码
+                    be.SetSelectionRange(at, 1, at + blk.Length - 1, blk[blk.Length - 1].Length + 1);
+                    bool r = Commands.FormatIndent(be);
+                    string f1 = be.LineAt(at + 1) ?? "";
+                    string f2 = be.LineAt(at + 2) ?? "";
+                    string f3 = be.LineAt(at + 3) ?? "";
+                    string f4 = be.LineAt(at + 4) ?? "";
+                    string f6 = be.LineAt(at + 6) ?? "";
+                    bool ok = r
+                              && f1 == "    Dim n As Long"
+                              && f2 == "    If n > 0 Then"
+                              && f3 == "        n = n + 1"
+                              && f4 == "    Else"
+                              && f6 == "    End If";
+                    check("Ctrl+Shift+L 格式化缩进", ok,
+                        "ret=" + r + " [" + f1 + "][" + f2 + "][" + f3 + "][" + f4 + "][" + f6 + "]");
+                    dropFrom();
+                }
             }
             finally
             {
@@ -1484,7 +1511,8 @@ namespace VbeComplete
                     string path = Path.Combine(Settings.Home, "popup-preview.png");
                     bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
                     sb.AppendLine("saved " + path + "  " + w + "x" + h +
-                                  "  items=" + cands.Count + "  word=" + word);
+                                  "  items=" + cands.Count + "  word=" + word +
+                                  "  font=" + f.FontName + "  rowH=" + f.RowHeight);
                 }
                 f.Hide();
                 f.Dispose();

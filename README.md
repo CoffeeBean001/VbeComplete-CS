@@ -42,11 +42,16 @@ pane**, and its message loop costs nothing when idle.
   better one. `Ctrl+Space` still asks for our list on purpose; `MEMBER_POPUP=1` restores the old
   behaviour (narrowed to the declared type when `Dim c As Cls1` / `Set c = New Cls1` is in the
   code, full project pool otherwise).
-- **Popup styled after the VBE's own list** (v139): white background, black text in the editor font
-  at the editor size, 15 px rows, one icon per row, a 1 px raised border, and the selected row marked
-  with a dotted rectangle instead of a blue bar. Width follows the longest candidate (640 px cap),
-  15 rows max, matched letters are **bold** rather than coloured. Owner-drawn and it **never steals
-  focus**.
+- **Popup styled after the VBE's own list** (v139, fonts and selection updated in v140): white
+  background, black text, one icon per row, a 1 px raised border, and width that follows the longest
+  candidate (640 px cap), 15 rows max; matched letters are **bold** rather than coloured. The font
+  follows the VBE editor itself (reads `FontFace` / `FontHeight` from `VBA\7.1 → 7.0 → 6.0`) with
+  `Light` / `Thin` weight suffixes stripped — thin weights at small sizes are exactly what looked
+  "flat" — falling back to JetBrains Mono / Cascadia Mono / Consolas when that read fails or yields
+  a stock face like `Courier New`. Size defaults to **the same as the VBE**; `POPUP_FONT_SIZE = -1`
+  makes it one size smaller. The selected row is a VBE-style **deep blue bar with white text**
+  (`POPUP_SEL_BG`), and matched letters switch to a warm yellow on that bar. Owner-drawn and it
+  **never steals focus**.
 - **Never fights the VBE for space**: it yields the moment VBE's own member list appears — even if
   ours is already on screen, it is taken down within one poll tick — and moves
   below VBE's parameter-info popup instead of covering it.
@@ -61,7 +66,10 @@ pane**, and its message loop costs nothing when idle.
 - **Auto-pairing** `(` `"` — full-width `（）` / `“”` under a Chinese-punctuation IME; the closing
   char steps over an existing one; a selection gets wrapped.
 - **Line commands**: `Ctrl+/` comment toggle · `Ctrl+D` duplicate · `Ctrl+K` delete ·
-  `Ctrl+Shift+Enter` insert above · `Ctrl+Shift+↑/↓` jump to the last declaration / closing line.
+  `Ctrl+Shift+Enter` insert above · `Ctrl+Shift+↑/↓` jump to the last declaration / closing line ·
+  `Ctrl+Shift+L` **re-indent the whole module** (or just the selection when it spans lines). Only
+  leading whitespace is rewritten — not a single character inside a line — so the worst case is a
+  wrong indent, a few `Ctrl+Z` away.
 - **`Ctrl+Q` snippet library** — its own `snippets-cs.db` (SQLite; the window title shows that
   file name), the only snippet file in the project. Two-line list on the left (title + first code
   line, per-character search highlighting), editor on the right, `Ctrl+N` new / `Ctrl+S` save /
@@ -85,9 +93,10 @@ pane**, and its message loop costs nothing when idle.
   tool; they are fully independent of the Python edition, sharing no file with it.
 - Every shortcut follows one rule: **if the action fails, the original key is replayed**, so keys
   are never silently swallowed.
-- 320 self-checks (fuzzy matching, scopes, `Option Explicit`, Chinese identifiers, member completion,
-  highlight splitting, call-site detection, `As`/`New` suppression) plus word-DB, snippet-store,
-  icon/autostart and off-screen rendering checks, and five live probes keep the logic honest.
+- 339 self-checks (fuzzy matching, scopes, `Option Explicit`, Chinese identifiers, member completion,
+  highlight splitting, call-site detection, `As`/`New` suppression, line-by-line re-indent) plus
+  word-DB, snippet-store, icon/autostart and off-screen rendering checks, and six live probes
+  (including `Ctrl+Shift+L`) keep the logic honest.
 
 ## Cons
 

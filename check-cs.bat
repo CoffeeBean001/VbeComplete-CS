@@ -20,7 +20,7 @@ set "EXE=%~dp0dist\VbeComplete.exe"
 if not exist "%EXE%" goto nobuild
 
 echo.
-echo [check] 1/9  pure logic - 296 assertions
+echo [check] 1/9  pure logic - 339 assertions
 "%EXE%" --selftest
 powershell -NoProfile -Command "Get-Content -LiteralPath '%~dp0selftest.log' -Tail 4"
 echo.

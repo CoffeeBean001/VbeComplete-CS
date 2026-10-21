@@ -49,6 +49,7 @@ namespace VbeComplete
                 TestChineseAndExplicit();
                 TestMember();
                 TestEditing();
+                TestIndent();
                 TestSnippets();
             }
             catch (Exception e)
@@ -946,6 +947,94 @@ End Sub
                 !Editing.CloserNeeded(new List<string> { "    y = 2" }, "Next", 4));
             Ok("closer-needed/空行与注释跳过",
                 Editing.CloserNeeded(new List<string> { "", "    ' 注释", "End Sub" }, "Next", 4));
+        }
+
+        // ------------------------------------------------------------------
+        // 一键格式化缩进（Ctrl+Shift+L）：纯函数，逐行钉住"应有的行首空白"
+        // ------------------------------------------------------------------
+        private static void TestIndent()
+        {
+            // ---- 基础：Sub / If / Else ----
+            Eq("fmt/Sub+If+Else", Fmt(
+                "Sub A()\nx = 1\nIf x Then\ny = 2\nElse\ny = 3\nEnd If\nEnd Sub"),
+                "Sub A()\n    x = 1\n    If x Then\n        y = 2\n    Else\n        y = 3\n    End If\nEnd Sub");
+
+            // ---- Select Case：Case 比 Select 深一级，块体再深一级 ----
+            Eq("fmt/Select Case", Fmt(
+                "Sub A()\nSelect Case x\nCase 1\ny = 1\nCase Else\ny = 2\nEnd Select\nEnd Sub"),
+                "Sub A()\n    Select Case x\n        Case 1\n            y = 1\n        Case Else\n            y = 2\n    End Select\nEnd Sub");
+
+            // ---- 多行块头（续行）：整条语句算一次，续行再深一级 ----
+            Eq("fmt/多行 If 头", Fmt(
+                "Sub A()\nIf a And _\nb Then\ny = 1\nEnd If\nEnd Sub"),
+                "Sub A()\n    If a And _\n        b Then\n        y = 1\n    End If\nEnd Sub");
+
+            // ---- with / for / next ----
+            Eq("fmt/With+For", Fmt(
+                "Sub A()\nWith rng\nFor i = 1 To 3\nx = i\nNext i\nEnd With\nEnd Sub"),
+                "Sub A()\n    With rng\n        For i = 1 To 3\n            x = i\n        Next i\n    End With\nEnd Sub");
+
+            // ---- Do / Loop ----
+            Eq("fmt/Do Loop", Fmt("Sub A()\nDo While x\nx = x - 1\nLoop\nEnd Sub"),
+                "Sub A()\n    Do While x\n        x = x - 1\n    Loop\nEnd Sub");
+
+            // ---- ElseIf ----
+            Eq("fmt/ElseIf", Fmt("Sub A()\nIf a Then\nx = 1\nElseIf b Then\nx = 2\nEnd If\nEnd Sub"),
+                "Sub A()\n    If a Then\n        x = 1\n    ElseIf b Then\n        x = 2\n    End If\nEnd Sub");
+
+            // ---- 普通语句的续行 ----
+            Eq("fmt/赋值续行", Fmt("Sub A()\nx = a + _\nb\nEnd Sub"),
+                "Sub A()\n    x = a + _\n        b\nEnd Sub");
+
+            // ---- 条件编译 ----
+            Eq("fmt/#If", Fmt("#If VBA7 Then\nPrivate Declare PtrSafe Sub s Lib \"k\" ()\n#Else\nPrivate Declare Sub s Lib \"k\" ()\n#End If"),
+                "#If VBA7 Then\n    Private Declare PtrSafe Sub s Lib \"k\" ()\n#Else\n    Private Declare Sub s Lib \"k\" ()\n#End If");
+
+            // ---- 空行 / 整行注释一个字符都不动 ----
+            Eq("fmt/注释与空行原样", Fmt("Sub A()\n  ' 顶格注释\n\nx = 1\nEnd Sub"),
+                "Sub A()\n  ' 顶格注释\n\n    x = 1\nEnd Sub");
+
+            // ---- 行标签顶格 ----
+            Eq("fmt/标签顶格", Fmt("Sub A()\nIf x Then\nRetry:\nx = 1\nEnd If\nEnd Sub"),
+                "Sub A()\n    If x Then\nRetry:\n        x = 1\n    End If\nEnd Sub");
+
+            // ---- Tab 工程：一级就是一个 Tab ----
+            Eq("fmt/Tab 单位", Fmt("Sub A()\nx = 1\nEnd Sub", "\t"), "Sub A()\n\tx = 1\nEnd Sub");
+
+            // ---- 已经对齐的：一行都不用改（Changed == 0）----
+            var good = Parser.SplitLines("Sub A()\n    x = 1\nEnd Sub");
+            Eq("fmt/已对齐不用改", Indent.Compute(good, "    ", 1, good.Length).Changed, 0);
+
+            // ---- 只格式化中间几行：层级仍按全文结构算 ----
+            var part = Parser.SplitLines("Sub A()\nIf x Then\ny = 1\nEnd If\nEnd Sub");
+            var pr = Indent.Compute(part, "    ", 3, 3);
+            Eq("fmt/只改指定行", pr.Changed, 1);
+            Eq("fmt/指定行的层级按全文算", pr.Ws[2], "        ");
+            Eq("fmt/范围外的行不碰", pr.Ws[1], null);
+
+            // ---- 结构没闭合也不崩：照常算，只是把"末层级"报出来 ----
+            var open = Parser.SplitLines("Sub A()\nIf x Then\ny = 1");
+            Eq("fmt/未闭合不崩", Indent.Compute(open, "    ", 1, open.Length).FinalDepth, 2);
+
+            // ---- 续行判据 ----
+            Ok("fmt/续行符", Indent.IsContinuation("x = 1 _"));
+            Ok("fmt/下划线标识符不算续行", !Indent.IsContinuation("x = foo_"));
+            Ok("fmt/短行不算续行", !Indent.IsContinuation("_"));
+        }
+
+        /// <summary>把 src 按 4 空格（或指定单位）格式化一遍，返回结果文本。</summary>
+        private static string Fmt(string src, string unit = "    ")
+        {
+            var lines = Parser.SplitLines(src);
+            var res = Indent.Compute(lines, unit, 1, lines.Length);
+            var outp = new List<string>(lines.Length);
+            for (int i = 0; i < lines.Length; i++)
+            {
+                if (res.Ws[i] == null) { outp.Add(lines[i]); continue; }
+                int n = Editing.LeadingWs(lines[i]).Length;
+                outp.Add(res.Ws[i] + lines[i].Substring(n));
+            }
+            return string.Join("\n", outp);
         }
 
         // ------------------------------------------------------------------

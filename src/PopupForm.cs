@@ -11,12 +11,20 @@
 // ★v139 外观向 VBE 自带列表看齐（真机截图为据，见 .workbuddy/memory 里的记录）：
 //   * 字体 = 编辑器字体、**同样的字号**（原来小一号；VBE 自己就是编辑器字号）；
 //   * 白底黑字，命中的字母只**加粗**，不再涂红（VBE 只上黑字）；
-//   * 行高 = 字高 + 2（VBE 实测 15px 对应 Courier New 10）；
-//   * 选中行**不是蓝条**，是 VBE 那种 1px 点线框；鼠标悬停时点线框跟着鼠标走；
+//   * 行高 = 字高 + 4；
 //   * 边框 1px 立体：上/左 #F0F0F0，下/右 #646464（截图逐像素取的色）；
 //   * 滚动条用经典 3D 配色（#F0F0F0 槽 + #C0C0C0 滑块）。
 //   保留的自家东西：图标（VBE 也有方法/属性图标）、点击选词、滚轮、详情行
 //   （只在名字超过 640px 被截断时出现）。
+//
+// ★v140 两处用户点名的修改：
+//   1. 【字体太扁】真因不是"字号"，是**根本没读到 VBE 的字体**：老代码只认
+//      `VBA\6.0\Common`，而这台机器上是 `VBA\7.1\Common`（JetBrains Mono Light 14），
+//      读不到就退回 `Courier New 10` —— 又细又小，当然扁。现在按 7.1 → 7.0 → 6.0
+//      依次读，并且**去掉 Light/Thin 这类字重后缀**（细体正是"扁"的来源），
+//      读不到编辑器字体时再从"好看且等宽"的候选链里挑一个。
+//   2. 【选中行】不再用点线框，改成 VBE 选中文本那种**深蓝底 + 白字**，
+//      命中的字母在蓝底上改用亮黄（黑色加粗在深蓝上完全看不见）。
 
 using System;
 using System.Collections.Generic;
@@ -43,6 +51,55 @@ namespace VbeComplete
         private static readonly Color CEdgeLight = ColorTranslator.FromHtml("#F0F0F0");
         private static readonly Color CEdgeDark = ColorTranslator.FromHtml("#646464");
         private static readonly Color CScrollEdge = ColorTranslator.FromHtml("#808080");
+
+        // ★v140 选中行 = VBE 里"选中文本"那种深蓝（不是 Win10 那种浅蓝 #0078D7，
+        //   那个在白色列表里偏亮、偏"系统对话框"，压不住 JetBrains Mono 的字形）。
+        private static readonly Color CSelBg = SettingColor("POPUP_SEL_BG", "#0A62B0");
+        private static readonly Color CSelFg = SettingColor("POPUP_SEL_FG", "#FFFFFF");
+        // 蓝底上不能用黑字加粗标命中（看不见），改用亮黄 —— 对比度高且不刺眼
+        private static readonly Color CSelHit = SettingColor("POPUP_SEL_HIT", "#FFD97A");
+
+        /// <summary>读一个 #RRGGBB 形式的配色；写错 / 没写就用默认值，绝不让配色配置崩掉窗口。</summary>
+        private static Color SettingColor(string key, string def)
+        {
+            string raw = Settings.Raw(key);
+            foreach (var s in new[] { raw, def })
+            {
+                if (string.IsNullOrWhiteSpace(s)) continue;
+                try
+                {
+                    var c = ColorTranslator.FromHtml(s.Trim());
+                    if (c.A > 0) return c;
+                }
+                catch { }
+            }
+            return Color.Black;
+        }
+
+        // "好看且等宽"的候选链（从前到后第一个装了的赢）。等宽是关键：
+        // 标识符列表里参差不齐的宽度看着比 VBE 还乱。
+        private static readonly string[] PrettyFaces =
+        {
+            "JetBrains Mono", "Cascadia Mono", "Cascadia Code", "Consolas",
+            "Source Code Pro", "Fira Code", "DejaVu Sans Mono",
+            "Microsoft YaHei UI", "Segoe UI",
+        };
+
+        // 这些"出厂字体"又细又扁，VBE 拿它当默认不代表我们也该跟（Courier New 就是
+        // v139 之前那个"扁平"的元凶）。
+        private static readonly string[] UglyFaces =
+        {
+            "Courier New", "Courier", "Fixedsys", "Terminal", "SimSun", "宋体",
+            "NSimSun", "新宋体", "MS Sans Serif", "Microsoft Sans Serif",
+        };
+
+        // 字体名里可以去掉的字重/字形后缀（"JetBrains Mono Light" -> "JetBrains Mono"）
+        private static readonly string[] WeightSuffix =
+        {
+            "extra light", "extralight", "semi light", "semilight",
+            "light", "thin", "medium", "semibold", "semi bold", "bold", "italic",
+            "regular", "book",
+        };
 
         private static readonly Dictionary<string, Color> IconColor =
             new Dictionary<string, Color>(StringComparer.OrdinalIgnoreCase)
@@ -106,8 +163,8 @@ namespace VbeComplete
             {
                 _fontBold = _font;
             }
-            _rowH = Math.Max(14, _font.Height + 2);
-            _iconW = Math.Max(12, Math.Min(16, _rowH));
+            _rowH = Math.Max(16, _font.Height + 4);
+            _iconW = Math.Max(12, Math.Min(16, (int)(_font.Height * 0.8f)));
             _charW = Math.Max(4, MeasureText("x", _font, 16) / 16);
             _minTextW = _charW * MinChars;
 
@@ -115,49 +172,122 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 跟 VBE 编辑器**同一个字体、同一个字号**（v139 之前是"小一号"）——
-        /// 用户要的是"看起来像 VBE 自己的列表"，那就别再自作主张缩小。
-        /// 注册表读不到就退回 Courier New 10（VBA 的出厂字体）。
+        /// 字体 = "好看 + 跟 VBE 一样大"。
+        ///   * 名字：`POPUP_FONT` 优先；否则用 VBE 编辑器字体（去掉 Light/Thin 字重）；
+        ///     再否则从 <see cref="PrettyFaces"/> 里挑第一个装了的；
+        ///   * 字号：`POPUP_FONT_SIZE` 正数 = 直接用它，负数 = 比 VBE 小几号，
+        ///     0/没写 = 跟 VBE 一样（默认）。注册表读不到就退回 Courier New 10。
         /// </summary>
         private static Font BuildFont(out float pt)
         {
-            double want = Settings.Double("POPUP_FONT_SIZE", 0);
+            float vbePt;
+            string vbeFace = ReadVbeFont(out vbePt);
+
             string face = Settings.Raw("POPUP_FONT");
-            try
+            double want = Settings.Double("POPUP_FONT_SIZE", 0);
+
+            if (want > 0) pt = (float)want;
+            else if (want < 0) pt = vbePt + (float)want;
+            else pt = vbePt;
+
+            if (pt <= 0) pt = 10;
+            if (pt < 8) pt = 8;
+            if (pt > 28) pt = 28;
+
+            if (string.IsNullOrWhiteSpace(face)) face = PickFace(vbeFace);
+            return CreateFont(face.Trim(), pt);
+        }
+
+        /// <summary>
+        /// 读 VBE 编辑器当前的字体与字号。★v140：必须按 7.1 → 7.0 → 6.0 的顺序找 ——
+        /// 老代码只认 6.0，在只写了 7.1 的机器上（本机就是）永远读不到，
+        /// 于是静默退回 Courier New 10，那就是用户说的"太扁平"。
+        /// </summary>
+        private static string ReadVbeFont(out float pt)
+        {
+            pt = 0;
+            string face = null;
+            foreach (var ver in new[] { "7.1", "7.0", "6.0" })
             {
-                if (string.IsNullOrEmpty(face) || want <= 0)
+                try
                 {
-                    using (var k = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\VBA\6.0\Common"))
+                    using (var k = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\VBA\" + ver + @"\Common"))
                     {
-                        if (k != null)
+                        if (k == null) continue;
+                        if (string.IsNullOrEmpty(face)) face = k.GetValue("FontFace") as string;
+                        if (pt <= 0)
                         {
-                            if (string.IsNullOrEmpty(face))
-                                face = k.GetValue("FontFace") as string;
-                            if (want <= 0)
-                            {
-                                object h = k.GetValue("FontHeight");
-                                if (h is int i && i > 0) want = i;
-                            }
+                            object h = k.GetValue("FontHeight");
+                            try { if (h != null) pt = Convert.ToSingle(h); } catch { }
                         }
+                        if (!string.IsNullOrEmpty(face) && pt > 0) break;
                     }
                 }
+                catch { }
             }
-            catch { }
+            return face;
+        }
 
-            if (want <= 0) want = 10;
-            if (want < 8) want = 8;
-            if (want > 24) want = 24;
-            pt = (float)want;
-            if (string.IsNullOrEmpty(face)) face = "Courier New";
+        /// <summary>
+        /// 挑字体名。先试 VBE 编辑器字体（去掉字重后缀 —— 用户设的
+        /// "JetBrains Mono Light" 是细体，小字号下正是"扁平"的来源），
+        /// 再退到 <see cref="PrettyFaces"/> 候选链。
+        /// </summary>
+        private static string PickFace(string vbeFace)
+        {
+            if (!string.IsNullOrEmpty(vbeFace))
+            {
+                string baseFace = StripWeight(vbeFace.Trim());
+                if (!IsUgly(baseFace) && FamilyExists(baseFace)) return baseFace;
+                if (!IsUgly(vbeFace) && FamilyExists(vbeFace)) return vbeFace;
+            }
+            foreach (var f in PrettyFaces) if (FamilyExists(f)) return f;
+            return "Courier New";
+        }
 
+        private static string StripWeight(string face)
+        {
+            foreach (var w in WeightSuffix)
+            {
+                if (!face.EndsWith(w, StringComparison.OrdinalIgnoreCase)) continue;
+                int cut = face.Length - w.Length;
+                if (cut <= 0) continue;
+                char prev = face[cut - 1];
+                if (prev != ' ' && prev != '-' && prev != '_') continue;
+                string trimmed = face.Substring(0, cut).TrimEnd(' ', '-', '_');
+                if (trimmed.Length > 0) return trimmed;
+            }
+            return face;
+        }
+
+        private static bool IsUgly(string face)
+        {
+            foreach (var u in UglyFaces)
+                if (string.Equals(face, u, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        private static bool FamilyExists(string face)
+        {
+            if (string.IsNullOrWhiteSpace(face)) return false;
             try
             {
-                var f = new Font(face, pt, FontStyle.Regular);
+                using (var ff = new FontFamily(face)) { return true; }
+            }
+            catch { return false; }
+        }
+
+        /// <summary>建字体；装不上（GDI 会悄悄换成别的字）就退回 Courier New 同字号。</summary>
+        private static Font CreateFont(string face, float pt)
+        {
+            try
+            {
+                var f = new Font(face, pt, FontStyle.Regular, GraphicsUnit.Point);
                 if (string.Equals(f.Name, face, StringComparison.OrdinalIgnoreCase)) return f;
                 f.Dispose();
             }
             catch { }
-            return new Font("Courier New", pt, FontStyle.Regular);
+            return new Font("Courier New", pt, FontStyle.Regular, GraphicsUnit.Point);
         }
 
         protected override bool ShowWithoutActivation => true;
@@ -175,6 +305,10 @@ namespace VbeComplete
 
         public IReadOnlyList<Candidate> Items => _items;
         public int RowHeight => _rowH;
+        /// <summary>实际用上的字体（"JetBrains Mono 14"）—— 排障时一眼看出是不是没读到 VBE 的字号。</summary>
+        public string FontName =>
+            _font.Name + " " + _font.SizeInPoints.ToString("0.#") +
+            (ReferenceEquals(_fontBold, _font) ? " (无粗体)" : " +bold");
 
         public void SetData(IReadOnlyList<Candidate> items, int sel, int top, int rows)
         {
@@ -343,6 +477,10 @@ namespace VbeComplete
             if (detail != null)
                 using (var b = new SolidBrush(CDetailBg)) g.FillRectangle(b, 0, listH, Width, Height - listH);
 
+            // 选中条不能压在滚动条底下（跟 VBE 一样，滚动条是一条独立的长条）
+            int barW = _items.Count > _rows ? ScrollW : 0;
+            int rowW = Math.Max(1, Width - 1 - barW);
+
             for (int i = 0; i < visible; i++)
             {
                 int idx = _top + i;
@@ -350,35 +488,19 @@ namespace VbeComplete
                 var c = _items[idx];
                 if (c == null) continue;
                 int y = i * _rowH;
-                bool hovered = idx == _hover;
+                bool selected = idx == _sel;
 
-                if (hovered)
-                    using (var b = new SolidBrush(CHoverBg)) g.FillRectangle(b, 1, y + 1, Width - 2, _rowH);
+                if (selected)
+                    using (var b = new SolidBrush(CSelBg)) g.FillRectangle(b, 1, y, rowW, _rowH);
+                else if (idx == _hover)
+                    using (var b = new SolidBrush(CHoverBg)) g.FillRectangle(b, 1, y, rowW, _rowH);
 
                 int ix = PadX;
                 int iy = y + (_rowH - _iconW) / 2;
-                DrawIcon(g, c.Kind, ix, iy, _iconW);
+                DrawIcon(g, c.Kind, ix, iy, _iconW, selected);
 
                 int tx = ix + _iconW + IconGap;
-                DrawName(g, c, tx, y);
-            }
-
-            // ★选中行：VBE 那种 1px 点线框（不是蓝条）。鼠标悬停时框跟着鼠标走。
-            int active = _hover >= 0 ? _hover : _sel;
-            if (active >= _top && active < _top + visible)
-            {
-                int y = (active - _top) * _rowH;
-                int x0 = PadX + _iconW + IconGap - 1;
-                int x1 = Width - ScrollW - 1;
-                if (x1 > x0)
-                    using (var pen = new Pen(CFg))
-                    {
-                        pen.DashStyle = DashStyle.Dot;
-                        pen.DashPattern = new[] { 1f, 1f };
-                        g.DrawRectangle(pen, x0, y + 1, x1 - x0, _rowH - 2);
-                    }
-                else
-                    using (var pen = new Pen(CFg)) g.DrawRectangle(pen, 1, y, Width - 2, _rowH - 1);
+                DrawName(g, c, tx, y, selected);
             }
 
             // 详情行：完整名字（列表里被截断时看这里；宽度按内容算之后极少出现）
@@ -453,11 +575,15 @@ namespace VbeComplete
         /// <summary>
         /// 画名字。★v139：命中的字母只**加粗**，不再涂红 —— VBE 的列表全是黑字，
         /// 涂色就不像了；加粗既保留"这几个字母命中了"的提示，又不改配色。
+        /// ★v140：选中行是深蓝底，黑字加粗在上面完全看不见 —— 那里改成白字 + 亮黄。
         /// </summary>
-        private void DrawName(Graphics g, Candidate c, int x, int y)
+        private void DrawName(Graphics g, Candidate c, int x, int y, bool selected)
         {
             string name = c.Name ?? "";
             int baselineY = y + (_rowH - _font.Height) / 2;
+
+            Color fg = selected ? CSelFg : CFg;
+            Color hitFg = selected ? CSelHit : CFg;
 
             string disp = Truncate(name, ContentWidth, out int prefixLen);
             var hits = new List<int>();
@@ -466,21 +592,21 @@ namespace VbeComplete
 
             if (hits.Count == 0)
             {
-                TextRenderer.DrawText(g, disp, _font, new Point(x, baselineY), CFg,
+                TextRenderer.DrawText(g, disp, _font, new Point(x, baselineY), fg,
                     TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix);
                 return;
             }
 
             int cx = x;
             foreach (var seg in SplitByHits(disp, hits.ToArray()))
-                cx = DrawChunk(g, seg.Key, cx, baselineY, seg.Value);
+                cx = DrawChunk(g, seg.Key, cx, baselineY, seg.Value, fg, hitFg);
         }
 
-        private int DrawChunk(Graphics g, string s, int x, int y, bool bold)
+        private int DrawChunk(Graphics g, string s, int x, int y, bool bold, Color fg, Color hitFg)
         {
             if (string.IsNullOrEmpty(s)) return x;
             var font = bold && !ReferenceEquals(_fontBold, _font) ? _fontBold : _font;
-            TextRenderer.DrawText(g, s, font, new Point(x, y), CFg,
+            TextRenderer.DrawText(g, s, font, new Point(x, y), bold ? hitFg : fg,
                 TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix);
             return x + MeasureText(s, font, 0);
         }
@@ -523,12 +649,14 @@ namespace VbeComplete
         /// <summary>
         /// 五档图标全部现画（不发位图）：函数=绿箭头、属性=紫方块、变量=蓝竖条、
         /// 类型=琥珀菱形、关键字=灰横线。**拿不到档位就不画**。
+        /// 选中行整行是深蓝底：图标统一改白，否则蓝竖条会沉进背景里。
         /// </summary>
-        private static void DrawIcon(Graphics g, string kind, int x, int y, int w)
+        private static void DrawIcon(Graphics g, string kind, int x, int y, int w, bool selected)
         {
             if (string.IsNullOrEmpty(kind)) return;
             Color color;
             if (!IconColor.TryGetValue(kind, out color)) return;
+            if (selected) color = CSelFg;
 
             using (var b = new SolidBrush(color))
             using (var pen = new Pen(color))

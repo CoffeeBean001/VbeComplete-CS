@@ -1101,6 +1101,25 @@ namespace VbeComplete
             catch (Exception e) { Fail(e); return false; }
         }
 
+        /// <summary>
+        /// 设一个跨行选区（1-based 行 / VBE 的显示列）。
+        /// 只有 `--hktest` 用它：格式化缩进"只理选区"的那条路，必须真的拉一个选区才算测到。
+        /// </summary>
+        public bool SetSelectionRange(int sl, int sc, int el, int ec)
+        {
+            try
+            {
+                dynamic vbe = ComCtx.Vbe();
+                if (ReferenceEquals(vbe, null)) return false;
+                object cp = vbe.ActiveCodePane;
+                if (ReferenceEquals(cp, null)) return false;
+                ((dynamic)cp).SetSelection(sl, sc, el, ec);
+                InvalidateSnapshot();
+                return true;
+            }
+            catch (Exception e) { Fail(e); return false; }
+        }
+
         /// <summary>当前选区（四个 Long）。四个出参都是 ByRef，只能走 IDispatch 直调。</summary>
         public bool TryGetSelection(out int sl, out int sc, out int el, out int ec)
         {

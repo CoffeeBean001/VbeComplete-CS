@@ -1,4 +1,5 @@
-// 五个"改一行"的命令 —— Ctrl+D / Ctrl+K / Ctrl+/ / Ctrl+Shift+Enter / Ctrl+Shift+↑↓。
+// 换行/行操作命令 —— Ctrl+D / Ctrl+K / Ctrl+/ / Ctrl+Shift+Enter / Ctrl+Shift+↑↓ /
+// Ctrl+Shift+L（整篇格式化缩进）。
 //
 // ★为什么单独一个文件：这些是【会改用户代码】的动作，必须满足两条：
 //   1. 同一语义只有一份实现 —— 钩子（App）和真机验证（Program --hktest）走同一批函数，
@@ -131,7 +132,77 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// Ctrl+Shift+↑：落到本过程里【最后一个声明行】的行尾；
+        /// Ctrl+Shift+L：按块结构重排行首缩进 —— 整模块，有跨行选区时只理选区。
+        /// ★只改**行首空白**：行内一个字符都不动。所以最坏情况也只是"某行缩进不对"，
+        ///   按几下 Ctrl+Z 就回来了，绝不会把代码写坏（这正是一键格式化最该守的底线）。
+        /// ★块层级永远从第 1 行扫起（见 Indent.Compute）：只格式化中间几行时，
+        ///   那几行的层级也是按上面真实的结构算出来的，不会"从 0 开始"。
+        /// </summary>
+        public static bool FormatIndent(VbeBackend be)
+        {
+            // ★必须强制重读：模块全文有 1.5 秒缓存，而缓存只看"模块名 + 行数"——
+            //   用户刚敲的几个字不改行数，拿缓存去拼新行就等于把他的输入擦掉。
+            be.ForceReloadModule();
+            string text = be.ModuleText();
+            if (string.IsNullOrEmpty(text)) return false;
+            var lines = Parser.SplitLines(text);
+            if (lines.Length == 0) return false;
+
+            int from = 1, to = lines.Length;
+            int caretLine = 0, caretDisp = 0;
+            bool haveSel = be.TryGetSelection(out int sl, out _, out int el, out int ec);
+            if (haveSel)
+            {
+                if (el > sl && el <= lines.Length)
+                {
+                    from = Math.Max(1, sl);
+                    to = el;
+                    if (ec == 1 && to > from) to--;   // 选区结束在下一行行首：别顺手改那一行
+                }
+                caretLine = Math.Max(1, Math.Min(lines.Length, el));
+                caretDisp = ec;
+            }
+
+            string unit = Editing.IndentUnitFor(lines);
+            var res = Indent.Compute(lines, unit, from, to);
+            if (res.Changed == 0)
+            {
+                Log.Write("格式化：{0}~{1} 行本来就是对齐的（末层级={2}）", from, to, res.FinalDepth);
+                return true;   // 没事可做也算成功：别把 Ctrl+Shift+L 丢回 VBE 去撞运气
+            }
+
+            long t0 = Environment.TickCount64;
+            int done = 0;
+            for (int i = from; i <= to; i++)
+            {
+                string want = res.Ws[i - 1];
+                if (want == null) continue;
+                string old = lines[i - 1];
+                if (!be.ReplaceLineRaw(i, want + old.Substring(Editing.LeadingWs(old).Length))) break;
+                done++;
+            }
+
+            // 光标还原：行首空白宽度变了多少，光标就挪多少（行内的字符没动，偏移是可算的）
+            if (haveSel && caretLine >= 1)
+            {
+                string oldLine = lines[caretLine - 1];
+                string oldWs = Editing.LeadingWs(oldLine);
+                string newWs = res.Ws[caretLine - 1] ?? oldWs;
+                int oldInd = Editing.IndentWidth(oldLine);
+                int newInd = Editing.IndentWidth(newWs);
+                int disp = caretDisp > 0 ? caretDisp : oldInd + 1;
+                int target = disp > oldInd ? disp - oldInd + newInd : newInd + 1;
+                if (target < 1) target = 1;
+                string newLine = newWs + oldLine.Substring(oldWs.Length);
+                be.SetCaret(caretLine, Rules.CharColFromDisp(newLine, target));
+            }
+
+            Log.Write("格式化：{0}~{1} 行，改了 {2} 行，末层级={3}，耗时 {4}ms",
+                from, to, done, res.FinalDepth, Environment.TickCount64 - t0);
+            return done > 0;
+        }
+
+        /// <summary>Ctrl+Shift+↑：落到本过程里【最后一个声明行】的行尾；
         /// Ctrl+Shift+↓：跳到过程收尾的空白行。
         /// </summary>
         public static bool CtrlNavJump(VbeBackend be, int dir)
