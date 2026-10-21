@@ -176,6 +176,29 @@ namespace VbeComplete
         }
 
         /// <summary>
+        /// 光标前那个词是不是紧跟在 `As` / `New` 这类"后面只可能是类型名"的关键字后面。
+        ///
+        /// ★为什么单独一条、不并进 <see cref="InDeclarationPosition"/>：
+        ///   那条只认 `Dim` / `Const` / `ReDim` / `WithEvents` **开头的整行**；
+        ///   而 `Set c = New |`、`dic.Add 1, New |`、`For i As |`、过程参数
+        ///   `Sub Foo(a As |)` 的行首都不是声明关键字 —— 旧实现里它们照弹。
+        ///   用户口径（v137）：`New` 后面跟 `As` 一样，不弹。
+        ///
+        ///   wordStartCol 是"正在输入的那个词"的起始列（1-based 字符列）。
+        ///   词还没开始（`New |`）时 <see cref="WordBefore"/> 会给回 caret 本身。
+        /// </summary>
+        public static bool AfterTypeKeyword(string line, int wordStartCol)
+        {
+            if (string.IsNullOrEmpty(line)) return false;
+            int start = Math.Max(0, Math.Min(wordStartCol - 1, line.Length));
+            string before = line.Substring(0, start).TrimEnd();
+            if (before.Length == 0) return false;
+            // 关键字左边不能再连着标识符字符：`Renew` / `xNew` 不算关键字
+            return Regex.IsMatch(before, @"(?<![\p{L}\p{N}_])(?:As|New)$",
+                RegexOptions.IgnoreCase);
+        }
+
+        /// <summary>
         /// 把模块全文里"正在输入的那个词"挖成空格。
         ///
         /// ★为什么要这一步：作用域分析看到的是**当前**文本，而用户打到一半的

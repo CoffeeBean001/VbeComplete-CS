@@ -256,6 +256,12 @@ namespace VbeComplete
                         if (nm.Length == 0) continue;
                         alive.Add(nm);
 
+                        // 组件类型：1=标准模块 2=类模块 3=窗体 100=文档模块。
+                        // 读不出来就当"未知"，池子那边按标准模块处理（宁可多提示，
+                        // 也不要因为一次 COM 抖动把整个模块的名字全吞掉）。
+                        int ctype = 0;
+                        try { ctype = Convert.ToInt32(comp.Type); } catch { }
+
                         dynamic cm = comp.CodeModule;
                         int count = Convert.ToInt32(cm.CountOfLines);
                         sig = unchecked(sig * 31 + nm.ToLowerInvariant().GetHashCode() * 17 + count);
@@ -263,11 +269,13 @@ namespace VbeComplete
                         ModuleScope ms;
                         if (_modScopes.TryGetValue(nm, out ms) && ms.LineCount == count)
                         {
+                            ms.ComponentType = ctype;   // 缓存命中也要刷新类型
                             list.Add(ms);
                             continue;
                         }
                         string text = count > 0 ? Convert.ToString(cm.Lines(1, count)) : "";
                         ms = Scope.Analyze(nm, text);
+                        ms.ComponentType = ctype;
                         _modScopes[nm] = ms;
                         list.Add(ms);
                     }

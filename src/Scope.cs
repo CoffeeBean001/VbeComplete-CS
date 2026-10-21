@@ -55,6 +55,18 @@ namespace VbeComplete
         /// <summary>模块头有没有 `Option Explicit`（= 强制声明变量）。</summary>
         public bool OptionExplicit;
 
+        /// <summary>
+        /// VBE 组件类型：1=标准模块、2=类模块、3=窗体、100=文档模块（ThisWorkbook /
+        /// Sheet1）、0=未知（合成测试文本 / 还没读出来）。
+        ///
+        /// ★它只影响一件事：**这个模块的声明能不能进"裸名池"**。
+        ///   类模块（2）/ 窗体（3）/ 文档模块（100）里的 `Public s1` 是**对象成员**，
+        ///   只能 `c.s1` 这样访问；把它们并进裸名池，用户在别的模块里打一个 `s`
+        ///   就会看到 `s1` —— 那是真·变量泄露（用户 v137 报的）。
+        ///   当前正在编辑的那个模块不受这条限制（在自己模块里它当然是裸名）。
+        /// </summary>
+        public int ComponentType;
+
         /// <summary>行数。池子缓存用它判"文本变了没有"。</summary>
         public int LineCount;
 

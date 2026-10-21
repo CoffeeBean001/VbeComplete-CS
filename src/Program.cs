@@ -1036,82 +1036,147 @@ namespace VbeComplete
         private static int EngineTest()
         {
             var sb = new StringBuilder();
-            var be = new VbeBackend();
-            string text = be.ModuleText();
-            int lines = be.LineCount();
             bool ok = true;
 
-            sb.AppendLine("=== engine test (真机模块文本) ===");
-            sb.AppendLine("module lines = " + lines + " len = " + (text == null ? -1 : text.Length));
-            if (text == null || lines <= 0)
+            // 真机信息只打印、不作判据 —— 没开代码窗时这里是 -1。
+            // ★旧实现把整节押在"真机模块里恰好有 student2 / okkk2 / 他们"上，
+            //   换个模块就整片红或整片 skip；那样的绿说明不了任何事
+            //   （v137 之前 paretest / hktest / enginetest 三条全是这么"绿"着的）。
+            string liveText = null;
+            int liveLines = -1;
+            try
             {
-                sb.AppendLine("no code module, skip");
-                File.WriteAllText(Path.Combine(Settings.Home, "enginetest.log"), sb.ToString(), Encoding.UTF8);
-                return 1;
+                var live = new VbeBackend();
+                liveText = live.ModuleText();
+                liveLines = live.LineCount();
             }
+            catch { }
 
-            Console.WriteLine();
-            var eng = new Engine { Recent = new Recent(), Backend = be };
-            string modName = be.Snapshot()?.Module;
+            sb.AppendLine("=== engine test（合成工程，不依赖真机打开的模块）===");
+            sb.AppendLine("真机模块（仅供参考）：lines=" + liveLines +
+                          " len=" + (liveText == null ? -1 : liveText.Length));
 
-            // 说明, 行, 行文本, 光标显示列, 期望该弹?, 期望第一条, 期望"不许出现"的名字
-            Action<string, int, string, int, bool?, string, string[]> probe =
-                (name, line, lineText, col, wantShow, wantFirst, mustNot) =>
+            // 合成工程：一个标准模块（模块1）+ 一个类模块（cls1）。
+            // 组件类型要真的填（1=标准 2=类）—— "类成员不进裸名池"就靠它判。
+            const string modStd =
+                "Option Explicit\n" +
+                "\n" +
+                "Public 我们 As String\n" +
+                "Private okkk2 As String\n" +
+                "\n" +
+                "Sub test()\n" +
+                "    Dim student2 As String\n" +
+                "    Dim 他们 As String\n" +
+                "    Dim dic As Object, c As cls1\n" +
+                "    student = getOne()\n" +
+                "    \n" +
+                "End Sub\n";
+            const string modCls =
+                "Option Explicit\n" +
+                "\n" +
+                "Public s1 As String\n" +
+                "Public s2 As String\n";
+
+            var synth = new SyntheticBackend()
+                .Add("模块1", 1, modStd)
+                .Add("cls1", 2, modCls);
+
+            // 说明, 模块, 行, 行文本, 光标显示列, 期望该弹?, 必须有, 不许有
+            Action<string, string, int, string, int, bool?, string[], string[]> sprobe =
+                (name, mod, line, lineText, col, wantShow, mustHave, mustNot) =>
                 {
-                    var snap = new Snapshot { Line = line, Text = lineText, Module = modName, CaretCol = col };
-                    eng.InvalidatePool();
-                    bool shown = eng.Trigger(false, snap);
-                    var items = shown ? eng.Items.ToList() : new List<Candidate>();
-                    string first = items.Count > 0 ? items[0].Name : "";
-                    string names = shown ? string.Join(",", items.Take(8).Select(x => x.Name)) : "(不弹)";
+                    synth.Current = mod;
+                    var e = new Engine { Recent = new Recent(), Backend = synth };
+                    var sn = new Snapshot
+                    {
+                        Line = line,
+                        Text = lineText,
+                        Module = mod,
+                        CaretCol = col
+                    };
+                    e.InvalidatePool();
+                    bool shown = e.Trigger(false, sn);
+                    var items = shown ? e.Items.ToList() : new List<Candidate>();
 
                     bool pass = true;
                     if (wantShow.HasValue && shown != wantShow.Value) pass = false;
-                    if (wantFirst != null && !string.Equals(first, wantFirst, StringComparison.OrdinalIgnoreCase)) pass = false;
+                    foreach (var want in mustHave ?? Array.Empty<string>())
+                        if (!items.Any(x => string.Equals(x.Name, want, StringComparison.OrdinalIgnoreCase)))
+                            pass = false;
                     foreach (var bad in mustNot ?? Array.Empty<string>())
-                        if (items.Any(x => string.Equals(x.Name, bad, StringComparison.OrdinalIgnoreCase))) pass = false;
+                        if (items.Any(x => string.Equals(x.Name, bad, StringComparison.OrdinalIgnoreCase)))
+                            pass = false;
                     if (!pass) ok = false;
 
                     sb.AppendLine((pass ? "  PASS  " : "  FAIL  ") + name);
-                    sb.AppendLine("         行[" + (lineText ?? "") + "] 列=" + col + " -> " + names +
-                                  (wantFirst != null ? "   want first=" + wantFirst : "") +
-                                  (mustNot != null && mustNot.Length > 0 ? "   不许有=" + string.Join("/", mustNot) : ""));
-                    if (shown) eng.Hide();
+                    sb.AppendLine("         行[" + (lineText ?? "") + "] 列=" + col + " -> " +
+                                  (shown ? string.Join(",", items.Take(10).Select(x => x.Name)) : "(不弹)") +
+                                  (mustHave != null && mustHave.Length > 0
+                                      ? "   必须有=" + string.Join("/", mustHave) : "") +
+                                  (mustNot != null && mustNot.Length > 0
+                                      ? "   不许有=" + string.Join("/", mustNot) : ""));
+                    if (shown) e.Hide();
                 };
 
-            // ---- 1. `As` 之后不弹（用户报的第 3 条）----
-            // 模块里就有 `    Dim student2 As String`
-            probe("As 后不弹（Dim student2 As Str|）", 8, LineOf(text, 8), 24, false, null, null);
-            // 裸声明 `Private okkk2` 后面
-            probe("裸声明不弹（Private okkk2|）", 4, LineOf(text, 4), 13, false, null, null);
-            // `Public 我们 As String`
-            probe("裸声明 + As 不弹（Public 我们 As Str|）", 3, LineOf(text, 3), 18, false, null, null);
-            probe("裸声明名字位不弹（Public 我|）", 3, LineOf(text, 3), 9, false, null, null);
+            // ---- 1. 声明位置 / `As` 之后不弹 ----
+            sprobe("As 后不弹（Dim student2 As Str|）", "模块1", 7,
+                "    Dim student2 As String", 24, false, null, null);
+            sprobe("裸声明名字位不弹（Private okkk2|）", "模块1", 4,
+                "Private okkk2 As String", 14, false, null, null);
+            sprobe("裸声明 + As 不弹（Public 我们 As Str|）", "模块1", 3,
+                "Public 我们 As String", 19, false, null, null);
+            sprobe("裸声明名字位不弹（Public 我|）", "模块1", 3,
+                "Public 我们 As String", 10, false, null, null);
 
-            // ---- 2. Option Explicit：未声明的名字不进候选（用户报的第 4 条）----
-            // ★必须在**别的行**上下手：光标所在行会被"挖掉半截词"，那条路本来就
-            //   收集不到当前词，验不出 Option Explicit 的作用。这里把光标放在
-            //   `student2 = getOne()` 那一行，但搜索词是 `stud` —— 池子里若混进
-            //   了第 9/11 行的 `student`，它就会冒出来。
-            probe("未声明 student 不进候选（stud|）", 10, "    stud", 9, null, "student2", new[] { "student" });
-            probe("未声明 ok 不进候选（ok|）", 13, "    ok", 7, null, "okkk2", new[] { "ok" });
+            // ---- 2. Option Explicit：未声明的名字不进候选 ----
+            // 光标所在行会被"挖掉半截词"，所以搜索词要和模块里的名字错开：
+            // 池子里若混进了第 10 行的 `student`，它就会在 stud 这次冒出来。
+            sprobe("未声明 student 不进候选（stud|）", "模块1", 11,
+                "    stud", 9, null, new[] { "student2" }, new[] { "student" });
+            sprobe("未声明 ok 不进候选（ok|）", "模块1", 11,
+                "    ok", 7, null, new[] { "okkk2" }, new[] { "ok" });
+            sprobe("中文变量名能提示（他|）", "模块1", 11,
+                "    他", 7, true, new[] { "他们" }, null);
 
-            // ---- 3. 中文名字要提示（用户报的第 6 条）----
-            probe("中文变量名能提示（他|）", 13, "    他", 7, true, "他们", null);
-
-            // ---- 4. A/B 对照：把 Option Explicit 去掉，同一个探针就该收进来 ----
+            // ---- 3. A/B 对照：去掉 Option Explicit，同一个探针就该收进来 ----
             //   证明"未声明的不提示"确实是 Option Explicit 在起作用，不是别的原因。
-            var noExp = text.Replace("Option Explicit", "              ");
-            var be2 = new RealTextBackend(noExp, modName);
-            var eng2 = new Engine { Recent = new Recent(), Backend = be2 };
-            var snap2 = new Snapshot { Line = 10, Text = "    stud", Module = modName, CaretCol = 9 };
-            bool shown2 = eng2.Trigger(false, snap2);
-            bool leaked = shown2 && eng2.Items.Any(x => string.Equals(x.Name, "student", StringComparison.OrdinalIgnoreCase));
+            var noExpStd = modStd.Replace("Option Explicit", "              ");
+            var synthNoExp = new SyntheticBackend()
+                .Add("模块1", 1, noExpStd)
+                .Add("cls1", 2, modCls);
+            synthNoExp.Current = "模块1";
+            var engNoExp = new Engine { Recent = new Recent(), Backend = synthNoExp };
+            bool shown2 = engNoExp.Trigger(false,
+                new Snapshot { Line = 11, Text = "    stud", Module = "模块1", CaretCol = 9 });
+            bool leaked = shown2 && engNoExp.Items.Any(
+                x => string.Equals(x.Name, "student", StringComparison.OrdinalIgnoreCase));
             if (!leaked) ok = false;
             sb.AppendLine((leaked ? "  PASS  " : "  FAIL  ") +
                           "对照：没有 Option Explicit 时 student 会被收进来");
-            sb.AppendLine("         -> " + (shown2 ? string.Join(",", eng2.Items.Take(8).Select(x => x.Name)) : "(不弹)"));
-            if (shown2) eng2.Hide();
+            sb.AppendLine("         -> " +
+                          (shown2 ? string.Join(",", engNoExp.Items.Take(8).Select(x => x.Name)) : "(不弹)"));
+            if (shown2) engNoExp.Hide();
+
+            // ---- 4. `New` 后面不弹（用户 v137 第 2 条，跟 `As` 一样）----
+            sprobe("New 后不弹（dic.Add 1, New |）", "模块1", 11,
+                "    dic.Add 1, New ", 21, false, null, null);
+            sprobe("New 后半截词也不弹（New cl|）", "模块1", 11,
+                "    dic.Add 1, New cl", 22, false, null, null);
+            // ★这两条必须用"半截词"：`New |` / `As |`（词还没开始）本来就走
+            //   "空词不弹"那条路，退掉 AfterTypeKeyword 也照样绿 —— 抓不到问题。
+            //   真正会弹出全工程候选的是 `New cl|` / `As Lo|` 这种打了半个字的。
+            sprobe("As 后不弹（For i As Lo|，行首不是 Dim）", "模块1", 11,
+                "    For i As Lo", 17, false, null, null);
+
+            // ---- 5. 类模块的 Public 成员不许混进别的模块的裸名池（用户 v137 第 3 条）----
+            sprobe("类模块成员不进裸名池（模块1 里打 s|）", "模块1", 11,
+                "    s", 6, null, null, new[] { "s1", "s2" });
+            // 对照：在 cls1 自己里面它就是裸名 —— 必须提示（证明按模块过滤，不是一刀切）
+            sprobe("对照：cls1 自己里 s1 照常提示（s|）", "cls1", 4,
+                "s", 2, true, new[] { "s1" }, null);
+            // 成员位置：c 是 cls1，成员列表就该有 s1 / s2
+            sprobe("成员位置收窄（c.|）", "模块1", 11,
+                "    c.", 7, true, new[] { "s1", "s2" }, null);
 
             sb.AppendLine(ok ? "RESULT: PASS" : "RESULT: FAIL");
             File.WriteAllText(Path.Combine(Settings.Home, "enginetest.log"), sb.ToString(), Encoding.UTF8);
@@ -1120,41 +1185,51 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 只换"模块全文"的假后端：其余能力全部委托给真实的 VbeBackend。
-        /// 用来做 A/B 对照（同一台机器、同一份工程，只改一处文本）。
+        /// 完全合成的工程（不碰 COM）：模块名 -> 全文 + 组件类型。
+        /// 用来钉"跨模块可见性"这类**与当前打开哪个模块无关**的契约 ——
+        /// 真机探针在没开代码窗时一律 skip，等于什么都没验（v137 之前
+        /// paretest / hktest / enginetest 三条就是这么"绿"着的）。
         /// </summary>
-        private sealed class RealTextBackend : IVbeSource
+        private sealed class SyntheticBackend : IVbeSource
         {
-            private readonly string _text;
-            private readonly VbeBackend _real = new VbeBackend();
-            private readonly string _module;
-            public RealTextBackend(string text, string module) { _text = text; _module = module; }
+            private readonly Dictionary<string, string> _texts =
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            private readonly Dictionary<string, int> _types =
+                new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
-            public Snapshot Snapshot(bool verify = true) => _real.Snapshot(verify);
-            public string ModuleText() => _text;
-            public List<string> ComponentNames() => _real.ComponentNames();
-            public bool ApplyCompletion(int lineNo, int wordStartCol, int endCol,
-                string completion, bool wantParens, bool wantSpace, string enclosingProc) => false;
-            public string EnclosingProcName() => _real.EnclosingProcName();
+            public string Current;
 
-            /// <summary>本项目的作用域换成"改过的文本"，别的模块照旧。</summary>
+            public SyntheticBackend Add(string name, int type, string text)
+            {
+                _texts[name] = text;
+                _types[name] = type;
+                return this;
+            }
+
+            public Snapshot Snapshot(bool verify = true) => null;
+
+            public string ModuleText() =>
+                _texts.TryGetValue(Current ?? "", out var t) ? t : "";
+
+            public List<string> ComponentNames() => new List<string>(_texts.Keys);
+
             public List<ModuleScope> ProjectScopes(out int signature)
             {
-                var list = _real.ProjectScopes(out signature);
-                var outp = new List<ModuleScope>();
-                bool replaced = false;
-                foreach (var ms in list)
+                signature = 1;
+                var list = new List<ModuleScope>();
+                foreach (var kv in _texts)
                 {
-                    if (!replaced && string.Equals(ms.Module, _module, StringComparison.OrdinalIgnoreCase))
-                    {
-                        outp.Add(Scope.Analyze(_module, _text));
-                        replaced = true;
-                    }
-                    else outp.Add(ms);
+                    var ms = Scope.Analyze(kv.Key, kv.Value);
+                    ms.ComponentType = _types[kv.Key];
+                    list.Add(ms);
                 }
-                if (!replaced) outp.Add(Scope.Analyze(_module, _text));
-                return outp;
+                return list;
             }
+
+            public bool ApplyCompletion(int lineNo, int wordStartCol, int endCol,
+                string completion, bool wantParens, bool wantSpace, string enclosingProc) => false;
+
+            public string EnclosingProcName() => "test";
         }
 
         private static string LineOf(string text, int line1)

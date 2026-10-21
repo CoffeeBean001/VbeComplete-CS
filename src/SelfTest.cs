@@ -144,6 +144,20 @@ namespace VbeComplete
             Ok("decl-position/裸 Public As", Rules.InDeclarationPosition("Public g As Long", 16));
             Ok("decl-position/Public Sub 不算裸声明误判", Rules.InDeclarationPosition("Public Sub DoIt(", 16));
 
+            // ★v137：`As` / `New` 之后一律不弹 —— 与 decl-position 互补：
+            //   那条认"声明语句的行首"，这条认 `Set c = New |` / `For i As |` /
+            //   过程参数 `a As |` 这些行首不是声明关键字的位置（用户报的第 2 条）。
+            Ok("type-kw/New 后（空词）", Rules.AfterTypeKeyword("    Set c = New ", 17));
+            Ok("type-kw/New 后半截词", Rules.AfterTypeKeyword("    Set c = New cl", 17));
+            Ok("type-kw/As 后（For 行）", Rules.AfterTypeKeyword("    For i As Lo", 14));
+            Ok("type-kw/过程参数 As 后", Rules.AfterTypeKeyword("Sub f(a As Lo", 12));
+            Ok("type-kw/New 大小写", Rules.AfterTypeKeyword("x = NEW cl", 9));
+            // 反例：这几个都**不是**关键字位置，必须照常提示
+            Ok("type-kw/空行不是", !Rules.AfterTypeKeyword("", 1));
+            Ok("type-kw/普通语句不是", !Rules.AfterTypeKeyword("x = newValue", 5));
+            Ok("type-kw/Renew 不算 New", !Rules.AfterTypeKeyword("x = Renew", 5));
+            Ok("type-kw/As 出现在词中间不算", !Rules.AfterTypeKeyword("x = ClassName", 5));
+
             // 把"正在输入的词"挖掉（自我提示的根治办法）
             Eq("blank-token/挖掉当前词",
                 Rules.BlankToken("Public glo\r\nx = 1", 1, 8, "glo"), "Public    \nx = 1");

@@ -151,6 +151,17 @@ namespace VbeComplete
             _poolScoped.Clear();
             foreach (var ms in scopes)
             {
+                // ★对象模块（类模块 2 / 窗体 3 / 文档模块 100）的声明是**成员**，
+                //   只能 `c.s1` 这样访问，绝不能当裸名提示。
+                //   把它们并进池子，用户在别的模块里打一个 `s` 就会看到 `s1`
+                //   —— 用户 v137 报的"变量泄露"就是这条（cls1 里的 Public s1）。
+                //   正在编辑的那个模块例外：在自己模块里它当然是裸名。
+                //   类型未知（0，合成测试 / COM 抖动）按标准模块处理，宁可多提示。
+                bool isCur = ReferenceEquals(ms, cur) ||
+                             string.Equals(ms.Module, moduleName ?? "",
+                                           StringComparison.OrdinalIgnoreCase);
+                if (!isCur && ms.ComponentType != 0 && ms.ComponentType != 1) continue;
+
                 foreach (var d in ms.Decls)
                 {
                     if (nameSeen.Add(d.Name)) names.Add(d.Name);
@@ -251,6 +262,17 @@ namespace VbeComplete
             // 先取词：池子要拿"这个词被挖掉之后"的文本去解析。
             int wordStart;
             string word = Rules.WordBefore(line, caret, out wordStart);
+
+            // ★`As` / `New` 之后一律不弹（用户 v137 口径）。
+            //   与上面的 InDeclarationPosition 互补：那条管 `Dim x As |` 这种
+            //   声明开头的整行，这条管 `Set c = New |` / `dic.Add 1, New |` /
+            //   `For i As |` / 过程参数 `a As |` —— 行首都不是声明关键字，
+            //   旧实现里它们会照常弹出全工程候选（用户报的第 2 条）。
+            if (!manual && !DeclPopup && Rules.AfterTypeKeyword(line, wordStart))
+            {
+                Hide();
+                return false;
+            }
 
             string text = Backend?.ModuleText();
             EnsurePool(snap.Module, text, snap.Line, wordStart, word);
