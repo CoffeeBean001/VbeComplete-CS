@@ -1,0 +1,11 @@
+﻿=== pool dump ===
+module   = Sheet3  lines = 9
+optionExplicit = False
+caret    = L10 C1  line = []
+curProc  = (null)
+procs    = Worksheet_SelectionChange:1-9(Worksheet_SelectionChange)
+decls    = Worksheet_SelectionChange@-, Target@Worksheet_SelectionChange
+free     = setValidity@Worksheet_SelectionChange
+visible  = Worksheet_SelectionChange
+trigger  = False  items = 0
+cands    = 

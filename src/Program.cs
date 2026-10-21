@@ -77,6 +77,9 @@ namespace VbeComplete
                     case "--snipetest":   return SnippetTest();
                     case "--dbtest":      return DbTest();
                     case "--dump":        return DumpModule();
+                    // ★v160：诊断用 —— 把当前模块的解析结果 + 光标处的候选全打出来，
+                    //   池子里"该有的名字没有"时让用户跑一次，比来回猜快得多。
+                    case "--pooldump":    return PoolDump();
                     case "--paretest":    return ParenTest();
                     case "--enginetest":  return EngineTest();
                     case "--startuptest": return StartupTest();
@@ -99,6 +102,7 @@ namespace VbeComplete
                     "  --probe       打印当前 VBE 状态（只读）\r\n" +
                     "  --yieldprobe  只采样一次「VBE 自带列表是否可见」（只读）\r\n" +
                     "  --dump        把当前代码窗全文写到 moddump.txt（只读）\r\n" +
+                    "  --pooldump    把候选池解析结果 + 光标处候选写到 pooldump.txt（只读）\r\n" +
                     "  --enginetest  用真机模块文本跑候选判定（只读）\r\n" +
                     "  --paretest    真机验证函数补括号（改完即还原）\r\n" +
                     "  --carettest   真机验证中文名光标落点（改完即还原）\r\n" +
@@ -176,6 +180,63 @@ namespace VbeComplete
             sb.AppendLine("----");
             sb.Append(text ?? "(null)");
             File.WriteAllText(Path.Combine(Settings.Home, "moddump.txt"), sb.ToString(), Encoding.UTF8);
+            return 0;
+        }
+
+        /// <summary>
+        /// 诊断：把当前模块的解析结果 + 光标处的候选全写进 pooldump.txt。
+        /// <para>★v160：用户报"某个名字该提示却没提示"时，让他跑一次这个，
+        /// 一次就能分清是"没进 FreeIdents"、"进了但作用域对不上"、还是
+        /// "进了但被 Option Explicit 拦了"。比来回猜快得多。</para>
+        /// 全程只读，不改任何代码。
+        /// </summary>
+        private static int PoolDump()
+        {
+            var sb = new StringBuilder();
+            try
+            {
+                var be = new VbeBackend();
+                string text = be.ModuleText();
+                var snap = be.Snapshot();
+                if (snap == null || text == null)
+                {
+                    sb.AppendLine("no code module（VBE 里没有打开任何代码窗）");
+                    File.WriteAllText(Path.Combine(Settings.Home, "pooldump.txt"), sb.ToString(), Encoding.UTF8);
+                    return 1;
+                }
+
+                var ms = Scope.Analyze(snap.Module, text);
+                var proc = Parser.ProcOfLine(ms.Procs, snap.Line);
+                string procName = proc == null ? "(null)" : proc.ScopeKey;
+
+                sb.AppendLine("=== pool dump ===");
+                sb.AppendLine("module   = " + snap.Module + "  lines = " + be.LineCount());
+                sb.AppendLine("optionExplicit = " + ms.OptionExplicit);
+                sb.AppendLine("caret    = L" + snap.Line + " C" + snap.CaretCol + "  line = [" + snap.Text + "]");
+                sb.AppendLine("curProc  = " + procName);
+                sb.AppendLine("procs    = " + string.Join(", ",
+                    ms.Procs.Select(p => p.Name + ":" + p.StartLine + "-" + p.EndLine + "(" + p.ScopeKey + ")")));
+                sb.AppendLine("decls    = " + string.Join(", ",
+                    ms.Decls.Select(d => d.Name + "@" + (d.Proc ?? "-"))));
+                sb.AppendLine("free     = " + string.Join(", ", ms.FreeIdents.Select(f =>
+                {
+                    string p;
+                    ms.FreeIdentProc.TryGetValue(f, out p);
+                    return f + "@" + (p ?? "-");
+                })));
+                sb.AppendLine("visible  = " + string.Join(", ", ms.Visible(procName).Keys.Take(80)));
+
+                var eng = new Engine { Backend = be };
+                bool shown = eng.Trigger(false, snap);
+                sb.AppendLine("trigger  = " + shown + "  items = " + eng.Items.Count +
+                              (eng.TruncatedFrom > 0 ? " (total " + eng.TruncatedFrom + ")" : ""));
+                sb.AppendLine("cands    = " + string.Join(", ", eng.Items.Take(40).Select(c => c.Name)));
+            }
+            catch (Exception e)
+            {
+                sb.AppendLine("EXCEPTION " + e);
+            }
+            File.WriteAllText(Path.Combine(Settings.Home, "pooldump.txt"), sb.ToString(), Encoding.UTF8);
             return 0;
         }
 
@@ -1683,6 +1744,24 @@ namespace VbeComplete
                 "    End If\n" +
                 "End Function\n";
 
+            // ★v160：用户报的第二个案例（无 Option Explicit）：
+            //   `Set dic = CreateObject(...)` / `dic.Add s, i` 之后，在
+            //   `set getTitle2=di|` 里打 di 提示不出 dic。
+            const string modUser2 =
+                "Function getTitle2(ws, r1, r2)\n" +
+                "    Set dic = CreateObject(\"scripting.dictionary\")\n" +
+                "    lastCol1 = ws.Cells(r1, Cells.Columns.Count).End(xlToLeft).Column\n" +
+                "    lastCol2 = ws.Cells(r2, Cells.Columns.Count).End(xlToLeft).Column\n" +
+                "    lastCol = Application.WorksheetFunction.Max(lastCol1, lastCol2)\n" +
+                "    For i = 1 To lastCol\n" +
+                "        s1 = ws.Cells(r1, i).MergeArea.Cells(1, 1)\n" +
+                "        s2 = ws.Cells(r2, i).MergeArea.Cells(1, 1)\n" +
+                "        s = s1 & s2\n" +
+                "        dic.Add s, i\n" +
+                "    Next\n" +
+                "    set getTitle2=di\n" +
+                "End Function\n";
+
             var synth = new SyntheticBackend()
                 .Add("模块1", 1, modStd)
                 .Add("cls1", 2, modCls)
@@ -1690,7 +1769,8 @@ namespace VbeComplete
                 .Add("Sheet1", 100, modNoExp)
                 .Add("模块2", 1, modFree)
                 .Add("modT", 1, modType)
-                .Add("模块3", 1, modUser);
+                .Add("模块3", 1, modUser)
+                .Add("模块4", 1, modUser2);
 
             // 说明, 模块, 行, 行文本, 光标显示列, 期望该弹?, 必须有, 不许有
             Action<string, string, int, string, int, bool?, string[], string[]> sprobe =
@@ -1776,6 +1856,8 @@ namespace VbeComplete
             sb.AppendLine("  [诊断] Procs: " + string.Join(",", dbg.Procs.Select(p => p.Name + ":" + p.StartLine + "-" + p.EndLine)));
             sprobe("Set 出来的隐式变量能提示（condi| -> conditions）", "模块3", 7,
                 "        If isMeet(condi", 24, true, new[] { "conditions" }, null);
+            sprobe("同函数内 Set 出来的 dic 能提示（di| -> dic）", "模块4", 12,
+                "    set getTitle2=di", 20, true, new[] { "dic" }, null);
 
             // ---- 3. A/B 对照：去掉 Option Explicit，同一个探针就该收进来 ----
             //   证明"未声明的不提示"确实是 Option Explicit 在起作用，不是别的原因。

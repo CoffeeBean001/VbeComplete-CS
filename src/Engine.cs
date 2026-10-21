@@ -234,6 +234,13 @@ namespace VbeComplete
             foreach (var ms in _scopes)
             {
                 bool isCur = string.Equals(ms.Module, curModule, StringComparison.OrdinalIgnoreCase);
+                // ★v160：对象模块（类模块 2 / 窗体 3 / 文档模块 100）的声明是**成员**，
+                //   只能 `c.s1` 这样访问 —— EnsurePool 早就跳过它们了，但这里以前没跳，
+                //   于是类模块的 Public 成员仍然进了 rank 表。后果很隐蔽：只要有同名的
+                //   名字从**别的路**（比如别的模块里的隐式变量 s1）进了池子，就会在
+                //   这里被"认领"成 rank 2 并通过作用域判定 —— 用户看到的就是
+                //   "模块1 里打 s 冒出了 cls1 的 s1"（v137 修过一次的那个泄露）。
+                if (!isCur && ms.ComponentType != 0 && ms.ComponentType != 1) continue;
                 var src = isCur ? ms.Visible(curProc) : ms.Exported();
                 foreach (var kv in src)
                 {
