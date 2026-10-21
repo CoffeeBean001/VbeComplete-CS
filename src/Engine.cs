@@ -87,6 +87,15 @@ namespace VbeComplete
         // 这一次触发时"光标前的词是不是已经打全了"（空格确认要用）
         private bool _wordComplete;
 
+        // ★v151：这一轮候选是"哪个模块、哪一行、从哪个字符列起、什么词"算出来的。
+        //   AcceptName 拿它复核：候选算出来之后用户可能按了 Home / End，或者
+        //   用鼠标点到了同一行的别处 —— 行列变了但我们手里还是旧候选，
+        //   照旧写进去就是"把候选插到行首"或者"把另一个词截成两半"。
+        //   为 null 表示"没有上下文"（直接调 AcceptName 的探针走这条路）。
+        private string _ctxModule;
+        private int _ctxLine;
+        private int _ctxWordStart;
+
         public IReadOnlyList<Candidate> Items => _items;
         public int SelectedIndex => _sel;
         public int TopIndex => _top;
@@ -350,7 +359,12 @@ namespace VbeComplete
                 {
                     // 声明出来的名字查不到档位 = 当前位置根本看不见它
                     // （别的过程的局部变量 / 别的模块的 Private）—— 直接剔除。
-                    if (_poolScoped.Contains(name)) continue;
+                    // ★v151：但**内建**是全局可见的。用户只要在某个过程里写过
+                    //   `Dim Date As Date` / `Dim Left As Long`，`_poolScoped` 里就
+                    //   有了这个名字，于是别的过程里 `Date` / `Left` 一律被这条
+                    //   一票否决 —— 而词库里那份内建因为同名去重根本没进池子，
+                    //   结果是"内建函数从此不提示了"。内建不参与这条否决。
+                    if (!isBuiltin && _poolScoped.Contains(name)) continue;
                     rank = 2;
                 }
 
@@ -391,6 +405,10 @@ namespace VbeComplete
             _items = hits;
             _sel = 0;
             _top = 0;
+            // 记下"这批候选属于哪个位置"，Accept 时复核（见 AcceptName）。
+            _ctxModule = snap.Module ?? "";
+            _ctxLine = snap.Line;
+            _ctxWordStart = wordStart;
             Visible = true;
             OnShow?.Invoke(_items, _sel, _top);
             return true;
@@ -648,6 +666,22 @@ namespace VbeComplete
             int endCol = acceptCaret;
             if (wordStart > endCol) wordStart = endCol;
 
+            // ★v151：复核"现在这个位置还是当初算候选的那个位置吗"。
+            //   候选窗开着时按 Home/End、或鼠标点到同一行的别处，行文本没变、
+            //   轮询不重触发，列表里还是旧候选；此时按 Tab 会拿**新**的 wordStart
+            //   去替换 —— 按过 Home 就变成"把候选插到行首"，点到词中间就变成
+            //   "把那个词截成两半"。位置对不上就收起窗口，把 Tab 还给 VBE。
+            //   注意只比"行号 / 取词起点 / 模块"，不比词本身：用户多打一个字母
+            //   是正常的（`MsgB` → Tab），那时 wordStart 不变、必须放行。
+            if (_ctxModule != null &&
+                (snap.Line != _ctxLine ||
+                 wordStart != _ctxWordStart ||
+                 !string.Equals(snap.Module ?? "", _ctxModule, StringComparison.OrdinalIgnoreCase)))
+            {
+                Hide();
+                return false;
+            }
+
             string enclosing = null;
             foreach (var ms in _scopes)
             {
@@ -670,7 +704,10 @@ namespace VbeComplete
                 _acceptedModule = snap.Module ?? "";
                 _acceptedLine = snap.Line;
                 _acceptedTicks = Environment.TickCount64;
-                Recent?.Note(name); Recent?.Flush();
+                // ★v151：这里只记一笔，**不**立刻写盘 —— 见 App.PollOnce 里的合并 Flush。
+                //   原来每接受一次候选就 WriteAllText + File.Move 一次，家目录在
+                //   OneDrive / 网络盘时确认完会明显卡一下，而且记录只增不减。
+                Recent?.Note(name);
                 InvalidatePool();
             }
             return ok;

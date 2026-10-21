@@ -208,13 +208,21 @@ namespace VbeComplete
                 {
                     for (int i = 0; i < args.Length; i++) BindOne(stmt, i + 1, args[i]);
                     int ncol = ColumnCount(stmt);
-                    while (sqlite3_step(stmt) == SQLITE_ROW)
+                    // ★v151：以前写成 `while (sqlite3_step(stmt) == SQLITE_ROW)`，
+                    //   于是 SQLITE_BUSY / SQLITE_ERROR / SQLITE_CORRUPT 全被当成
+                    //   "没有更多行了"，_lastError 保持空 —— 读操作静默返回空表
+                    //   或半张表，上层（片段库 / 词库）还以为一切正常。
+                    //   典型场景：用户开着 DB Browser 编辑词库，它持有写锁。
+                    int rc2 = SQLITE_DONE;
+                    while ((rc2 = sqlite3_step(stmt)) == SQLITE_ROW)
                     {
                         var row = new string[ncol];
                         for (int c = 0; c < ncol; c++) row[c] = ColText(stmt, c);
                         rows.Add(row);
                         if (maxRows > 0 && rows.Count >= maxRows) break;
                     }
+                    if (rc2 != SQLITE_ROW && rc2 != SQLITE_DONE)
+                        _lastError = "读失败（rc=" + rc2 + "）：" + ErrMsg();
                 }
                 finally { sqlite3_finalize(stmt); }
             }

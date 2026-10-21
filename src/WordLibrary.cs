@@ -122,7 +122,11 @@ namespace VbeComplete
                 {
                     if (!db.Open(KeywordPath())) { LastError = db.LastError(); return false; }
                     if (!db.Exec(KeywordSchema)) { LastError = db.LastError(); return false; }
-                    if (db.Scalar("SELECT COUNT(*) FROM keywords") == 0) SeedKeywords(db);
+                    if (db.Scalar("SELECT COUNT(*) FROM keywords") == 0 && !SeedKeywords(db))
+                    {
+                        LastError = "keywords 库首次灌种子失败：" + db.LastError();
+                        return false;
+                    }
 
                     foreach (var r in db.Query(
                         "SELECT word, wants_space FROM keywords WHERE enabled<>0 ORDER BY word", 0))
@@ -132,7 +136,15 @@ namespace VbeComplete
                         bool ws = r.Length < 2 || r[1] != "0";
                         outp.Add(new KeyValuePair<string, bool>(w, ws));
                     }
-                    return outp.Count > 0 || db.Scalar("SELECT COUNT(*) FROM keywords") == 0;
+                    // ★v151：判据从"启用行数 > 0"改成"表里到底有没有行"。
+                    //   原来的写法把"用户把整张表 enabled 全设成 0"（词库说明里
+                    //   明确教的用法：不想删就置 0）判成"库加载失败"，于是退回
+                    //   内置种子 —— 用户精心禁用的词全部原地复活，日志还写着
+                    //   "内置种子"，看起来像库坏了。
+                    //   真失败（库损坏 / 被锁）会让 LastError 有内容，那种情况才
+                    //   该回落到种子，保证程序仍然可用。
+                    long total = db.Scalar("SELECT COUNT(*) FROM keywords");
+                    return total > 0 || string.IsNullOrEmpty(db.LastError());
                 }
             }
             catch (Exception e) { LastError = "keywords 库不可用：" + e.Message; return false; }
@@ -146,7 +158,11 @@ namespace VbeComplete
                 {
                     if (!db.Open(FunctionPath())) { LastError = db.LastError(); return false; }
                     if (!db.Exec(FunctionSchema)) { LastError = db.LastError(); return false; }
-                    if (db.Scalar("SELECT COUNT(*) FROM functions") == 0) SeedFunctions(db);
+                    if (db.Scalar("SELECT COUNT(*) FROM functions") == 0 && !SeedFunctions(db))
+                    {
+                        LastError = "functions 库首次灌种子失败：" + db.LastError();
+                        return false;
+                    }
 
                     foreach (var r in db.Query(
                         "SELECT word, kind, wants_parens FROM functions WHERE enabled<>0 ORDER BY word", 0))
@@ -158,39 +174,75 @@ namespace VbeComplete
                         outp.Add(new KeyValuePair<string, string>(w, kind));
                         if (kind != "type" && (r.Length < 3 || r[2] != "0")) parens.Add(w);
                     }
-                    return outp.Count > 0 || db.Scalar("SELECT COUNT(*) FROM functions") == 0;
+                    long total = db.Scalar("SELECT COUNT(*) FROM functions");
+                    return total > 0 || string.IsNullOrEmpty(db.LastError());
                 }
             }
             catch (Exception e) { LastError = "functions 库不可用：" + e.Message; return false; }
         }
 
-        private static void SeedKeywords(SqliteDb db)
+        /// <summary>
+        /// 首次建库时灌关键字种子。返回 false = 没灌成（调用方回落内置种子）。
+        /// <para>★v151：以前 BEGIN / 每一条 INSERT / COMMIT 的返回值全丢掉，日志
+        /// 照写"灌入 N 条"。只要有一条写失败（库被别的客户端锁着、磁盘满、
+        /// 文件只读），表里就是残缺的 0~N 条，而"表非空就不再灌"这条规矩让
+        /// 它**永远**补不回来 —— 词库永久缺字，日志却显示成功。</para>
+        /// </summary>
+        private static bool SeedKeywords(SqliteDb db)
         {
-            db.Exec("BEGIN");
+            if (!db.Exec("BEGIN")) return false;
             foreach (var w in BuiltinTables.Keywords)
-                db.Write("INSERT OR IGNORE INTO keywords (word, wants_space, enabled) VALUES (?, ?, 1)",
-                    w, KeywordSeeds.WantsSpace(w));
-            db.Exec("COMMIT");
+                if (!db.Write("INSERT OR IGNORE INTO keywords (word, wants_space, enabled) VALUES (?, ?, 1)",
+                        w, KeywordSeeds.WantsSpace(w)))
+                {
+                    db.Exec("ROLLBACK");
+                    Log.Write("keywords 灌种子失败（已回滚）：{0}", db.LastError());
+                    return false;
+                }
+            if (!db.Exec("COMMIT"))
+            {
+                db.Exec("ROLLBACK");
+                Log.Write("keywords 灌种子提交失败：{0}", db.LastError());
+                return false;
+            }
             Log.Write("keywords 库首次创建：灌入 {0} 条关键字", BuiltinTables.Keywords.Length);
+            return true;
         }
 
-        private static void SeedFunctions(SqliteDb db)
+        /// <summary>灌函数/类型种子；类型在前（理由见下面注释）。返回 false = 没灌成。</summary>
+        private static bool SeedFunctions(SqliteDb db)
         {
-            db.Exec("BEGIN");
+            if (!db.Exec("BEGIN")) return false;
             // ★先灌类型、后灌函数，顺序不能反。
             //   `String` / `Date` 在 VBA 里**既是类型又是函数**，两边都想要这一行：
             //   按"类型优先"落库（kind='type', wants_parens=0），于是
             //   `Dim x As String` 后面绝不会被补上一对括号 —— 那正是最容易写错的地方。
             //   反过来的顺序会让它们变成 kind='function'，一按 Tab 就得到 `String()`。
             foreach (var w in BuiltinTables.TypeNames)
-                db.Write("INSERT OR IGNORE INTO functions (word, kind, wants_parens, enabled) " +
-                         "VALUES (?, 'type', 0, 1)", w);
+                if (!db.Write("INSERT OR IGNORE INTO functions (word, kind, wants_parens, enabled) " +
+                              "VALUES (?, 'type', 0, 1)", w))
+                {
+                    db.Exec("ROLLBACK");
+                    Log.Write("functions 灌类型种子失败（已回滚）：{0}", db.LastError());
+                    return false;
+                }
             foreach (var w in BuiltinTables.Functions)
-                db.Write("INSERT OR IGNORE INTO functions (word, kind, wants_parens, enabled) " +
-                         "VALUES (?, 'function', 1, 1)", w);
-            db.Exec("COMMIT");
+                if (!db.Write("INSERT OR IGNORE INTO functions (word, kind, wants_parens, enabled) " +
+                              "VALUES (?, 'function', 1, 1)", w))
+                {
+                    db.Exec("ROLLBACK");
+                    Log.Write("functions 灌函数种子失败（已回滚）：{0}", db.LastError());
+                    return false;
+                }
+            if (!db.Exec("COMMIT"))
+            {
+                db.Exec("ROLLBACK");
+                Log.Write("functions 灌种子提交失败：{0}", db.LastError());
+                return false;
+            }
             Log.Write("functions 库首次创建：灌入 {0} 条函数 + {1} 条类型",
                 BuiltinTables.Functions.Length, BuiltinTables.TypeNames.Length);
+            return true;
         }
 
         /// <summary>

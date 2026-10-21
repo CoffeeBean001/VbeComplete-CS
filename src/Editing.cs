@@ -790,5 +790,21 @@ namespace VbeComplete
             if (vk >= 0xDB && vk <= 0xDE) return true;         // [\]='
             return false;
         }
+
+        /// <summary>
+        /// 注释 / 解除注释之后，光标应该落在哪个**字符列**（1-based）。
+        /// <para>注释是在行首插一个 `'`，解除是删掉行里第一个 `'` —— 两者都只在
+        /// **发生在光标之前**时才改变光标的字符列。按"改动前的列"直接换算会让
+        /// 光标每注释一次左移一格、解除一次右移一格（v151 修）。</para>
+        /// <para>落在纯函数里，是为了能被 --selftest 直接钉住：这段只在 VBE 原生
+        /// "注释块"按钮不可用时才走，真机上几乎触发不到。</para>
+        /// </summary>
+        public static int AfterCommentCharCol(string oldLine, int oldCharCol, bool allCommented)
+        {
+            if (oldCharCol < 1) oldCharCol = 1;
+            if (!allCommented) return oldCharCol + 1;          // 插在行首，必然在光标之前
+            int idx = (oldLine ?? "").IndexOf('\'');
+            return idx >= 0 && idx + 1 < oldCharCol ? oldCharCol - 1 : oldCharCol;
+        }
     }
 }

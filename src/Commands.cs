@@ -116,6 +116,11 @@ namespace VbeComplete
                     ? VbeBackend.CmdUncommentBlock
                     : VbeBackend.CmdCommentBlock))
             {
+                // ★v151：这是 VBE 自己改的文档，我们这层的三份缓存（快照 / 模块全文 /
+                //   作用域）一概不知道。原生命令会**保留选区**，行列都没变 ⇒ 下一次
+                //   轮询的快照缓存照旧命中，Engine 拿"还少一个撇号"的旧行去算补全，
+                //   按 Tab 就会吃掉/重复首字符。通知一次，全部作废重读。
+                be.OnWeWrote();
                 if (Log.Enabled)
                     Log.Write("Ctrl+/{0} {1} 行 @{2}：VBE 原生 Execute {3}ms，全程 {4}ms",
                         allCommented ? "解除" : "注释", lines.Count, from,
@@ -160,8 +165,15 @@ namespace VbeComplete
             }
             else
             {
+                // ★v151：注释在行首插了一个 `'`、解除删掉了一个 —— 光标**前面**的
+                //   字符数变了。原来直接把"改前"的显示列 `sc` 拿去换算，于是每按一次
+                //   注释光标左移一格、每按一次解除右移一格（来回切换不守恒）。
+                //   先按旧行算出旧字符列，再按增删补偏移，最后换回显示列。
+                string oldLine = lines[0];
+                int oldCharCol = Rules.CharColFromDisp(oldLine, Math.Max(1, sc), 4);
+                int newCharCol = Editing.AfterCommentCharCol(oldLine, oldCharCol, allCommented);
                 string here = be.LineAt(from) ?? "";
-                be.SetCaret(from, Rules.CharColFromDisp(here, Math.Max(1, sc), 4));
+                be.SetCaret(from, Rules.CaretColForCharCol(here, newCharCol, 4));
             }
             return true;
         }

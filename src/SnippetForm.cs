@@ -60,6 +60,13 @@ namespace VbeComplete
         private string _shownCode;
         private bool _bulk;                              // 程序性改选中，别当用户点击
 
+        // ★v151：这三处字体是我们自己 new 的，必须自己释放 —— Control **不拥有**
+        //   Font（HFONT 可以共享），Form.Dispose 不会碰 Form.Font / 子控件的 Font。
+        //   不存字段就没法在 Dispose 里释放，每开一次片段窗漏三个 GDI 对象。
+        private Font _uiFont;
+        private Font _markFont;
+        private Font _codeFont;
+
         public SnippetForm(SnippetStore store, Func<string, bool> onInsert)
         {
             _store = store ?? new SnippetStore();
@@ -73,7 +80,8 @@ namespace VbeComplete
             ShowInTaskbar = false;
             TopMost = true;
             BackColor = CBody;
-            Font = new Font("Microsoft YaHei UI", 9f);
+            _uiFont = new Font("Microsoft YaHei UI", 9f);
+            Font = _uiFont;
             AutoScaleMode = AutoScaleMode.Font;
             MinimumSize = new Size(640, 360);
             Size = new Size(DefaultW, DefaultH);
@@ -85,6 +93,18 @@ namespace VbeComplete
             {
                 if (e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Close_(); }
             };
+        }
+
+        /// <summary>释放自己 new 的三个 Font（Control 不拥有它们，见字段处说明）。</summary>
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                if (_uiFont != null) { _uiFont.Dispose(); _uiFont = null; }
+                if (_markFont != null) { _markFont.Dispose(); _markFont = null; }
+                if (_codeFont != null) { _codeFont.Dispose(); _codeFont = null; }
+            }
+            base.Dispose(disposing);
         }
 
         // ==================================================================
@@ -142,7 +162,7 @@ namespace VbeComplete
             {
                 Text = "片段库",
                 AutoSize = true,
-                Font = new Font("Microsoft YaHei UI", 10f, FontStyle.Bold),
+                Font = _markFont = new Font("Microsoft YaHei UI", 10f, FontStyle.Bold),
                 ForeColor = CText,
                 Anchor = AnchorStyles.Left,
                 Margin = new Padding(9, 0, 14, 0),
@@ -254,7 +274,7 @@ namespace VbeComplete
                 BorderStyle = BorderStyle.FixedSingle,
                 BackColor = CCard,
                 ForeColor = CText,
-                Font = new Font("Consolas", 10.5f),
+                Font = _codeFont = new Font("Consolas", 10.5f),
                 Margin = new Padding(0),
             };
             _code.KeyDown += CodeKeyDown;
@@ -467,6 +487,18 @@ namespace VbeComplete
             {
                 // ★文本框里有未保存的改动时**不要**被搜索刷新覆盖掉
                 if (!IsDirty()) ShowSnippet(_view[target].Title);
+            }
+            else if (IsDirty())
+            {
+                // ★v151：一条都没搜到时**绝不能清编辑框**。用户可能正写着一半没
+                //   保存的片段，在搜索框里敲词时逐字符都会经过"零命中"这个状态
+                //   （打 "msg" 的中间态 "m"、"ms" 常常零命中），旧代码会顺手把
+                //   _title/_code 清空 —— 一整段没保存的代码就这么没了，连确认框
+                //   都没有（对比 target>=0 那条，那里是特意用 IsDirty 保护过的）。
+                //   列表可以空，编辑器必须留在原地，并说清楚"内容没变、只是没搜到"。
+                SetStatus("没有匹配的片段 —— 编辑框里的内容还在（"
+                          + (_shownTitle ?? "未保存的新片段") + "），按 Esc 可退出", true);
+                return;
             }
             else
             {

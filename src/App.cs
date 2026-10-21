@@ -30,6 +30,7 @@ namespace VbeComplete
 
         private readonly VbeBackend _be = new VbeBackend();
         private readonly Recent _recent = new Recent();
+        private long _recentFlushAt;                      // 上次把 recent.json 写盘的时刻
         private readonly Engine _eng;
         private readonly PopupForm _popup = new PopupForm();
         private readonly Control _disp = new Control();
@@ -294,7 +295,15 @@ namespace VbeComplete
                 menu.Items.Add(miAutoStart);
                 menu.Items.Add("打开日志", null, (s, e) =>
                 {
-                    try { System.Diagnostics.Process.Start("notepad.exe", Log.Path_); } catch { }
+                    // ★v151：路径必须加引号 —— 家目录带空格（`D:\我的 工具\…`）时
+                    //   记事本会把路径切成两段，这条菜单恰恰是用户排查问题的唯一入口。
+                    try
+                    {
+                        var psi = new System.Diagnostics.ProcessStartInfo(
+                            "notepad.exe", "\"" + Log.Path_ + "\"") { UseShellExecute = true };
+                        System.Diagnostics.Process.Start(psi);
+                    }
+                    catch (Exception ex) { Log.Write("打开日志失败：{0}", ex.Message); }
                 });
                 menu.Items.Add("退出", null, (s, e) => Shutdown());
 
@@ -353,7 +362,24 @@ namespace VbeComplete
             _hookHandle = IntPtr.Zero;
         }
 
+        /// <summary>
+        /// 钩子回调的**唯一**入口：只负责把异常挡在 native 边界之内。
+        /// <para>★v151：以前整个回调没有 try/catch。托管异常一旦穿过
+        /// <c>CallNextHookEx</c> 的调用帧，CLR 会直接 FailFast 终止进程 ——
+        /// 用户看到的是"托盘图标突然没了、日志里一个字都没有"，而且已经被
+        /// Swallow 的按键也不会还原。这里兜住：记一笔、把键原样放行。</para>
+        /// </summary>
         private IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam)
+        {
+            try { return HookProcCore(nCode, wParam, lParam); }
+            catch (Exception e)
+            {
+                try { Log.Write("钩子回调异常（已拦下，按键放行）：{0}", e); } catch { }
+                return Native.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
+            }
+        }
+
+        private IntPtr HookProcCore(int nCode, IntPtr wParam, IntPtr lParam)
         {
             if (nCode < 0) return Native.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
 
@@ -566,11 +592,14 @@ namespace VbeComplete
             }
             // ⚠️ Shift+D / Shift+K 绝不能接管 —— 那是输入大写字母
             if (ctrl && !shift && !alt && vk == 'D' && !NoDupLine)
-                return SwallowAndRun('D', true, false, () => Commands.DuplicateLine(_be));
+                return SwallowAndRun('D', true, false, () => Commands.DuplicateLine(_be),
+                    replayOnFail: false);
             if (ctrl && !shift && !alt && vk == 'K' && !NoDelLine)
-                return SwallowAndRun('K', true, false, () => Commands.DeleteLine(_be));
+                return SwallowAndRun('K', true, false, () => Commands.DeleteLine(_be),
+                    replayOnFail: false);
             if (ctrl && shift && !alt && vk == Native.VK_RETURN && !NoInsertAbove)
-                return SwallowAndRun(Native.VK_RETURN, true, true, () => Commands.InsertLineAbove(_be));
+                return SwallowAndRun(Native.VK_RETURN, true, true, () => Commands.InsertLineAbove(_be),
+                    replayOnFail: false);
             // ==============================================================
             // 4c. Ctrl+↑ / Ctrl+↓（**不带 Shift**）：过程内的两个端点
             //     ↑ 落到本过程【最后一个 Dim 行】的行尾；
@@ -706,18 +735,31 @@ namespace VbeComplete
         /// <c>Post(() =&gt; { if (!X()) SendVk(...); }); return Swallow(vk);</c>，
         /// 写漏一次就是"吞了但什么都没发生"——用户看到的是"快捷键全没了"。</para>
         /// </summary>
-        /// <param name="vk">用户按的那个键（失败时原样重放）。</param>
+        /// <param name="vk">用户按的那个键（失败时按 <paramref name="replayOnFail"/> 决定要不要重放）。</param>
         /// <param name="restoreCtrl">重放时是否带上 Ctrl（用户手指还按着，SendVk 不会合成）。</param>
         /// <param name="restoreShift">重放时是否带上 Shift。</param>
         /// <param name="work">真正要做的动作；返回 false = 没做成。</param>
         /// <param name="hidePopup">做动作前先收起候选窗（改文本的动作都要）。</param>
+        /// <param name="replayOnFail">
+        /// 失败时要不要把键原样送回去。
+        /// <para>★v151：**字母键与回车必须传 false**。SendVk 见到"Ctrl 正被物理按住"
+        /// 会刻意不合成 Ctrl（见 Native.SendVk 的说明），于是"回放"出去的其实是
+        /// 裸 `d` / `k` / 回车 —— 直接把字母打进用户代码、或者多插一行，
+        /// 比"什么都没发生"糟得多。方向键这类**无副作用**的键才允许回放。</para>
+        /// </param>
         private IntPtr SwallowAndRun(int vk, bool restoreCtrl, bool restoreShift,
-            Func<bool> work, bool hidePopup = true)
+            Func<bool> work, bool hidePopup = true, bool replayOnFail = true)
         {
             Post(() =>
             {
                 if (hidePopup) _eng.Hide();
-                if (!work()) Native.SendVk(vk, restoreCtrl, restoreShift);
+                if (work()) return;
+                if (!replayOnFail)
+                {
+                    Log.Write("快捷键 vk=0x{0:X2} 没做成（键已吞掉，不回放裸字符）", vk);
+                    return;
+                }
+                Native.SendVk(vk, restoreCtrl, restoreShift);
             });
             return Swallow(vk);
         }
@@ -882,6 +924,19 @@ namespace VbeComplete
         private void PollOnce()
         {
             if (!_running) return;
+
+            // 最近使用记录：延迟合并写盘（2 秒最多一次）。之前是"每接受一个候选就
+            // 整文件重写一次"，家目录落在 OneDrive / 网络盘上时每次 Tab 都卡一下。
+            try
+            {
+                if (Environment.TickCount64 - _recentFlushAt > 2000)
+                {
+                    _recent.Flush();
+                    _recentFlushAt = Environment.TickCount64;
+                }
+            }
+            catch (Exception e) { Log.Write("recent 写盘失败：{0}", e.Message); }
+
             try
             {
                 bool focused = InVbeCodePane();

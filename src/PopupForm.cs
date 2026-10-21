@@ -166,7 +166,11 @@ namespace VbeComplete
             }
             _rowH = Math.Max(16, _font.Height + 4);
             _iconW = Math.Max(12, Math.Min(16, (int)(_font.Height * 0.8f)));
-            _charW = Math.Max(4, MeasureText("x", _font, 16) / 16);
+            // ★v151：原来写成 MeasureText("x", _font, 16) / 16 —— 量的是**一个**
+            //   字符的宽度再除以 16，结果恒 < 1，被 Math.Max(4, …) 兜成 4（真实
+            //   等宽字约 8~9px）。于是"最少 10 个字宽"的最窄宽度失效、Truncate
+            //   高估一倍还要靠逐字符回退。量 16 个字符再除，才是本来想做的事。
+            _charW = Math.Max(4, MeasureText(new string('x', 16), _font, 0) / 16);
             _minTextW = _charW * MinChars;
 
             TabStop = false;
@@ -748,6 +752,9 @@ namespace VbeComplete
         protected override void OnMouseLeave(EventArgs e)
         {
             base.OnMouseLeave(e);
+            // 捕获期间一般不会收到 Leave；这里只是兜底复位，防止窗口被强制隐藏
+            // 时把 _dragScroll 留在 true。
+            _dragScroll = false;
             if (_hover != -1) { _hover = -1; Invalidate(); }
         }
 
@@ -765,6 +772,10 @@ namespace VbeComplete
                 {
                     _dragScroll = true;
                     _dragOffset = e.Y - thumbY;
+                    // ★v151：必须取鼠标捕获。否则把滑块拖出窗口再松手时收不到
+                    //   MouseUp，_dragScroll 永远卡在 true —— 之后鼠标在窗口里
+                    //   一动就继续滚，悬停高亮也再也不更新。
+                    Capture = true;
                 }
                 else
                 {
@@ -782,6 +793,7 @@ namespace VbeComplete
         {
             base.OnMouseUp(e);
             _dragScroll = false;
+            if (Capture) Capture = false;      // 与 OnMouseDown 的 Capture 成对
         }
 
         private int PageRows => Math.Max(1, _rows - 1);

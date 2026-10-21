@@ -58,6 +58,7 @@ namespace VbeComplete
         private readonly Dictionary<string, ModuleScope> _modScopes =
             new Dictionary<string, ModuleScope>(StringComparer.OrdinalIgnoreCase);
         private List<ModuleScope> _scopesList = new List<ModuleScope>();
+        private static long _lastSelFailLog;    // GetSelection 失败日志的限流时刻
         private int _scopesSig = int.MinValue;
         private DateTime _scopesAt = DateTime.MinValue;
         private readonly double _scopesTtl = Settings.Double("SCOPE_TTL", 2.0);
@@ -82,6 +83,13 @@ namespace VbeComplete
             _modName = null;
             _modCount = -1;
             _modAt = DateTime.MinValue;
+            // ★v151：宿主重开 / 换了工程之后，缓存的 ModuleScope 属于**上一个工程**。
+            //   默认模块名（Module1 / Sheet1）在哪个工程都一样，行数碰巧相同就会
+            //   把别的项目的私有过程当成当前工程的。全部丢掉最干净。
+            _modScopes.Clear();
+            _scopesList = new List<ModuleScope>();
+            _scopesSig = int.MinValue;
+            _scopesAt = DateTime.MinValue;
         }
 
         /// <summary>
@@ -133,6 +141,15 @@ namespace VbeComplete
                 int sl, sc, el, ec;
                 if (!ComCall.CallFourOut(cp, "GetSelection", out sl, out sc, out el, out ec))
                 {
+                    // ★v151：以前这里一声不响地返回 null，上层一律理解成"现在没有
+                    //   代码窗" —— 用户报"补全突然什么都不做了"时，日志里一个字都没有。
+                    //   轮询 50ms 一轮，不能每次都写，5 秒最多记一条。
+                    long nowMs = Environment.TickCount64;
+                    if (nowMs - _lastSelFailLog > 5000)
+                    {
+                        _lastSelFailLog = nowMs;
+                        Log.Write("GetSelection 失败：拿不到选区（VBE 忙 / 无活动代码窗 / 宿主在切工程？）");
+                    }
                     _snapCache = null;
                     return null;
                 }
@@ -141,7 +158,18 @@ namespace VbeComplete
                 if (_snapEnabled && _snapCache != null &&
                     _snapCache.Line == sl && _snapCache.CaretCol == ec &&
                     (DateTime.UtcNow - _snapAt).TotalSeconds <= _snapMaxAge)
-                    return _snapCache;
+                {
+                    // ★v151：行列相同 ≠ 还是同一个模块。切到另一个模块后正好停在
+                    //   同一行同一列（都停在最后一行很常见），直接返回缓存就会把
+                    //   上个模块的行文本当成这一行 —— 候选池、取词、过程判定全错位。
+                    //   多读一次 `CodeModule.Name`（与 GetSelection 同量级，0.1ms）
+                    //   换掉这个隐患，比事后 Debug 便宜。
+                    dynamic cmc = cp.CodeModule;
+                    string mnow = "";
+                    try { mnow = Convert.ToString(cmc.Name) ?? ""; } catch { }
+                    if (string.Equals(mnow, _snapCache.Module, StringComparison.Ordinal))
+                        return _snapCache;
+                }
 
                 dynamic cm = cp.CodeModule;
                 string mod = "";
@@ -152,7 +180,17 @@ namespace VbeComplete
                 if (_snapEnabled) { _snapCache = s; _snapAt = DateTime.UtcNow; }
 
                 // 当前行文本变了 ⇒ 模块全文缓存作废（不只是光标动）
-                if (mod != _modName) { _modName = mod; _modCount = -1; _modAt = DateTime.MinValue; }
+                if (mod != _modName)
+                {
+                    // ★v151：离开的这个模块可能刚被改过（改声明名、注释掉一行 ——
+                    //   行数不变）。把它从作用域缓存里摘掉，下次 ProjectScopes
+                    //   重算时会重新解析它；否则它的旧声明会一直挂在候选池里，
+                    //   而新名字永远出不来（缓存判据只看行数）。
+                    if (!string.IsNullOrEmpty(_modName)) _modScopes.Remove(_modName);
+                    _modName = mod;
+                    _modCount = -1;
+                    _modAt = DateTime.MinValue;
+                }
                 return s;
             }
             catch (Exception e) { Fail(e); return null; }

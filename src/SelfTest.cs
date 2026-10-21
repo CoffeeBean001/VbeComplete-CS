@@ -47,6 +47,7 @@ namespace VbeComplete
                 TestFuzzy();
                 TestScope();
                 TestChineseAndExplicit();
+                TestGuards();
                 TestMember();
                 TestEditing();
                 TestContinuation();
@@ -746,6 +747,53 @@ End Sub
                 shown ? string.Join(",", eng2.Items.Select(c => c.Name)) : "(不弹)");
         }
 
+        /// <summary>
+        /// v151 加的两道护栏：
+        ///   1. AcceptName 必须复核"现在还是当初算候选的那个位置吗"；
+        ///   2. 内建不能被"同名局部变量"一票否决。
+        /// </summary>
+        private static void TestGuards()
+        {
+            // ---- 1. 候选算出来之后光标被挪走 ----
+            // 候选窗开着时按 Home（或鼠标点到同一行的别处）：行文本没变，轮询不会
+            // 重触发，列表里还是旧候选。旧实现拿**新**的取词位置去替换 ——
+            // 按过 Home 就变成"把候选插到行首"，点到词中间就"把那个词截成两半"。
+            const string sample = "Private Sub T()\r\n    MsgB\r\nEnd Sub\r\n";
+            var be = new FakeBackend
+            {
+                Text = sample,
+                Snap = new Snapshot { Line = 2, Text = "    MsgB", Module = "M", CaretCol = 9 },
+            };
+            var eng = new Engine { Recent = new Recent(), Backend = be };
+            Ok("guard/候选先弹出来", eng.Trigger(false, be.Snap),
+                string.Join(",", eng.Items.Select(c => c.Name)));
+
+            // 模拟"按 Home"：同一行，光标跑到行首
+            be.Snap = new Snapshot { Line = 2, Text = "    MsgB", Module = "M", CaretCol = 1 };
+            Ok("guard/光标挪到行首后 Accept 被拒", !eng.AcceptName("MsgBox"));
+
+            // 正常路径：又打了一个字母再按 Tab，取词起点没变，必须照常接受
+            be.Snap = new Snapshot { Line = 2, Text = "    MsgB", Module = "M", CaretCol = 9 };
+            eng.Trigger(false, be.Snap);
+            be.Snap = new Snapshot { Line = 2, Text = "    MsgBox", Module = "M", CaretCol = 10 };
+            Ok("guard/继续打字后放行（取词起点没变）", eng.AcceptName("MsgBox"));
+
+            // ---- 2. 内建不被同名局部吞掉 ----
+            // 在 A 里写了 `Dim Date As Date`，旧实现会让 Date 进 _poolScoped，
+            // 于是**别的过程**里这个内建再也提示不出来（词库那份因同名去重没进池）。
+            const string shadow = "Private Sub A()\r\n    Dim Date As Date\r\nEnd Sub\r\n\r\n" +
+                                  "Private Sub B()\r\n    Da\r\nEnd Sub\r\n";
+            var be2 = new FakeBackend
+            {
+                Text = shadow,
+                Snap = new Snapshot { Line = 6, Text = "    Da", Module = "M", CaretCol = 7 },
+            };
+            var eng2 = new Engine { Recent = new Recent(), Backend = be2 };
+            var items2 = eng2.Trigger(false, be2.Snap) ? eng2.Items.ToList() : new List<Candidate>();
+            Ok("guard/局部与内建同名时不吞掉内建", items2.Any(c => c.Name == "Date"),
+                string.Join(",", items2.Select(c => c.Name)));
+        }
+
         private static void TestMember()
         {
             var cls = Scope.Analyze("Cls1", Cls1Sample);
@@ -878,6 +926,15 @@ End Sub
         // ------------------------------------------------------------------
         private static void TestEditing()
         {
+            // ---- 注释/解除注释之后的光标列（v151）----
+            // 注释在行首插一个 `'`：光标前多一个字符 → 字符列 +1
+            Eq("comment-caret/注释时右移一格", Editing.AfterCommentCharCol("    n = 1", 5, false), 6);
+            Eq("comment-caret/注释时行首也右移", Editing.AfterCommentCharCol("    n = 1", 1, false), 2);
+            // 解除时删掉的是行首那个 `'`：只有它在光标之前才左移
+            Eq("comment-caret/解除时左移一格", Editing.AfterCommentCharCol("'    n = 1", 6, true), 5);
+            Eq("comment-caret/撇号在光标之后不动",
+                Editing.AfterCommentCharCol("    n = 'x'", 5, true), 5);
+
             // ---- 基础换算 ----
             Eq("indent/4 空格", Editing.IndentWidth("    x"), 4);
             Eq("indent/tab 算 4 列", Editing.IndentWidth("\tx"), 4);
