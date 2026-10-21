@@ -55,6 +55,10 @@ pane**, and its message loop costs nothing when idle.
 - **Popups only while you are actually typing**: a mouse click on a variable on another line (or an
   arrow-key move) only moves the caret and no longer pops the list — the check is "the caret line
   changed, so this is not typing", and typing never changes the line number.
+- **A space ends the word**: with the list open, pressing space dismisses it at once (exactly
+  what the VBE's own list does) while the space itself still lands in the document. The old
+  code relied on "did the document change", and trailing whitespace is not a document change —
+  so `Set ` and `Set` looked identical and the list simply stayed up.
 - **Never fights the VBE for space**: it yields the moment VBE's own member list appears — even if
   ours is already on screen, it is taken down within one poll tick — and moves
   below VBE's parameter-info popup instead of covering it.

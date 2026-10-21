@@ -468,6 +468,22 @@ namespace VbeComplete
                     Post(() => _eng.Move(-_eng.PageSize));
                     return Swallow(vk);
                 }
+                // ★v147：**空格 = "这个词打完了"**，VBE 自己的列表也是在这一下收的。
+                //   以前这里对空格什么都不做，全靠轮询的 changed 兜 —— 而 changed 比
+                //   的是 **Rstrip 之后**的文本（行尾空白刻意不算文档变化，免得光标
+                //   在行尾摆动时反复触发），于是 `Set ` 与 `Set` 在轮询眼里一字不差，
+                //   永远走不到 Trigger，`else if (_popupVisible)` 那条只是把窗子挪到
+                //   新的光标位置 ⇒ 列表就那么一直挂着。
+                //   用户报的 "set + 空格不收、let + 空格会收" 正是这条：let 是打到
+                //   第三个字母时 PrefixIsResolved 判成"打全了"提前收的，跟空格无关；
+                //   set 因为工程里还有更长的 `Set…` 名字（或 Reset/LSet 之类），
+                //   判不成打全 ⇒ 列表还在，于是空格这一下必须由我们自己收。
+                //   只收窗、**不吞键** —— 空格照常落进文档。
+                if (vk == Native.VK_SPACE)
+                {
+                    Post(() => _eng.Hide());
+                    return Native.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
+                }
                 if (vk == Native.VK_TAB && !shift)
                 {
                     Post(() => { if (!_eng.Accept()) Native.SendVk(Native.VK_TAB); });

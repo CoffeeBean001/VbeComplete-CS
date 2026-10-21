@@ -1153,6 +1153,31 @@ namespace VbeComplete
                         && g1[40].TrimStart().StartsWith("'", StringComparison.Ordinal),
                         "注释 " + quoted + "/40 · 还原 " + plain + "/40 · 耗时 "
                         + msSet + "ms/" + msUnset + "ms（旧实现约 340ms）");
+
+                    // 10. 用例 H：**空格收起候选窗** —— 用户报的 "set + 空格不收、let 收"。
+                    //     旧实现里钩子对空格什么都不做，全指望轮询的 changed 兜；而
+                    //     changed 比的是 **Rstrip 之后**的文本（行尾空白刻意不算文档
+                    //     变化），`Set ` 与 `Set` 在它眼里一字不差 ⇒ 永远走不到 Trigger
+                    //     ⇒ 列表就那么挂着（轮询那条 else 只是把窗子挪到新光标位置）。
+                    //     let 之所以"看起来对"，是它打到第三个字母时已判成"打全了"
+                    //     提前收的，跟空格无关。
+                    //
+                    //     这里用 Ctrl+Space 手动唤出（比"打字才弹"稳定，不受输入法
+                    //     中/英状态影响），再发一个**裸空格**：既要验列表收了，也要验
+                    //     空格照常落进文档（我们只收窗、不吞键）。
+                    RebuildScaffold(app, be, at, "    n = 1");
+                    app.RunOnUi(() => { be.ForceReloadModule(); be.SetCaret(at + 1, 1); });
+                    Thread.Sleep(300);
+                    SendCombo(app, Native.VK_SPACE, ctrl: true);
+                    Thread.Sleep(600);
+                    bool shownH = app.PopupVisible;
+                    SendKeys(app, Native.VK_SPACE);
+                    Thread.Sleep(500);
+                    bool hiddenH = !app.PopupVisible;
+                    string[] h = ReadLines(app, be, at, 3);
+                    check("H 空格收起候选窗（用户报的 set + 空格不收）",
+                        shownH && hiddenH && h[1] == "     n = 1",
+                        "唤出=" + shownH + " 空格后收起=" + hiddenH + " 行=[" + h[1] + "]");
                 }
                 catch (Exception e)
                 {
