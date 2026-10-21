@@ -281,8 +281,13 @@ End Type
 
             Eq("code-only/去注释", Parser.CodeOnly("x = 1 ' abc").Trim(), "x = 1");
             Eq("code-only/去字符串", Parser.CodeOnly("x = \"abc\"").Trim(), "x =");
-            Eq("code-only/Rem", Parser.CodeOnly("Rem abc"), "");
+            // ★v154：Rem 之后填等长空格（保持长度守恒），所以断言用 Trim
+            Eq("code-only/Rem", Parser.CodeOnly("Rem abc").Trim(), "");
+            // ★v154：`Rem` 只要在语句起点就是注释，不限于行首 ——
+            //   `x = 1: Rem 说明` 以前会把"说明"当代码收进候选池
+            Eq("code-only/冒号后的 Rem", Parser.CodeOnly("x = 1: Rem 说明").Trim(), "x = 1:");
             Eq("code-only/不误伤 Remark", Parser.CodeOnly("Remark = 1").Trim(), "Remark = 1");
+            Eq("code-only/不误伤 Rem2", Parser.CodeOnly("Rem2 = 1").Trim(), "Rem2 = 1");
         }
 
         // ------------------------------------------------------------------
@@ -876,6 +881,88 @@ End Sub
             var ms2 = Scope.Analyze("M", arrCase);
             Ok("free/既调用又赋值时保留", ms2.FreeIdents.Contains("arr"),
                 string.Join(",", ms2.FreeIdents));
+
+            // ---- v154：只写下标的数组变量（从不写 arr = ...）也要保留 ----
+            const string arrOnly = "Sub T()\r\n    arr(1) = 5\r\n    n = arr(2)\r\nEnd Sub\r\n";
+            Ok("free/只写下标的数组变量仍然保留",
+                Scope.Analyze("M", arrOnly).FreeIdents.Contains("arr"),
+                string.Join(",", Scope.Analyze("M", arrOnly).FreeIdents));
+
+            // ---- v154：冒号后的 Rem 是注释，里面的词不是变量 ----
+            const string remMid = "Sub T()\r\n    x = 1: Rem 说明文字\r\nEnd Sub\r\n";
+            Ok("free/冒号后 Rem 里的词不进池",
+                !Scope.Analyze("M", remMid).FreeIdents.Contains("说明文字"),
+                string.Join(",", Scope.Analyze("M", remMid).FreeIdents));
+
+            // ---- v154：GoTo 标签 / 标签定义 / Implements 都不是变量 ----
+            const string labels = "Sub T()\r\n    On Error GoTo 错误处理\r\n    GoTo 结束\r\n" +
+                                  "错误处理:\r\n    Exit Sub\r\n结束:\r\nEnd Sub\r\n";
+            var msL = Scope.Analyze("M", labels);
+            Ok("free/GoTo 标签与标签定义都不进池",
+                !msL.FreeIdents.Contains("错误处理") && !msL.FreeIdents.Contains("结束"),
+                string.Join(",", msL.FreeIdents));
+            const string impl = "Implements IFoo\r\n\r\nSub T()\r\nEnd Sub\r\n";
+            Ok("free/Implements 的接口名不进池",
+                !Scope.Analyze("M", impl).FreeIdents.Contains("IFoo"),
+                string.Join(",", Scope.Analyze("M", impl).FreeIdents));
+
+            // ---- v154：Type 块里的成员不进裸名池 ----
+            const string typeBlock = "Public Type Person\r\n    Name As String\r\n    Age As Long\r\nEnd Type\r\n" +
+                                     "Sub T()\r\n    p.Age = 1\r\nEnd Sub\r\n";
+            var msT = Scope.Analyze("M", typeBlock);
+            Ok("free/Type 成员不进裸名池（Name / Age）",
+                !msT.FreeIdents.Contains("Name") && !msT.FreeIdents.Contains("Age"),
+                string.Join(",", msT.FreeIdents));
+
+            // ---- v154：词库里有的名字不再产生 var 副本 ----
+            const string builtins = "Sub T()\r\n    n1 = Left(s, 2)\r\n    n2 = Len(s)\r\nEnd Sub\r\n";
+            var msB = Scope.Analyze("M", builtins);
+            Ok("free/内置函数不重复进 FreeIdents（Left / Len）",
+                !msB.FreeIdents.Contains("Left") && !msB.FreeIdents.Contains("Len"),
+                string.Join(",", msB.FreeIdents));
+
+            // ---- v154：`New Cls` 的类名、数字字面量的碎片都不是变量 ----
+            const string misc = "Sub T()\r\n    Set c1 = New Collection\r\n    h1 = &HFF\r\n    e1 = 1E10\r\nEnd Sub\r\n";
+            var msN = Scope.Analyze("M", misc);
+            Ok("free/New 类名与数字字面量碎片不进池",
+                !msN.FreeIdents.Contains("Collection") && !msN.FreeIdents.Contains("HFF") &&
+                !msN.FreeIdents.Contains("E10"),
+                string.Join(",", msN.FreeIdents));
+
+            // ---- v154：`Option Base 1` 里的词不是变量；`Let arr(1) = 5` 的 arr 是 ----
+            var msO = Scope.Analyze("M", "Option Base 1\r\n\r\nSub T()\r\n    Let arr(1) = 5\r\nEnd Sub\r\n");
+            Ok("free/Option 行里的词不进池",
+                !msO.FreeIdents.Contains("Base"), string.Join(",", msO.FreeIdents));
+            Ok("free/Let 数组赋值仍算变量", msO.FreeIdents.Contains("arr"),
+                string.Join(",", msO.FreeIdents));
+
+            // ---- v154：隐式变量是**模块私有**的，不能跨模块泄露 ----
+            var otherA = Scope.Analyze("A", "Sub T()\r\n    foo = 1\r\nEnd Sub\r\n");
+            var beCross = new FakeBackend
+            {
+                Text = "Sub W()\r\n    fo\r\nEnd Sub\r\n",
+                Snap = new Snapshot { Line = 2, Text = "    fo", Module = "B", CaretCol = 7 },
+                Extra = { otherA },
+            };
+            var engCross = new Engine { Recent = new Recent(), Backend = beCross };
+            var itemsCross = engCross.Trigger(false, beCross.Snap)
+                ? engCross.Items.ToList() : new List<Candidate>();
+            Ok("free/别的模块的隐式变量不泄露",
+                !itemsCross.Any(c => c.Name == "foo"),
+                string.Join(",", itemsCross.Select(c => c.Name)));
+
+            // 同一个名字在**本模块**里写过，就必须照常提示（证明上面不是"什么都没弹"）
+            var beSame = new FakeBackend
+            {
+                Text = "Sub W()\r\n    foo = 1\r\n    fo\r\nEnd Sub\r\n",
+                Snap = new Snapshot { Line = 3, Text = "    fo", Module = "B", CaretCol = 7 },
+            };
+            var engSame = new Engine { Recent = new Recent(), Backend = beSame };
+            var itemsSame = engSame.Trigger(false, beSame.Snap)
+                ? engSame.Items.ToList() : new List<Candidate>();
+            Ok("free/本模块的隐式变量照常提示",
+                itemsSame.Any(c => c.Name == "foo"),
+                string.Join(",", itemsSame.Select(c => c.Name)));
         }
 
         private static void TestMember()

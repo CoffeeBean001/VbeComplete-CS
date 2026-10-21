@@ -1644,11 +1644,26 @@ namespace VbeComplete
                 "    ra\n" +
                 "End Sub\n";
 
+            // ★v154：无 Option Explicit 的隐式变量是**模块私有**的 —— 另一个标准模块
+            //   里写过的 `secretVar` 不该在别处冒出来。模块2 里同时放一行 `sec`，
+            //   用来证明"在自己的模块里照常提示"。
+            const string modFree = "Sub Q()\n" +
+                                   "    secretVar = 1\n" +
+                                   "    sec\n" +
+                                   "End Sub\n";
+            // Type 块里的成员（只能 p.Nickname 访问）不是裸名
+            const string modType = "Public Type Person\n" +
+                                   "    Nickname As String\n" +
+                                   "    Age As Long\n" +
+                                   "End Type\n";
+
             var synth = new SyntheticBackend()
                 .Add("模块1", 1, modStd)
                 .Add("cls1", 2, modCls)
                 .Add("modMem", 1, modMem)
-                .Add("Sheet1", 100, modNoExp);
+                .Add("Sheet1", 100, modNoExp)
+                .Add("模块2", 1, modFree)
+                .Add("modT", 1, modType);
 
             // 说明, 模块, 行, 行文本, 光标显示列, 期望该弹?, 必须有, 不许有
             Action<string, string, int, string, int, bool?, string[], string[]> sprobe =
@@ -1713,6 +1728,14 @@ namespace VbeComplete
             sprobe("无 Option Explicit 时调用名不进变量池（ra| 不冒 Range）", "Sheet1", 6,
                 "    ra", 7, true, new[] { "RaiseEvent" }, new[] { "Range" });
 
+            // ---- 2c. 隐式变量的可见范围 / Type 成员 ----
+            sprobe("隐式变量不跨模块泄露（Sheet1 里 sec| 不冒模块2 的 secretVar）", "Sheet1", 6,
+                "    sec", 8, null, null, new[] { "secretVar" });
+            sprobe("本模块的隐式变量照常提示（模块2 里 sec|）", "模块2", 3,
+                "    sec", 8, true, new[] { "secretVar" }, null);
+            sprobe("Type 成员不进裸名池（模块1 里 Nic| 不冒 Nickname）", "模块1", 11,
+                "    Nic", 8, null, null, new[] { "Nickname" });
+
             // ---- 3. A/B 对照：去掉 Option Explicit，同一个探针就该收进来 ----
             //   证明"未声明的不提示"确实是 Option Explicit 在起作用，不是别的原因。
             var noExpStd = modStd.Replace("Option Explicit", "              ");
@@ -1751,8 +1774,13 @@ namespace VbeComplete
             //   在**另一个模块**里打 `cell` 时，候选里不许出现 Cells。
             sprobe("成员名不进裸名池（打 cell 不冒 Cells）", "模块1", 11,
                 "    cell", 8, null, null, new[] { "Cells" });
-            sprobe("同一个词继续：打 ws 仍能提示对象名 wsR", "模块1", 11,
+            // ★v154：wsR 是 modMem 里"用过但没声明"的名字 —— VBA 会把它当成**该模块
+            //   私有**的隐式变量。所以在 modMem 自己里必须提示，在别的模块里不该提示
+            //   （那里写出来只会新建一个 Empty 变量，运行时报错）。
+            sprobe("同一个词继续：在 modMem 自己里打 ws 能提示对象名 wsR", "modMem", 2,
                 "    ws", 6, true, new[] { "wsR" }, null);
+            sprobe("隐式变量不跨模块：模块1 里打 ws 不冒 wsR", "模块1", 11,
+                "    ws", 6, null, null, new[] { "wsR" });
             // 对照：在 cls1 自己里面它就是裸名 —— 必须提示（证明按模块过滤，不是一刀切）
             sprobe("对照：cls1 自己里 s1 照常提示（s|）", "cls1", 4,
                 "s", 2, true, new[] { "s1" }, null);

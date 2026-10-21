@@ -186,7 +186,17 @@ namespace VbeComplete
                     if (d.KindHint == "type" || d.KindHint == "enum") _typeNames.Add(d.Name);
                 }
                 foreach (var t in ms.TypeNames) if (nameSeen.Add(t)) names.Add(t);
-                foreach (var f in ms.FreeIdents) if (nameSeen.Add(f)) names.Add(f);
+                foreach (var f in ms.FreeIdents)
+                {
+                    if (nameSeen.Add(f)) names.Add(f);
+                    // ★v154：无 Option Explicit 时"用过但没声明"的名字，在 VBA 里是
+                    //   **模块私有**的隐式变量（别的模块看不见）。以前只把它并进池子、
+                    //   不进 _poolScoped，于是 A 模块里随手写的 `foo = 1` 会让 B 模块
+                    //   打 `fo` 也冒出 `foo` —— 用户眼里的"别的模块的变量跑我这儿来了"。
+                    //   进 _poolScoped 后，当前模块靠 Visible() 的 rank 2 保留，
+                    //   别的模块查不到档位就被剔除。
+                    _poolScoped.Add(f);
+                }
                 foreach (var p in ms.Procs)
                 {
                     if (nameSeen.Add(p.Name)) names.Add(p.Name);

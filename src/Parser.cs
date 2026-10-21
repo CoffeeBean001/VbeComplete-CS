@@ -86,6 +86,7 @@ namespace VbeComplete
             if (string.IsNullOrEmpty(line)) return "";
             var sb = new StringBuilder(line.Length);
             bool inStr = false;
+            bool stmtStart = true;              // 行首算语句起点
             for (int i = 0; i < line.Length; i++)
             {
                 char c = line[i];
@@ -101,18 +102,33 @@ namespace VbeComplete
                 }
                 if (c == '"') { inStr = true; sb.Append(' '); continue; }
                 if (c == '\'') break;                      // 行内注释
+
+                // ★v154：`Rem` 出现在**语句起点**（行首，或者冒号之后）就是注释，
+                //   不再只认行首。`x = 1: Rem 临时占位` 里的 `临时占位` 以前会被
+                //   当成代码，进而作为"未声明变量"进候选池。
+                //   长度保持守恒（余下全填空格）：调用方虽然不依赖，但少一条隐患。
+                if (stmtStart && IsRemAt(line, i))
+                {
+                    sb.Append(' ', line.Length - i);
+                    break;
+                }
+
+                if (c == ':') { stmtStart = true; sb.Append(c); continue; }
+                if (c != ' ' && c != '\t') stmtStart = false;
                 sb.Append(c);
             }
-            string code = sb.ToString();
-            // 行首 Rem ... 也是注释（Rem 必须顶格或前面只有空白）
-            string trim = code.TrimStart();
-            if (trim.Length >= 3 &&
-                (trim[0] == 'R' || trim[0] == 'r') &&
-                (trim[1] == 'E' || trim[1] == 'e') &&
-                (trim[2] == 'M' || trim[2] == 'm') &&
-                (trim.Length == 3 || !char.IsLetterOrDigit(trim[3])))
-                return "";
-            return code;
+            return sb.ToString();
+        }
+
+        /// <summary>line[i] 起是不是一个独立的 `Rem` 关键字（后面不是字母数字）。</summary>
+        private static bool IsRemAt(string line, int i)
+        {
+            if (i + 2 >= line.Length) return false;
+            if ((line[i] != 'R' && line[i] != 'r') ||
+                (line[i + 1] != 'E' && line[i + 1] != 'e') ||
+                (line[i + 2] != 'M' && line[i + 2] != 'm')) return false;
+            int after = i + 3;
+            return after >= line.Length || !char.IsLetterOrDigit(line[after]);
         }
 
         /// <summary>模块里所有过程（含同名去重用的 ScopeKey）。</summary>

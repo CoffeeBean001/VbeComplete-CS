@@ -400,16 +400,59 @@ namespace VbeComplete
                     // 它既不是函数调用、也不是值 —— 归类成"值"会让 `Range("d2")`
                     // 那条判据失效（`!usedAsValue` 永远不成立）。
                     if (IsAfterAs(c0, m0)) continue;
-                    if (FollowedByParen(c0, m0)) callOnly.Add(w0);
+                    // `Implements IFoo`：接口名不是变量
+                    if (PrevWordIs(c0, m0, "Implements")) continue;
+                    // `GoTo done` / `On Error GoTo fail`：那是**行标签**，不是变量
+                    if (PrevWordIs(c0, m0, "GoTo") || PrevWordIs(c0, m0, "GoSub") ||
+                        PrevWordIs(c0, m0, "Resume"))
+                        continue;
+                    // `错误处理:` 这种**标签定义**整行也只有它自己，同样不是变量
+                    if (IsLabelDefinition(c0, m0)) continue;
+
+                    if (FollowedByParen(c0, m0))
+                    {
+                        // ★v154：`arr(1) = 5` 与 `ReDim arr(10)` 里的 arr 是**数组变量**，
+                        //   不是函数调用。只看"后面有没有括号"会把它们误判成调用，
+                        //   于是"只写下标、从不写 arr = ..."的数组变量一个都提示不出来
+                        //   （`Cells(1,1)` 那种宿主函数则相反，本来就该排除）。
+                        if (IsArrayLikeUse(c0, m0)) usedAsValue.Add(w0);
+                        else callOnly.Add(w0);
+                    }
                     else usedAsValue.Add(w0);
                 }
             }
 
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            bool inFreeTypeBlock = false;              // Type 块里的成员不能当裸名（只能 p.X 访问）
             foreach (var raw in lines)
             {
                 string code = Parser.CodeOnly(raw);
                 if (code.Length == 0) continue;
+                // `Attribute VB_Name = "模块1"` 只出现在导出/导入的源码里：
+                // 里面的名字不是变量（VBE 的 CodeModule 里看不到这些行）。
+                if (code.TrimStart().StartsWith("Attribute ", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                // `Option Base 1` / `Option Compare Text`：都是模块设置，里面的词不是变量
+                // （`Option Explicit` 由 Parser.OptionExplicit 单独判，跳过这里没有影响）。
+                if (code.TrimStart().StartsWith("Option ", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                // ★v154：`Type Person` 块里的 `Name As String` 是**成员**，不是变量。
+                //   这一遍原来完全不看块结构，于是每个用户自定义类型都会往裸名池里
+                //   塞进一堆成员名（打 `na` 冒出 `Name`），与 v137 修的"变量泄露"同类。
+                //   Enum 块**不**跳过：枚举成员在模块里本来就是裸名（`clRed` 直接用）。
+                if (inFreeTypeBlock)
+                {
+                    if (ReEndType.IsMatch(code)) inFreeTypeBlock = false;
+                    continue;
+                }
+                var tmHead = ReTypeHead.Match(code);
+                if (tmHead.Success &&
+                    tmHead.Groups[2].Value.Equals("Type", StringComparison.OrdinalIgnoreCase))
+                {
+                    inFreeTypeBlock = true;
+                    continue;                       // Type 名字本身由 Decls 收
+                }
                 foreach (Match m in ReIdent.Matches(code))
                 {
                     string w = Clean(m.Value);
@@ -427,7 +470,27 @@ namespace VbeComplete
                     //   裸用 `Cells(1,1)` 仍然照收 —— 那是用户真这么写了，该提示。
                     if (IsMemberAccess(code, m)) continue;
 
+                    // ★v154：下面这几类**按位置**判断（不能只看名字）：
+                    //   同一个 `Range` 既可能是 `As Range` 的类型、也可能是调用的函数，
+                    //   所以判据必须落在"这一次出现"上，而不是名字集合上。
+                    if (IsAfterAs(code, m)) continue;                        // As Xxx
+                    if (PrevWordIs(code, m, "Implements")) continue;         // Implements IFoo
+                    if (PrevWordIs(code, m, "GoTo") ||
+                        PrevWordIs(code, m, "GoSub") ||
+                        PrevWordIs(code, m, "Resume")) continue;             // GoTo 标签
+                    if (IsLabelDefinition(code, m)) continue;                // `错误处理:`
+
                     if (VbaBuiltins.IsKeyword(w)) continue;
+                    // ★v154：词库里有的名字（函数 / 类型 / 关键字）不需要再从"全量
+                    //   标识符"这条路进来 —— 它们本来就以 builtin 档在池子里。
+                    //   收进来的唯一效果是**多一条 var 副本**：用户打 `le` 会同时看到
+                    //   `Left`（函数）和 `Left`（变量），去重后保留的是档位更前的那条。
+                    //   顺带把 `On Error GoTo …` 里的 `Error` 这类也挡掉。
+                    if (VbaBuiltins.IsBuiltin(w)) continue;
+                    // `Set x = New Cls`：Cls 是**类名**（组件名），不是变量
+                    if (PrevWordIs(code, m, "New")) continue;
+                    // `&HFF` / `1E10`：名字其实是数字字面量的一部分
+                    if (IsAfterNumber(code, m)) continue;
                     if (declared.Contains(w)) continue;
                     if (localNames.Contains(w)) continue;             // 别处的局部，不能漏过来
 
@@ -469,14 +532,88 @@ namespace VbeComplete
         /// 这个标识符是不是紧跟在 `As` 后面（= 类型名，不是值也不是调用）。
         /// 只看前一个词是不是 `As`，不做别的推断。
         /// </summary>
-        private static bool IsAfterAs(string code, Match m)
+        private static bool IsAfterAs(string code, Match m) => PrevWordIs(code, m, "As");
+
+        /// <summary>标识符前面那个词是不是 <paramref name="word"/>（跳过空白）。</summary>
+        private static bool PrevWordIs(string code, Match m, string word)
         {
             int p = m.Index - 1;
             while (p >= 0 && (code[p] == ' ' || code[p] == '\t')) p--;
             int e = p;
             while (p >= 0 && (char.IsLetterOrDigit(code[p]) || code[p] == '_')) p--;
-            if (e - p != 2) return false;                       // "As" 正好两个字符
-            return code.Substring(p + 1, 2).Equals("As", StringComparison.OrdinalIgnoreCase);
+            int len = e - p;
+            if (len != word.Length) return false;
+            return code.Substring(p + 1, len).Equals(word, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// 后面跟括号的这个名字，其实是**数组变量**而不是函数调用吗？
+        /// 两条判据（都只看语法，不猜类型）：
+        ///   * 前面是 `ReDim` / `ReDim Preserve` —— `ReDim arr(10)`；
+        ///   * 位于语句起点、且括号配平后紧跟 `=` —— `arr(1) = 5`（数组元素赋值）。
+        /// `If arr(1) = 5 Then` 不算（前面有 `If`，不是语句起点）—— 那种情况
+        /// 仍归"调用"，但通常同一个 arr 在别处也被赋值过，不影响。
+        /// </summary>
+        private static bool IsArrayLikeUse(string code, Match m)
+        {
+            if (PrevWordIs(code, m, "ReDim")) return true;
+            if (PrevWordIs(code, m, "Preserve")) return true;      // ReDim Preserve arr(10)
+            if (PrevWordIs(code, m, "Let")) return true;           // Let arr(1) = 5
+            if (!IsAtStatementStart(code, m)) return false;
+
+            int after = m.Index + m.Length;
+            while (after < code.Length && (code[after] == ' ' || code[after] == '\t')) after++;
+            if (after >= code.Length || code[after] != '(') return false;
+
+            int depth = 0;
+            for (int i = after; i < code.Length; i++)
+            {
+                if (code[i] == '(') depth++;
+                else if (code[i] == ')')
+                {
+                    if (--depth != 0) continue;
+                    int j = i + 1;
+                    while (j < code.Length && (code[j] == ' ' || code[j] == '\t')) j++;
+                    return j < code.Length && code[j] == '=';
+                }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// `名字:` 后面再没有别的内容 —— 这是 VBA 的**行标签定义**（`错误处理:`），
+        /// 不是变量。`Select Case` 的 `Case 1:` 之类不受影响（1 不是标识符）。
+        /// </summary>
+        private static bool IsLabelDefinition(string code, Match m)
+        {
+            int after = m.Index + m.Length;
+            while (after < code.Length && (code[after] == ' ' || code[after] == '\t')) after++;
+            return after < code.Length && code[after] == ':' &&
+                   code.Substring(after + 1).Trim().Length == 0;
+        }
+
+        /// <summary>
+        /// 这个名字是不是数字字面量的一部分：`&HFF` 的 `HFF`、`1E10` 的 `E10`。
+        /// 只看前一个字符（`&` 或数字），不做进制的额外推断。
+        /// </summary>
+        private static bool IsAfterNumber(string code, Match m)
+        {
+            int p = m.Index - 1;
+            if (p < 0) return false;
+            char c = code[p];
+            return char.IsDigit(c) || c == '&';
+        }
+
+        /// <summary>这个标识符前面（到行首或冒号为止）只有空白吗 —— 即它在语句起点。</summary>
+        private static bool IsAtStatementStart(string code, Match m)
+        {
+            for (int i = m.Index - 1; i >= 0; i--)
+            {
+                char c = code[i];
+                if (c == ' ' || c == '\t') continue;
+                return c == ':';
+            }
+            return true;
         }
 
         /// <summary>
