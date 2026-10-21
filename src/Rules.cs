@@ -229,16 +229,83 @@ namespace VbeComplete
             return string.Join("\n", lines);
         }
 
+        // 点号左边允许出现的"能取成员的东西"的末尾字符：`Range("A1")` / `arr(0)` /
+        // `x(1)` 收尾是 `)`；`a.b` 收尾是标识符字符。
+        private const string MemberOwnerTail = "_)]}";
+
+        // With 块的成员访问：点顶在行首（`    .Size`），或紧跟语句 / 运算符边界
+        // （`a = 1: .Size`、`Set f = .Font`、`x = .Left + .Width`）。
+        // 这些位置 VBE 同样会弹成员列表。
+        private const string WithOwnerBoundary = ":,=(&+-*/\\^><";
+
         /// <summary>
-        /// 光标是不是紧跟在点号后面（`student.|`）—— 这个位置整个让给 VBE。
+        /// 光标若停在**成员访问位置**，返回那个点号的 0-based 下标；否则 -1。
+        ///
+        /// ★v138：这是"要不要把这一处让给 VBE"的**唯一判据**，从 Python 版
+        /// `_member_list_dot_col` 整条移植（用户口径："输入 student.，点号后面
+        /// 就不要出提示框了"）。原先 `InMemberPosition` 只认"光标紧跟点号"，
+        /// 于是 `Range("A1").|` / `student.na|` 这类位置漏判 —— 漏判的后果是
+        /// 我们的裸名池照弹、压在 VBE 的成员列表上面。
+        ///
+        /// 认的位置：
+        ///   `student.|` / `student.na|`      标识符.成员
+        ///   `Range("A1").|` / `arr(0).x|`    点号左边是 `)` / `]` / `}`
+        ///   `    .Size|` / `Set f = .Font|`  With 块的成员访问
+        /// 不认的位置（VBE 在这些地方不弹，我们照旧提示）：
+        ///   `1.5`（小数点）、`x = "abc".c`（点号贴着一个完整串字面量）、
+        ///   注释 / 字符串里的点号。
         /// </summary>
-        public static bool InMemberPosition(string line, int caretCol)
+        public static int MemberDotCol(string line, int caretCol)
         {
-            if (string.IsNullOrEmpty(line)) return false;
-            int end = Math.Max(0, Math.Min(caretCol - 1, line.Length));
-            string before = line.Substring(0, end).TrimEnd();
-            return before.EndsWith(".", StringComparison.Ordinal);
+            if (string.IsNullOrEmpty(line) || caretCol < 1) return -1;
+            int i = Math.Min(caretCol - 1, line.Length);
+
+            // 1) 跳过光标左边已经打的成员名。★光标紧贴点号时（`student.|`），
+            //    那个点号本身不能被当成"正在输入的名字"吃掉。
+            int k;
+            if (i > 0 && line[i - 1] == '.') k = i - 1;
+            else
+            {
+                int j = i - 1;
+                while (j >= 0 && IsIdentChar(line[j])) j--;
+                // 2) 成员名左边应当是点号（`X .` 这种带空格的写法也认）
+                k = j;
+                while (k >= 0 && (line[k] == ' ' || line[k] == '\t')) k--;
+                if (k < 0 || line[k] != '.') return -1;
+            }
+
+            // 3) 点号左边得是能取成员的东西
+            int m = k - 1;
+            while (m >= 0 && (line[m] == ' ' || line[m] == '\t')) m--;
+            if (m < 0 || WithOwnerBoundary.IndexOf(line[m]) >= 0)
+            {
+                // With 块 / 点顶行首。注释、字符串里 VBE 不弹，那种点号不算。
+                return InCommentOrString(line, k + 1) ? -1 : k;
+            }
+            if (!(IsIdentChar(line[m]) || MemberOwnerTail.IndexOf(line[m]) >= 0)) return -1;
+
+            // 3b) 点号紧贴一个**收尾引号**：`x = "abc".c` 里的点不是成员访问
+            //     （`"abc"` 是完整的串字面量）。只看紧邻那一格，不能看"跳过空白
+            //     之后的 m"——`Range("A1").` 的 `)` 在串里，那样写会全误杀。
+            if (k - 1 >= 0 && line[k - 1] == '"' && InCommentOrString(line, k)) return -1;
+
+            // 4) `1.5` 这种小数点：点号左边整段是纯数字，不是成员访问
+            int s = m;
+            while (s >= 0 && IsIdentChar(line[s])) s--;
+            string ownerSeg = line.Substring(s + 1, m - s);
+            bool allDigits = ownerSeg.Length > 0;
+            foreach (char ch in ownerSeg)
+                if (!char.IsDigit(ch)) { allDigits = false; break; }
+            if (allDigits) return -1;
+
+            // 5) 注释 / 字符串里 VBE 不弹，我们照旧提示
+            if (InCommentOrString(line, k + 1)) return -1;
+            return k;
         }
+
+        /// <summary>光标是不是停在成员访问位置（`student.|` / `Range("A1").na|`）。</summary>
+        public static bool InMemberPosition(string line, int caretCol)
+            => MemberDotCol(line, caretCol) >= 0;
 
         /// <summary>
         /// 光标是不是在 `对象.|` 或 `对象.前|` 这种位置。成立时 root = 点号前那个

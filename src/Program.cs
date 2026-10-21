@@ -1174,9 +1174,42 @@ namespace VbeComplete
             // 对照：在 cls1 自己里面它就是裸名 —— 必须提示（证明按模块过滤，不是一刀切）
             sprobe("对照：cls1 自己里 s1 照常提示（s|）", "cls1", 4,
                 "s", 2, true, new[] { "s1" }, null);
-            // 成员位置：c 是 cls1，成员列表就该有 s1 / s2
-            sprobe("成员位置收窄（c.|）", "模块1", 11,
-                "    c.", 7, true, new[] { "s1", "s2" }, null);
+            // ---- 6. 点号之后一整个让给 VBE（v138，与 Python 版 v103c 同口径）----
+            // 默认（MEMBER_POPUP=0）一个候选都不出：VBE 在这个位置按真类型弹真成员。
+            sprobe("点号后不弹（c.|）", "模块1", 11,
+                "    c.", 7, false, null, null);
+            sprobe("点号后不弹（c.s|，成员名打到一半）", "模块1", 11,
+                "    c.s", 8, false, null, null);
+            sprobe(") 之后不弹（Range(\"A1\").Fo|）", "模块1", 11,
+                "    Range(\"A1\").Fo", 19, false, null, null);
+            // 词要用能匹配到东西的（`.Se` 会命中 Set / Select / …）——
+            // 用 `.Size` 这种"恰好一个候选都匹配不上"的词，退掉判据也照样绿，
+            // 等于没验（v137 的 A/B 已经栽过一次这种"探针空转"）。
+            sprobe("With 块点号不弹（    .Se|）", "模块1", 11,
+                "    .Se", 9, false, null, null);
+            {
+                // ---- A/B：MEMBER_POPUP=1 时同一位置必须重新弹（且按类型收窄）----
+                // 这一条是"点号后不弹"的**反证**：退掉那条判据它就绿、留着它才红不了；
+                // 反过来一旦判据写错（比如把 `c.` 判成非成员位置），这条就红。
+                synth.Current = "模块1";
+                var eOn = new Engine
+                {
+                    Recent = new Recent(),
+                    Backend = synth,
+                    MemberPopup = true
+                };
+                eOn.InvalidatePool();
+                bool shownOn = eOn.Trigger(false,
+                    new Snapshot { Line = 11, Text = "    c.", Module = "模块1", CaretCol = 7 });
+                bool hasMembers = shownOn && eOn.Items.Any(
+                    x => string.Equals(x.Name, "s1", StringComparison.OrdinalIgnoreCase));
+                if (!(shownOn && hasMembers)) ok = false;
+                sb.AppendLine(((shownOn && hasMembers) ? "  PASS  " : "  FAIL  ") +
+                              "A/B：MEMBER_POPUP=1 点号后照弹，按类型收窄到 s1/s2");
+                sb.AppendLine("         -> " +
+                    (shownOn ? string.Join(",", eOn.Items.Take(8).Select(x => x.Name)) : "(不弹)"));
+                if (shownOn) eOn.Hide();
+            }
 
             sb.AppendLine(ok ? "RESULT: PASS" : "RESULT: FAIL");
             File.WriteAllText(Path.Combine(Settings.Home, "enginetest.log"), sb.ToString(), Encoding.UTF8);

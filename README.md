@@ -34,12 +34,14 @@ pane**, and its message loop costs nothing when idle.
 - **Silent where it should be**: after `As` **or `New`** (only a type name can follow — that includes
   `Set c = New |`, `For i As |` and parameter lists, not just `Dim` lines), in the naming position of
   `Dim` / `Public` / `Private` / `Global`, and for the word you are currently typing.
-- **Class-module members are not bare names**: a `Public s1` inside `cls1` is offered after `c.`
-  (member completion) and inside `cls1` itself — but never as a bare name in another module,
+- **Class-module members are not bare names**: a `Public s1` inside `cls1` is reachable only as
+  `c.s1` or from inside `cls1` itself — never as a bare name in another module,
   because `s1` alone would not compile there.
-- **Member completion after a dot**: once `Dim c As Cls1` or `Set c = New Cls1` is in the code,
-  `c.` lists `Cls1`'s public members. If the type cannot be determined, it steps aside entirely
-  instead of passing off the whole project pool as members.
+- **A dot belongs to the VBE**: after `student.`, `Range("A1").` or a `With` block's `.Size` it
+  shows **no list of its own at all** — the VBE's own member list knows the real type and is the
+  better one. `Ctrl+Space` still asks for our list on purpose; `MEMBER_POPUP=1` restores the old
+  behaviour (narrowed to the declared type when `Dim c As Cls1` / `Set c = New Cls1` is in the
+  code, full project pool otherwise).
 - **Popup**: fixed width (30 characters, so it never jumps sideways), 15 rows max, per-character
   highlights, hover highlight, draggable scrollbar, and a detail line only when a name is truncated.
   Owner-drawn and it **never steals focus**.
@@ -80,7 +82,7 @@ pane**, and its message loop costs nothing when idle.
   tool; they are fully independent of the Python edition, sharing no file with it.
 - Every shortcut follows one rule: **if the action fails, the original key is replayed**, so keys
   are never silently swallowed.
-- 305 self-checks (fuzzy matching, scopes, `Option Explicit`, Chinese identifiers, member completion,
+- 320 self-checks (fuzzy matching, scopes, `Option Explicit`, Chinese identifiers, member completion,
   highlight splitting, call-site detection, `As`/`New` suppression) plus word-DB, snippet-store,
   icon/autostart and off-screen rendering checks, and five live probes keep the logic honest.
 
@@ -89,8 +91,8 @@ pane**, and its message loop costs nothing when idle.
 - Needs the **.NET 10 Desktop Runtime**; Windows only.
 - Requires *Trust access to the VBA project object model* (off by default), same as the Python edition.
 - **Fewer features than the Python edition**: no watchdog / auto-restart on hang, no parameter-info
-  popup, no host enum constants, and member completion only understands `Dim ... As` and
-  `Set ... = New` (it does no return-type inference).
+  popup, no host enum constants, and the optional `MEMBER_POPUP=1` member list only understands
+  `Dim ... As` and `Set ... = New` (it does no return-type inference).
 - The word databases are read once at startup, so a change needs a restart (deliberate: it keeps
   "file changed underneath us" out of the running process).
 - Autostart writes to the current user's registry; some security suites block that (the menu then

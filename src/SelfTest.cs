@@ -125,9 +125,28 @@ namespace VbeComplete
             Ok("resolved/没精确命中",
                 !Rules.PrefixIsResolved("su", new List<string> { "sub" }));
 
+            // ★v138：成员位置判据（点号后整个让给 VBE）—— 从 Python 版
+            //   `_member_list_dot_col` 移植，认 / 不认的位置各钉几条。
             Ok("member-position/点号后", Rules.InMemberPosition("student.", 9));
-            Ok("member-position/词中间不是", !Rules.InMemberPosition("student.na", 10));
+            // ★改口径：「词中间」也是成员位置（VBE 这时正在按已打的字过滤成员），
+            //   旧判据只认"紧跟点号"，于是 `student.na|` 会弹出我们的裸名池。
+            Ok("member-position/成员名打到一半", Rules.InMemberPosition("student.na", 10));
             Ok("member-position/空格后点号", Rules.InMemberPosition("a = b. ", 8));
+            Ok("member-position/点号带空格", Rules.InMemberPosition("a.b .c", 6));
+            Ok("member-position/) 之后", Rules.InMemberPosition("    Range(\"A1\").", 19));
+            Ok("member-position/] 之后", Rules.InMemberPosition("    arr(0).Cou", 15));
+            // With 块：点顶在行首 / 紧跟语句边界 —— VBE 同样会弹成员列表
+            Ok("member-position/With 块行首点", Rules.InMemberPosition("    .Size", 10));
+            Ok("member-position/With 块赋值点", Rules.InMemberPosition("    Set f = .Font", 17));
+            Ok("member-position/语句分隔后的点", Rules.InMemberPosition("    a = 1: .Size", 15));
+            // 反例：这些点号不是成员访问，必须照常提示
+            Ok("member-position/小数点不是", !Rules.InMemberPosition("x = 1.5", 8));
+            Ok("member-position/没有点号不是", !Rules.InMemberPosition("student", 8));
+            Ok("member-position/运算符后不是", !Rules.InMemberPosition("x = a + b", 10));
+            Ok("member-position/串字面量后不是", !Rules.InMemberPosition("x = \"abc\".c", 13));
+            Ok("member-position/注释里的点不是", !Rules.InMemberPosition("x = 1 ' c.d", 12));
+            Ok("member-position/字符串里的点不是", !Rules.InMemberPosition("s = \"a.b\"", 10));
+            Ok("member-position/返回点号下标", Rules.MemberDotCol("student.na", 10) == 7);
 
             Ok("decl-position/Dim 名字", Rules.InDeclarationPosition("Dim cus", 8));
             // ★v133：`As` 后面一律不弹（用户明确要求）—— 那里只可能是类型名
@@ -683,7 +702,30 @@ End Sub
             var mod = Scope.Analyze("Mod1", MemberSample);
             Eq("member/Dim As 收类型", mod.TypeOf("c", "Main"), "Cls1");
 
-            var eng = new Engine { Recent = new Recent() };
+            // ★v138：默认口径 —— 点号之后**一个候选都不出**，整个让给 VBE 的
+            //   成员列表（与 Python 版 v103c 同一口径）。这条必须先钉住：下面
+            //   那些"收窄"断言都跑在 MEMBER_POPUP=1 下，不先钉默认口径的话，
+            //   一旦判据写错（把 `c.` 判成非成员位置），整套测试都不会红。
+            var def = new Engine { Recent = new Recent() };
+            var beDef = new FakeBackend
+            {
+                Text = MemberSample,
+                Extra = new List<ModuleScope> { cls },
+                Snap = new Snapshot { Line = 5, Text = "    c.", Module = "Mod1", CaretCol = 7 },
+            };
+            def.Backend = beDef;
+            Ok("member/默认点号后不弹（即使类型已知）", !def.Trigger(false, beDef.Snap));
+            var beDef2 = new FakeBackend
+            {
+                Text = MemberSample,
+                Extra = new List<ModuleScope> { cls },
+                Snap = new Snapshot { Line = 5, Text = "    c.Ref", Module = "Mod1", CaretCol = 10 },
+            };
+            def.Backend = beDef2;
+            Ok("member/默认点号后打了半截词也不弹", !def.Trigger(false, beDef2.Snap));
+
+            // ---- 以下都是 MEMBER_POPUP=1 那条路（用户显式要候选）----
+            var eng = new Engine { Recent = new Recent(), MemberPopup = true };
             var be = new FakeBackend
             {
                 Text = MemberSample,
@@ -699,7 +741,8 @@ End Sub
             Ok("member/不含 Private 成员", !names.Contains("Hidden"), string.Join(",", names));
             Ok("member/不含全工程噪音", !names.Contains("MsgBox"), string.Join(",", names));
 
-            // 类型不确定（变量从没声明过）=> 整个让给 VBE，一条都不弹
+            // 类型不确定（变量从没声明过）=> 退回全工程候选（与 Python 版同一口径：
+            // 定不出类型时宁可给宽的，也不给"收窄成空"）
             eng.Hide();
             var be2 = new FakeBackend
             {
@@ -708,7 +751,10 @@ End Sub
                 Snap = new Snapshot { Line = 5, Text = "    obj.", Module = "Mod1", CaretCol = 9 },
             };
             eng.Backend = be2;
-            Ok("member/类型不确定就让位", !eng.Trigger(false, be2.Snap));
+            bool shown2 = eng.Trigger(false, be2.Snap);
+            Ok("member/类型不确定时退回全工程候选",
+                shown2 && eng.Items.Any(x => x.Name == "MsgBox"),
+                shown2 ? string.Join(",", eng.Items.Take(8).Select(x => x.Name)) : "(不弹)");
 
             // 点号后面已经开始打词：收窄仍然生效
             eng.Hide();

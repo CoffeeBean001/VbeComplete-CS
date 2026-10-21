@@ -43,7 +43,9 @@ namespace VbeComplete
         //   窗口自己变矮 —— 用户口径是"显示几行就几行高"，不是固定 15 行留白。
         public readonly int ViewRows = Settings.Int("VIEW_ROWS", 15, 3, 30);
         public readonly bool HideOnComplete = Settings.Flag("HIDE_ON_COMPLETE", true);
-        public readonly bool MemberPopup = Settings.Flag("MEMBER_POPUP", false);
+        // ★v138：不是 readonly —— 探针要能当场切成 1 做 A/B（证明"点号后不弹"
+        //   确实是这条判据在起作用），运行期只读一次 settings.ini。
+        public bool MemberPopup = Settings.Flag("MEMBER_POPUP", false);
         public readonly bool DeclPopup = Settings.Flag("DECL_POPUP", false);
 
         // UI 回调
@@ -274,30 +276,37 @@ namespace VbeComplete
                 return false;
             }
 
+            // ★v138：点号之后**一个候选都不出**，整个让给 VBE（与 Python 版
+            //   v103c 同一口径）。用户口径（原话）："输入 student.，点号后面就
+            //   不要出提示框了"——我们的池子是裸名池（变量名 / 过程名 / 关键字），
+            //   出在点号后面就是噪音；VBE 在这个位置按【真类型】弹真成员，比我们准。
+            //
+            //   位置判据只有一份：Rules.MemberDotCol（标识符 / `)` / `]` 之后，
+            //   以及 With 块的 `.成员`）。
+            //   ⚠️ 放在 EnsurePool 之前：点号是高频键，这一处既不需要池子也不需要
+            //   COM，先判完再决定要不要去取模块全文。Python 版同样放在最前面
+            //   （放后面的话，那条"宽限期到、把候选补回来"的补位路径还会走一遍）。
+            //   ⚠️ MEMBER_POPUP=1 恢复旧行为；Ctrl+Space（manual）是用户点名要
+            //   列表，两种情形照弹。
+            if (!manual && !MemberPopup && Rules.MemberDotCol(line, caret) >= 0)
+            {
+                Hide();
+                return false;
+            }
+
             string text = Backend?.ModuleText();
             EnsurePool(snap.Module, text, snap.Line, wordStart, word);
 
-            // ---- `对象.` 位置 ----
-            // VBE 自己有成员列表（带真类型信息），默认整个让给它。只有在
-            // 【我们能确定这个变量的类型】时才补一份 —— 类型拿不到就还是不弹，
-            // 绝不拿"全工程候选"去冒充成员列表（那是噪音，比不弹更糟）。
-            // `MEMBER_POPUP=1` 是另一条路：不做类型收窄，直接出全工程候选
-            // （老行为，留给"就是要看全部名字"的人）。
+            // ---- `对象.` 位置（只剩 MEMBER_POPUP=1 和 Ctrl+Space 走得到）----
+            // 能定出 `root` 的声明类型就按类型收窄到真成员；定不出来就照旧出
+            // 全工程候选（Python 版同一口径：宁可给宽的，也不给"查到了类型但
+            // 一个成员都没收进来"的空窗）。
             List<string> memberPool = null;
             bool atMemberPos = false;
-            if (!manual)
+            if (Rules.MemberRoot(line, caret, out string root, out int dotCol))
             {
-                string root;
-                int dotCol;
-                if (Rules.MemberRoot(line, caret, out root, out dotCol))
-                {
-                    atMemberPos = true;
-                    if (!MemberPopup)
-                    {
-                        memberPool = MemberPool(root, snap);
-                        if (memberPool == null) { Hide(); return false; }
-                    }
-                }
+                atMemberPos = true;
+                memberPool = MemberPool(root, snap);
             }
 
             if (word.Length == 0)
