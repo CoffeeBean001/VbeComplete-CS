@@ -519,7 +519,9 @@ namespace VbeComplete
         /// 并逐字节比对原文。
         /// </summary>
         /// <summary>
-        /// 真机验证五个命令：Ctrl+Shift+Enter / Ctrl+D / Ctrl+K / Ctrl+/ / Ctrl+Shift+↑↓。
+        /// 真机验证四个命令：Ctrl+Shift+Enter / Ctrl+D / Ctrl+K / Ctrl+/。
+        /// （`Ctrl+Shift+↑/↓` 的用例 v149 随功能一起删除；`Ctrl+↑/↓` 由 --enterprobe 的
+        ///   用例 I 走真钩子验证。）
         ///
         /// ★为什么要这个：用户报"快捷键全都没了"。按键有没有走到钩子，在沙箱里
         ///   没法用真键盘试（钩子按设计不理注入键）；但"命令本身能不能干活"可以
@@ -558,9 +560,9 @@ namespace VbeComplete
             for (int i = 0; i < block.Length; i++)
                 be.InsertLines(baseCount + 1 + i, block[i]);
 
-            int Lhead = baseCount + 1, Ldim = baseCount + 2, L1 = baseCount + 3,
-                L2 = baseCount + 4, Lblank = baseCount + 5, Lend = baseCount + 6;
-
+            // ★v149：`Ctrl+Shift+↑/↓` 那组用例随功能一起删了，Lblank / Lhead / Lend
+            //   随之失去用途（原本就只被那两条用例引用）。
+            int Ldim = baseCount + 2, L1 = baseCount + 3, L2 = baseCount + 4;
             string dimText = be.LineAt(Ldim) ?? "";
             string oneText = be.LineAt(L1) ?? "";
             string twoText = be.LineAt(L2) ?? "";
@@ -672,40 +674,12 @@ namespace VbeComplete
                     }
                 }
 
-                // ---- 5. Ctrl+Shift+↑ 落到最后一个声明行 ----
-                {
-                    be.SetCaret(L2, 1);
-                    be.InvalidateSnapshot();
-                    bool r = Commands.CtrlNavJump(be, -1);
-                    var snap = be.Snapshot();
-                    bool ok = r && snap != null && snap.Line == Ldim;
-                    check("Ctrl+Shift+↑ 落最后 Dim", ok,
-                        "ret=" + r + " caretLine=" + (snap?.Line ?? -1) + " want=" + Ldim);
-                }
-
-                // ---- 6. Ctrl+Shift+↓ 跳到收尾空白行 ----
-                {
-                    be.SetCaret(L1, 1);
-                    be.InvalidateSnapshot();
-                    bool r = Commands.CtrlNavJump(be, +1);
-                    var snap = be.Snapshot();
-                    bool ok = r && snap != null && snap.Line == Lblank;
-                    // 解析结果打出来：行号对不上时，一眼就能看出是"解析偏了一行"
-                    string mt = be.ModuleText() ?? "";
-                    var pl = Parser.SplitLines(mt);
-                    var pp = Parser.ExtractProcedures(mt);
-                    sb.AppendLine("        parsed lines=" + pl.Length + " procs=" + pp.Count +
-                                  " blank@[" + string.Join(",",
-                                      Enumerable.Range(1, pl.Length)
-                                          .Where(i => Parser.CodeOnly(pl[i - 1]).Trim().Length == 0)
-                                          .Select(i => i.ToString())) + "]");
-                    check("Ctrl+Shift+↓ 跳空白行", ok,
-                        "ret=" + r + " caretLine=" + (snap?.Line ?? -1) + " want=" + Lblank);
-                }
-
                 // ==========================================================
                 // 以下六条是 v132 新移植的"编辑手感"命令。每一条都自己造一小段
                 // 临时代码、验完立刻整段删掉 —— 不依赖上面那 6 行的行号。
+                // ★v149：原来这里的第 5、6 条验的是 `Ctrl+Shift+↑/↓`（上方最近的
+                //   声明行 / 下方第一个空白行）。用户明确说用不到，功能已整组删除，
+                //   用例一起删掉 —— 留着会编译不过（函数没了）。
                 // ==========================================================
                 Func<string[], int> append = lines =>
                 {

@@ -1,5 +1,5 @@
-// 换行/行操作命令 —— Ctrl+D / Ctrl+K / Ctrl+/ / Ctrl+Shift+Enter / Ctrl+Shift+↑↓ /
-// Ctrl+Shift+L（整篇格式化缩进）。
+// 换行/行操作命令 —— Ctrl+D / Ctrl+K / Ctrl+/ / Ctrl+Shift+Enter /
+// Ctrl+Shift+L（整篇格式化缩进）/ Ctrl+↑↓（过程内的两个端点）。
 //
 // ★为什么单独一个文件：这些是【会改用户代码】的动作，必须满足两条：
 //   1. 同一语义只有一份实现 —— 钩子（App）和真机验证（Program --hktest）走同一批函数，
@@ -19,14 +19,6 @@ namespace VbeComplete
 {
     internal static class Commands
     {
-        private static readonly Regex ReDeclHead =
-            new Regex(@"^(?:Dim|Const|Static|Private|Public|Global|ReDim)\b",
-                RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
-        private static readonly Regex ReProcHead =
-            new Regex(@"^(?:Sub|Function|Property)\b",
-                RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
         /// <summary>Ctrl+Shift+Enter：在当前行上方插一行，缩进跟着当前行走。</summary>
         public static bool InsertLineAbove(VbeBackend be)
         {
@@ -245,59 +237,13 @@ namespace VbeComplete
             return done > 0;
         }
 
-        /// <summary>Ctrl+Shift+↑：落到本过程里【最后一个声明行】的行尾；
-        /// Ctrl+Shift+↓：跳到过程收尾的空白行。
-        /// </summary>
-        public static bool CtrlNavJump(VbeBackend be, int dir)
-        {
-            var snap = be.Snapshot();
-            if (snap == null) return false;
-            string text = be.ModuleText();
-            if (text == null) return false;
-
-            var lines = Parser.SplitLines(text);
-            var procs = Parser.ExtractProcedures(text);
-            var proc = Parser.ProcOfLine(procs, snap.Line);
-            int start = proc?.StartLine ?? 1;
-            int end = proc?.EndLine ?? lines.Length;
-
-            if (dir < 0)
-            {
-                int target = -1;
-                for (int i = snap.Line - 1; i >= start; i--)
-                {
-                    if (i - 1 < 0 || i - 1 >= lines.Length) break;
-                    string code = Parser.CodeOnly(lines[i - 1]).Trim();
-                    if (code.Length == 0) continue;
-                    if (ReDeclHead.IsMatch(code)) { target = i; break; }
-                    if (ReProcHead.IsMatch(code)) break;
-                }
-                if (target > 0) return be.CaretToLineEnd(target);
-                return false;   // 上面没有声明行：把键还回去，别让 Ctrl+Shift+↑ 变成"什么都不发生"
-            }
-
-            for (int i = snap.Line + 1; i <= end; i++)
-            {
-                if (i - 1 < 0 || i - 1 >= lines.Length) break;
-                string code = Parser.CodeOnly(lines[i - 1]).Trim();
-                if (code.Length == 0) return be.SetCaret(i, 1);
-            }
-            // 没有空白行：落到过程末尾
-            if (end >= 1) return be.CaretToLineEnd(Math.Max(1, end - 1));
-            return false;
-        }
-
         /// <summary>
-        /// `Ctrl+↑` / `Ctrl+↓`（**不带 Shift**）：过程内跳转，用户从 Python 版点名的两个键。
+        /// `Ctrl+↑` / `Ctrl+↓`：过程内跳转，用户从 Python 版点名的两个键。
         /// <para>↑：本过程里**最后一个 `Dim`** 语句的行尾（跨续行时落到语句结束行的行尾，
         /// 不会停在 `Dim a, _` 那一行）；↓：过程收尾行（`End Sub`）**上方最后一条代码**的行尾。</para>
         /// <para>光标不在任何过程里（模块声明区 / 两个过程之间 / 过程还没收尾）一律返回
         /// false —— 调用方把键原样还给系统（VBE 原生 `Ctrl+↑/↓` 是"跳到上/下一个过程"，
         /// 那是它自己的事）。判定不成立绝不吞键，这是全项目同一条规矩。</para>
-        /// <para>与 <see cref="CtrlNavJump"/>（带 Shift 的那一组）的区别：那一组的 `↑` 是
-        /// "光标**上方**最近的声明行"、`↓` 是"下方第一个**空白行**"；这一组问的是过程
-        /// 的**两端**——所以用户按不带 Shift 的组合时，拿到的必须是这两个端点，不能
-        /// 把两组实现混用。</para>
         /// </summary>
         public static bool CtrlProcJump(VbeBackend be, int dir)
         {

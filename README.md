@@ -86,8 +86,7 @@ pane**, and its message loop costs nothing when idle.
   handled as a block. The numpad `/` and `Ctrl+Shift+/` count too ·
   `Ctrl+D` duplicate · `Ctrl+K` delete ·
   `Ctrl+Shift+Enter` insert above · `Ctrl+↑/↓` jump to the last `Dim` line / to the last code
-  line above `End Sub` · `Ctrl+Shift+↑/↓` jump to the nearest declaration above / the first
-  blank line below ·
+  line above `End Sub` ·
   `Ctrl+Shift+L` **re-indent the whole module** (or just the selection when it spans lines). Only
   leading whitespace is rewritten — not a single character inside a line — so the worst case is a
   wrong indent, a few `Ctrl+Z` away.
