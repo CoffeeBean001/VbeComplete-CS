@@ -1642,6 +1642,7 @@ namespace VbeComplete
                 "        setValidity ActiveCell, \"c\"\n" +
                 "    End If\n" +
                 "    ra\n" +
+                "    n7 = Selection.End(xlUp)\n" +
                 "End Sub\n";
 
             // ★v154：无 Option Explicit 的隐式变量是**模块私有**的 —— 另一个标准模块
@@ -1727,6 +1728,12 @@ namespace VbeComplete
             //   它只是代码里 `Range("d2")` 调用过一次的宿主函数。
             sprobe("无 Option Explicit 时调用名不进变量池（ra| 不冒 Range）", "Sheet1", 6,
                 "    ra", 7, true, new[] { "RaiseEvent" }, new[] { "Range" });
+            // v155：宿主枚举常量（xlUp / vbYes / mso*）不进池 —— PY 的 _RE_BUILTIN_CONST
+            sprobe("宿主枚举常量不进池（xlU| 不冒 xlUp）", "Sheet1", 6,
+                "    xlU", 8, null, null, new[] { "xlUp" });
+            // v155：宿主全局对象（Selection / ActiveSheet）不进池
+            sprobe("宿主对象名不进池（Sele| 不冒 Selection）", "Sheet1", 6,
+                "    Sele", 9, null, null, new[] { "Selection" });
 
             // ---- 2c. 隐式变量的可见范围 / Type 成员 ----
             sprobe("隐式变量不跨模块泄露（Sheet1 里 sec| 不冒模块2 的 secretVar）", "Sheet1", 6,

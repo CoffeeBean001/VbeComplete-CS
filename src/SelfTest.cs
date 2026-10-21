@@ -936,6 +936,39 @@ End Sub
             Ok("free/Let 数组赋值仍算变量", msO.FreeIdents.Contains("arr"),
                 string.Join(",", msO.FreeIdents));
 
+            // ---- v155：宿主对象名 / 枚举常量不进池（对齐 PY 的两道闸）----
+            const string hostSample = "Sub T()\r\n" +
+                                      "    Set rng = Range(\"A1\")\r\n" +
+                                      "    n1 = Cells(1, 1).Value\r\n" +
+                                      "    If n1 = xlUp Then n1 = vbYes\r\n" +
+                                      "    Set ws = ActiveSheet\r\n" +
+                                      "End Sub\r\n";
+            var msH = Scope.Analyze("M", hostSample);
+            Ok("host/Range / Cells / ActiveSheet 不进池",
+                !msH.FreeIdents.Contains("Range") && !msH.FreeIdents.Contains("Cells") &&
+                !msH.FreeIdents.Contains("ActiveSheet"),
+                string.Join(",", msH.FreeIdents));
+            Ok("host/枚举常量 xlUp / vbYes 不进池",
+                !msH.FreeIdents.Contains("xlUp") && !msH.FreeIdents.Contains("vbYes"),
+                string.Join(",", msH.FreeIdents));
+            Ok("host/赋值目标 rng / ws 照常收",
+                msH.FreeIdents.Contains("rng") && msH.FreeIdents.Contains("ws"),
+                string.Join(",", msH.FreeIdents));
+
+            // 例外：在**本模块里赋过值**的同名照常按变量收（`range = 1` 这种怪用法）
+            var msH2 = Scope.Analyze("M", "Sub T()\r\n    range = 1\r\n    n2 = range * 2\r\nEnd Sub\r\n");
+            Ok("host/被赋过值的同名照常收", msH2.FreeIdents.Contains("range"),
+                string.Join(",", msH2.FreeIdents));
+
+            // ---- v155：隐式变量只在"首次出现的过程"里可见（PY 的 scope="proc"）----
+            const string twoProcs = "Sub A()\r\n    num = 1\r\nEnd Sub\r\n\r\nSub B()\r\n    nu\r\nEnd Sub\r\n";
+            var msP = Scope.Analyze("M", twoProcs);
+            Ok("free/隐式变量在本过程可见", msP.Visible("A").ContainsKey("num"),
+                string.Join(",", msP.Visible("A").Keys));
+            Ok("free/隐式变量不跨过程泄露（B 里看不见 A 的 num）",
+                !msP.Visible("B").ContainsKey("num"),
+                string.Join(",", msP.Visible("B").Keys));
+
             // ---- v154：隐式变量是**模块私有**的，不能跨模块泄露 ----
             var otherA = Scope.Analyze("A", "Sub T()\r\n    foo = 1\r\nEnd Sub\r\n");
             var beCross = new FakeBackend

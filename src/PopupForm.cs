@@ -198,7 +198,7 @@ namespace VbeComplete
 
             if (pt <= 0) pt = 10;
             if (pt < 8) pt = 8;
-            if (pt > 28) pt = 28;
+            if (pt > 24) pt = 24;           // 与 PY 版 MAX_FONT_SIZE 一致（原来 28 太大）
 
             if (string.IsNullOrWhiteSpace(face)) face = PickFace(vbeFace);
             return CreateFont(face.Trim(), pt);
@@ -224,7 +224,11 @@ namespace VbeComplete
                         if (pt <= 0)
                         {
                             object h = k.GetValue("FontHeight");
-                            try { if (h != null) pt = Convert.ToSingle(h); } catch { }
+                            // ★v155：FontHeight 是**像素**，不是点。以前直接
+                            //   Convert.ToSingle 当点用 —— 96dpi 下等于放大了 4/3，
+                            //   于是"候选窗字体比 VBE 编辑器大一圈"（用户对照 PY
+                            //   版的观感就是这么来的）。这里换算成点再用。
+                            try { if (h != null) pt = PxToPt(Convert.ToSingle(h)); } catch { }
                         }
                         if (!string.IsNullOrEmpty(face) && pt > 0) break;
                     }
@@ -232,6 +236,23 @@ namespace VbeComplete
                 catch { }
             }
             return face;
+        }
+
+        /// <summary>
+        /// 像素 -> 点。VBE 注册表里的 <c>FontHeight</c> 是像素（本机 14），
+        /// 而 Font 构造只要点。96dpi 下 1pt = 4/3 px，直接当点用会大 33%。
+        /// 按屏幕 DPI 换算，取不到就按 96 算（PY 版同样用 px*72/96 兜底）。
+        /// </summary>
+        private static float PxToPt(float px)
+        {
+            float dpi = 96f;
+            try
+            {
+                using (var g = Graphics.FromHwnd(IntPtr.Zero))
+                    dpi = g.DpiY > 0 ? g.DpiY : 96f;
+            }
+            catch { }
+            return px * 72f / dpi;
         }
 
         /// <summary>
@@ -243,9 +264,15 @@ namespace VbeComplete
         {
             if (!string.IsNullOrEmpty(vbeFace))
             {
-                string baseFace = StripWeight(vbeFace.Trim());
+                string raw = vbeFace.Trim();
+                // ★v155：仍然**先去字重**（"JetBrains Mono Light" -> "JetBrains Mono"）。
+                //   试过优先用原样族名，结果 GDI+ 对 "… Light" 这种名字时灵时不灵
+                //   （bin 版解析成 JetBrains Mono、发布版解析成 Light），一旦解析不到
+                //   就会 fallback 成**比例字体** —— 候选窗里所有名字立刻歪掉。
+                //   WinForms 的 Font 本来也只有 Regular/Bold/Italic 三档，拿不到 Light。
+                string baseFace = StripWeight(raw);
                 if (!IsUgly(baseFace) && FamilyExists(baseFace)) return baseFace;
-                if (!IsUgly(vbeFace) && FamilyExists(vbeFace)) return vbeFace;
+                if (!IsUgly(raw) && FamilyExists(raw)) return raw;
             }
             foreach (var f in PrettyFaces) if (FamilyExists(f)) return f;
             return "Courier New";

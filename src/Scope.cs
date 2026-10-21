@@ -46,6 +46,15 @@ namespace VbeComplete
         /// 凭"代码里没写 Dim"就剔除会把 UserForm 上的按钮名全删掉。</summary>
         public List<string> FreeIdents = new List<string>();
 
+        /// <summary>
+        /// 隐式变量**首次出现**所在的过程（ScopeKey；null = 模块级 / 过程外）。
+        /// <para>★v155（对齐 PY 版默认的 scope="proc"）：VBA 里未声明变量的作用域
+        /// 就是它首次出现的过程 —— A 过程里 `num = 1`、B 过程里也写 `num`，那是
+        /// 两个变量。把 A 的那个提示到 B 去，等于教用户写一行运行时报错的代码。</para>
+        /// </summary>
+        public readonly Dictionary<string, string> FreeIdentProc =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
         /// <summary>模块头有没有 `Option Explicit`（= 强制声明变量）。</summary>
         public bool OptionExplicit;
 
@@ -94,7 +103,15 @@ namespace VbeComplete
                 int rank = d.Proc != null ? 4 : 3;
                 Put(map, d.Name, rank);
             }
-            foreach (var n in FreeIdents) Put(map, n, 2);
+            foreach (var n in FreeIdents)
+            {
+                // 隐式变量只在"它首次出现的过程"里可见（过程外的那些全模块可见）
+                string p;
+                if (FreeIdentProc.TryGetValue(n, out p) && !string.IsNullOrEmpty(p) &&
+                    !string.Equals(p, cur, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                Put(map, n, 2);
+            }
             return map;
         }
 
@@ -194,6 +211,54 @@ namespace VbeComplete
             @"^[ \t]*End[ \t]+(?:Type|Enum)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         private static readonly Regex ReIdent = new Regex(Id, RegexOptions.Compiled);
+
+        // ---- v155：与 PY 版 _RE_IMP_ASSIGN / _RE_IMP_FOR / _RE_IMP_FOR_EACH 等价 ----
+        // 只认**写入**（赋值目标、循环变量）。"只读用法"另走宽扫描，靠下面两张名单压噪音。
+        private static readonly Regex ReImpAssign = new Regex(
+            @"^[ \t]*(?:Let[ \t]+|Set[ \t]+)?(" + Id + @")\s*(?:\([^()]*\))?\s*=(?!=)",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex ReImpForEach = new Regex(
+            @"^[ \t]*For[ \t]+Each[ \t]+(" + Id + @")\s+In\b",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex ReImpFor = new Regex(
+            @"^[ \t]*For[ \t]+(" + Id + @")\s*=",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        /// <summary>
+        /// Office / VBA 宿主的**全局对象与集合**名。它们不是用户变量，裸用也不该进
+        /// 候选池（`Range("A1")`、`ActiveSheet.UsedRange` 用户天天写，收进池子就是噪音）。
+        /// 名单与 PY 版 `_IMPLICIT_STOPWORDS` 里的宿主部分对齐。
+        /// </summary>
+        private static readonly HashSet<string> HostObjectNames = new HashSet<string>(
+            StringComparer.OrdinalIgnoreCase)
+        {
+            "application", "worksheetfunction", "activeworkbook", "activesheet", "activecell",
+            "selection", "range", "cells", "worksheets", "workbooks", "sheets", "charts",
+            "chartobjects", "thisworkbook", "rows", "columns", "activewindow", "err", "debug",
+            "names", "windows", "shapes", "pages", "menubar", "dialogs", "commandbars",
+        };
+
+        private static bool IsHostObjectName(string name) =>
+            !string.IsNullOrEmpty(name) && HostObjectNames.Contains(name);
+
+        /// <summary>
+        /// 宿主类型库的枚举常量：`vbYes` / `xlUp` / `msoTrue` / `wdAlignParagraphLeft`。
+        /// 判据与 PY 版 `_RE_BUILTIN_CONST = ^(?:vb|xl|mso|db|wd|pp|ol|ac|wpp)[A-Z]` 一致：
+        /// 前缀全小写、紧跟一个大写字母。用户口径"枚举不要作为提示词"—— 这就是那道闸。
+        /// </summary>
+        private static readonly string[] HostEnumPrefixes =
+            { "vb", "xl", "mso", "db", "wd", "pp", "ol", "ac", "wpp" };
+
+        private static bool IsHostEnumConst(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+            foreach (var p in HostEnumPrefixes)
+                if (name.Length > p.Length &&
+                    name.StartsWith(p, StringComparison.Ordinal) &&
+                    char.IsUpper(name[p.Length]))
+                    return true;
+            return false;
+        }
 
         // `Set c = New Cls` —— 没写 `Dim c As Cls` 时，这条是唯一的类型线索
         private static readonly Regex ReSetNew = new Regex(
@@ -422,11 +487,34 @@ namespace VbeComplete
                 }
             }
 
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            bool inFreeTypeBlock = false;              // Type 块里的成员不能当裸名（只能 p.X 访问）
+            // ---- v155（对齐 PY 的 _implicit_names_in_stmt）：先扫"被写入"的名字 ----
+            // 【为什么需要】PY 版的隐式变量分两路：写入（赋值目标 / For / For Each）
+            // 是**精确**的，只有"只读用法"才走宽扫描。宽扫描里它靠三张名单压噪音：
+            // 宿主对象名（range/cells/…）、枚举常量前缀（vb*/xl*/mso*…）、
+            // 和一个"前导词"黑名单（as/new/lib/alias/…）。
+            //
+            // CS 之前只有一个"全量标识符"，于是 Worksheet 里 `Range("d2")` 和
+            // 实参 `xlUp` 都会变成"变量候选"——用户对照 PY 版一眼就看出来了。
+            // 这里补上同样的三道闸，并且保留一条例外：只要这个名字在**本模块里
+            // 被赋过值**（`range = 1` 这种怪用法），照样按变量收。
+            var written = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var raw in lines)
             {
-                string code = Parser.CodeOnly(raw);
+                string cw = Parser.CodeOnly(raw);
+                if (cw.Length == 0) continue;
+                Match mw = ReImpForEach.Match(cw);
+                if (!mw.Success) mw = ReImpFor.Match(cw);
+                if (!mw.Success) mw = ReImpAssign.Match(cw);
+                if (!mw.Success) continue;
+                string nw = Clean(mw.Groups[1].Value);
+                if (nw.Length > 0) written.Add(nw);
+            }
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            bool inFreeTypeBlock = false;              // Type 块里的成员不能当裸名（只能 p.X 访问）
+            for (int ln = 0; ln < lines.Length; ln++)
+            {
+                string code = Parser.CodeOnly(lines[ln]);
                 if (code.Length == 0) continue;
                 // `Attribute VB_Name = "模块1"` 只出现在导出/导入的源码里：
                 // 里面的名字不是变量（VBE 的 CodeModule 里看不到这些行）。
@@ -491,6 +579,12 @@ namespace VbeComplete
                     if (PrevWordIs(code, m, "New")) continue;
                     // `&HFF` / `1E10`：名字其实是数字字面量的一部分
                     if (IsAfterNumber(code, m)) continue;
+                    // ★v155：宿主全局对象（Range / Cells / ActiveSheet…）与宿主枚举
+                    //   常量（vbYes / xlUp / msoTrue…）不是用户变量。除非本模块里
+                    //   给这个名字赋过值（`range = 1`），否则不收 —— 这正是 PY 版
+                    //   `_IMPLICIT_STOPWORDS` + `_RE_BUILTIN_CONST` 两道闸的作用。
+                    if (!written.Contains(w) && (IsHostObjectName(w) || IsHostEnumConst(w)))
+                        continue;
                     if (declared.Contains(w)) continue;
                     if (localNames.Contains(w)) continue;             // 别处的局部，不能漏过来
 
@@ -510,7 +604,14 @@ namespace VbeComplete
                     //   那些（控件名 / Application / 隐式对象）—— 它们本来就不用声明。
                     if (HonorExplicit && ms.OptionExplicit && !host) continue;
 
-                    if (seen.Add(w)) ms.FreeIdents.Add(w);
+                    if (seen.Add(w))
+                    {
+                        ms.FreeIdents.Add(w);
+                        // ★v155（对齐 PY 的 scope="proc"）：未声明变量的作用域是它
+                        // **首次出现的过程** —— VBA 里 A 过程的 num 和 B 过程的 num
+                        // 是两个独立变量，把 A 的提示到 B 去等于教用户写错代码。
+                        ms.FreeIdentProc[w] = ln < owner.Length ? owner[ln] : null;
+                    }
                 }
             }
             return ms;
