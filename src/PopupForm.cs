@@ -9,7 +9,8 @@
 //   4. 宽度按内容定（跟 VBE 的成员列表一样"够用就好"），上限 640px。
 //
 // ★v139 外观向 VBE 自带列表看齐（真机截图为据，见 .workbuddy/memory 里的记录）：
-//   * 字体 = 编辑器字体、**同样的字号**（原来小一号；VBE 自己就是编辑器字号）；
+//   * 字体 = 编辑器字体、**比 VBE 小一号**（v141 用户口径：14pt 的编辑器配 13pt 列表，
+//     一样大反而显得"顶"；`POPUP_FONT_SIZE` 可改）；
 //   * 白底黑字，命中的字母只**加粗**，不再涂红（VBE 只上黑字）；
 //   * 行高 = 字高 + 4；
 //   * 边框 1px 立体：上/左 #F0F0F0，下/右 #646464（截图逐像素取的色）；
@@ -172,11 +173,12 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 字体 = "好看 + 跟 VBE 一样大"。
+        /// 字体 = "好看 + 比 VBE 小一号"。
         ///   * 名字：`POPUP_FONT` 优先；否则用 VBE 编辑器字体（去掉 Light/Thin 字重）；
         ///     再否则从 <see cref="PrettyFaces"/> 里挑第一个装了的；
         ///   * 字号：`POPUP_FONT_SIZE` 正数 = 直接用它，负数 = 比 VBE 小几号，
-        ///     0/没写 = 跟 VBE 一样（默认）。注册表读不到就退回 Courier New 10。
+        ///     0/没写 = **比 VBE 小一号**（v141 用户口径：一样大太大）。
+        ///     注册表读不到就退回 Courier New 10。
         /// </summary>
         private static Font BuildFont(out float pt)
         {
@@ -188,7 +190,7 @@ namespace VbeComplete
 
             if (want > 0) pt = (float)want;
             else if (want < 0) pt = vbePt + (float)want;
-            else pt = vbePt;
+            else pt = vbePt - 1;            // ★v141：默认比 VBE 小一号
 
             if (pt <= 0) pt = 10;
             if (pt < 8) pt = 8;

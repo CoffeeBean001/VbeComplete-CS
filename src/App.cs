@@ -43,6 +43,7 @@ namespace VbeComplete
         private volatile bool _codePaneFocused;
         private volatile bool _popupVisible;
         private long _lastYieldLog;               // "让位"日志限速（每 2 秒最多一条）
+        private long _lastJumpLog;                // "跳行不弹"日志限速（每 2 秒最多一条）
         private volatile bool _running = true;
         private volatile Snapshot _hookSnap;      // 最近一次轮询拿到的快照（钩子线程只读）
         private volatile int _pendingKeys;        // 按了"可能写字"的键、文档却没变（输入法组字）
@@ -865,6 +866,18 @@ namespace VbeComplete
                     // 换模块 = 不是打字，只是切了代码窗，不该弹
                     bool modSwitched = !string.Equals(snap.Module, _lastModName, StringComparison.OrdinalIgnoreCase)
                                        && _lastSnap != null;
+
+                    // ★v141：**行号变了 ⇒ 光标是被"搬"过去的，不是在打字。**
+                    //   用户报的 bug（"有时候鼠标单击到某个变量名就自动弹提示框"）：
+                    //   鼠标点到另一行上的变量时，快照的"行号 + 行文本"全变了，
+                    //   看起来和敲了一个字一模一样；而"最近 1.2 秒按过键"拦不住
+                    //   它（用户常常打完字顺手点一下变量看定义）。方向键上下 /
+                    //   Ctrl+Home / 点滚动条也一样。
+                    //   真打字时行号绝不会变 —— 回车换到的是空行，那种位置本来
+                    //   也没词可提示，所以这条不会误伤正常输入。
+                    bool lineJumped = _lastSnap != null && snap.Line != _lastSnap.Line;
+                    int prevLine = _lastSnap == null ? 0 : _lastSnap.Line;
+
                     _lastSnap = snap;
                     _lastModName = snap.Module;
 
@@ -878,9 +891,21 @@ namespace VbeComplete
                         bool keyTriggered = !RequireKeyTrigger
                                             || _pendingKeys > 0
                                             || Environment.TickCount64 - _lastKeyTs <= KeyTriggerWindowMs;
-                        if (!keyTriggered)
+                        if (!Rules.AutoTriggerWanted(true, modSwitched, keyTriggered, lineJumped))
                         {
                             if (_popupVisible) _eng.Hide();
+                            // ★只有"本来会弹、因为跳行才没弹"这一种记一笔（限速 2 秒）。
+                            //   用户再报"点了变量弹窗"时，日志里能直接看出是漏判还是别的原因。
+                            if (lineJumped && keyTriggered)
+                            {
+                                long now = Environment.TickCount64;
+                                if (now - _lastJumpLog > 2000)
+                                {
+                                    _lastJumpLog = now;
+                                    Log.Write("不弹：光标跳行 L{0}->L{1}（鼠标单击 / 方向键），不是打字",
+                                        prevLine, snap.Line);
+                                }
+                            }
                         }
                         else
                         {

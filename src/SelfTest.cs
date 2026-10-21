@@ -50,6 +50,7 @@ namespace VbeComplete
                 TestMember();
                 TestEditing();
                 TestIndent();
+                TestAutoTrigger();
                 TestSnippets();
             }
             catch (Exception e)
@@ -1035,6 +1036,31 @@ End Sub
                 outp.Add(res.Ws[i] + lines[i].Substring(n));
             }
             return string.Join("\n", outp);
+        }
+
+        // ------------------------------------------------------------------
+        // 自动弹出的总判据（v141）：**行号变了就不能弹**
+        // 起因：用户报"有时候鼠标单击到某个变量名，它会自动弹提示词框"。
+        // 单击另一行上的变量时，快照的"行号 + 行文本"全变了，和"敲了一个字"
+        // 长得一模一样；拦不住它的正是"最近 1.2 秒按过键"那条（打完字顺手点一下）。
+        // ------------------------------------------------------------------
+        private static void TestAutoTrigger()
+        {
+            // 正常打字：同行、内容变了、刚按过键 -> 弹
+            Ok("auto-trigger/同行打字弹",
+                Rules.AutoTriggerWanted(true, false, true, false));
+            // 鼠标单击另一行的变量（或方向键上下）：行号跳了 -> 不弹
+            Ok("auto-trigger/行号跳了不弹",
+                !Rules.AutoTriggerWanted(true, false, true, true));
+            // 右键粘贴 / 拖拽 / 别的程序改模块：最近没按键 -> 不弹
+            Ok("auto-trigger/没按键不弹",
+                !Rules.AutoTriggerWanted(true, false, false, false));
+            // 切了代码窗（哪怕刚按过键）-> 不弹
+            Ok("auto-trigger/切模块不弹",
+                !Rules.AutoTriggerWanted(true, true, true, false));
+            // 什么都没变 -> 不弹
+            Ok("auto-trigger/没变化不弹",
+                !Rules.AutoTriggerWanted(false, false, true, false));
         }
 
         // ------------------------------------------------------------------

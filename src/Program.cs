@@ -859,6 +859,28 @@ namespace VbeComplete
                         "ret=" + r + " [" + f1 + "][" + f2 + "][" + f3 + "][" + f4 + "][" + f6 + "]");
                     dropFrom();
                 }
+
+                // ---- 14. v141：光标跳到别的行（鼠标单击 / 方向键）不许弹窗 ----
+                // 用户报的 bug："有时候鼠标单击到某个变量名，它会自动弹提示词框。"
+                // 这条验的是那个判据**依赖的事实**：真机上"光标换行"确实会让
+                // Snapshot.Line 变掉（判据靠它把鼠标操作和打字分开）。
+                {
+                    var blk = new[] { "Sub VbcJump()", "    n = 1", "    n = 2", "End Sub" };
+                    int at = append(blk);
+                    be.SetCaret(at + 1, 1);                       // 模拟"刚才在这一行打字"
+                    be.InvalidateSnapshot();
+                    var a = be.Snapshot();
+                    // 模拟鼠标单击下一行那个变量名的词尾
+                    be.SetCaret(at + 2, (be.LineAt(at + 2) ?? "").Length + 1);
+                    be.InvalidateSnapshot();
+                    var b = be.Snapshot();
+                    bool jumped = a != null && b != null && b.Line != a.Line;
+                    bool want = Rules.AutoTriggerWanted(true, false, true, jumped);
+                    check("跳行不弹（鼠标单击 / 方向键）", jumped && !want,
+                        "L" + (a?.Line ?? -1) + "->L" + (b?.Line ?? -1) +
+                        " jumped=" + jumped + " want=" + want);
+                    dropFrom();
+                }
             }
             finally
             {

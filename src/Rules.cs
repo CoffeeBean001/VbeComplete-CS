@@ -467,5 +467,25 @@ namespace VbeComplete
 
         /// <summary>把行尾的空白去掉（比较"有没有实质变化"时用）。</summary>
         public static string Rstrip(string s) => (s ?? "").TrimEnd(' ', '\t', '\r', '\n');
+
+        /// <summary>
+        /// 自动弹出候选窗的总判据（v141）。四个条件同时成立才弹：
+        ///   1. <paramref name="changed"/> —— 快照真的变了；
+        ///   2. <paramref name="modSwitched"/> 为假 —— 只是切了代码窗，不是打字；
+        ///   3. <paramref name="keyTriggered"/> —— 最近按过键（鼠标右键粘贴、拖拽、
+        ///      别的程序用 COM 改模块都不算）；
+        ///   4. <paramref name="lineJumped"/> 为假 —— **光标没有跳到别的行**。
+        ///
+        /// ★第 4 条是 v141 修的用户报的 bug："有时候鼠标单击到某个变量名，它会
+        ///   自动弹提示词框。" 鼠标单击另一行上的变量时，快照的"当前行 + 行文本"
+        ///   全变了，看起来和"刚敲了一个字"一模一样；而"最近 1.2 秒按过键"这个
+        ///   判据又拦不住它（用户往往是打完字顺手点一下）。真打字时行号绝不会变
+        ///   （回车换到的是空行，那种位置本来也没词可提示），方向键上下、Ctrl+Home
+        ///   这类"只移动光标"的操作则一定会变 —— 所以行号一变就当"光标移动"处理：
+        ///   **只收不弹**。
+        /// </summary>
+        public static bool AutoTriggerWanted(bool changed, bool modSwitched,
+            bool keyTriggered, bool lineJumped)
+            => changed && !modSwitched && keyTriggered && !lineJumped;
     }
 }

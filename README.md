@@ -42,16 +42,19 @@ pane**, and its message loop costs nothing when idle.
   better one. `Ctrl+Space` still asks for our list on purpose; `MEMBER_POPUP=1` restores the old
   behaviour (narrowed to the declared type when `Dim c As Cls1` / `Set c = New Cls1` is in the
   code, full project pool otherwise).
-- **Popup styled after the VBE's own list** (v139, fonts and selection updated in v140): white
-  background, black text, one icon per row, a 1 px raised border, and width that follows the longest
-  candidate (640 px cap), 15 rows max; matched letters are **bold** rather than coloured. The font
-  follows the VBE editor itself (reads `FontFace` / `FontHeight` from `VBA\7.1 → 7.0 → 6.0`) with
-  `Light` / `Thin` weight suffixes stripped — thin weights at small sizes are exactly what looked
-  "flat" — falling back to JetBrains Mono / Cascadia Mono / Consolas when that read fails or yields
-  a stock face like `Courier New`. Size defaults to **the same as the VBE**; `POPUP_FONT_SIZE = -1`
-  makes it one size smaller. The selected row is a VBE-style **deep blue bar with white text**
-  (`POPUP_SEL_BG`), and matched letters switch to a warm yellow on that bar. Owner-drawn and it
-  **never steals focus**.
+- **Popup styled after the VBE's own list** (v139; fonts, colours and size updated in v140/v141):
+  white background, black text, one icon per row, a 1 px raised border, and width that follows the
+  longest candidate (640 px cap), 15 rows max; matched letters are **bold** rather than coloured.
+  The font follows the VBE editor itself (reads `FontFace` / `FontHeight` from `VBA\7.1 → 7.0 → 6.0`)
+  with `Light` / `Thin` weight suffixes stripped — thin weights at small sizes are exactly what
+  looked "flat" — falling back to JetBrains Mono / Cascadia Mono / Consolas when that read fails or
+  yields a stock face like `Courier New`. The size defaults to **one point smaller than the VBE**
+  (14 pt editor → 13 pt list); `POPUP_FONT_SIZE = -2` goes two smaller, a positive value sets it
+  outright. The selected row is a VBE-style **deep blue bar with white text** (`POPUP_SEL_BG`), and
+  matched letters switch to a warm yellow on that bar. Owner-drawn and it **never steals focus**.
+- **Popups only while you are actually typing**: a mouse click on a variable on another line (or an
+  arrow-key move) only moves the caret and no longer pops the list — the check is "the caret line
+  changed, so this is not typing", and typing never changes the line number.
 - **Never fights the VBE for space**: it yields the moment VBE's own member list appears — even if
   ours is already on screen, it is taken down within one poll tick — and moves
   below VBE's parameter-info popup instead of covering it.
@@ -93,7 +96,7 @@ pane**, and its message loop costs nothing when idle.
   tool; they are fully independent of the Python edition, sharing no file with it.
 - Every shortcut follows one rule: **if the action fails, the original key is replayed**, so keys
   are never silently swallowed.
-- 339 self-checks (fuzzy matching, scopes, `Option Explicit`, Chinese identifiers, member completion,
+- 344 self-checks (fuzzy matching, scopes, `Option Explicit`, Chinese identifiers, member completion,
   highlight splitting, call-site detection, `As`/`New` suppression, line-by-line re-indent) plus
   word-DB, snippet-store, icon/autostart and off-screen rendering checks, and six live probes
   (including `Ctrl+Shift+L`) keep the logic honest.
