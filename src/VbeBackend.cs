@@ -487,6 +487,98 @@ namespace VbeComplete
         }
 
         /// <summary>
+        /// 一次读回连续 <paramref name="count"/> 行（VBE 用 CRLF 拼好）。
+        /// ★v145：Ctrl+/ 改走"一次读整段"——逐行 `Lines(i,1)` 是 count 次跨进程往返，
+        ///   选 30 行就白白多付 29 次。读失败返回 null，调用方按"拿不到"处理。
+        /// </summary>
+        public string LinesBlock(int from, int count)
+        {
+            if (from < 1 || count < 1) return null;
+            try
+            {
+                dynamic vbe = ComCtx.Vbe();
+                if (ReferenceEquals(vbe, null)) return null;
+                object cp = vbe.ActiveCodePane;
+                if (ReferenceEquals(cp, null)) return null;
+                return Convert.ToString(((dynamic)cp).CodeModule.Lines(from, count));
+            }
+            catch (Exception e) { Fail(e); return null; }
+        }
+
+        // ==================================================================
+        // VBE 内置命令 —— "设置注释块"/"解除注释块"
+        //
+        // ★v145：这两个 ID 是 VBE 自己的命令控件 ID，**与 VBE 的语言版本无关**
+        //   （中文版叫"设置注释块/解除注释块"，英文版叫 Comment Block/Uncomment
+        //   Block，ID 都是 192 / 2552）。所以绝不要按 Caption 找控件 ——
+        //   按名字找在别的语言版本上必然找不到。
+        //
+        // 真机实测（Excel 365 / VBE 7.1）：
+        //   · Execute() 一次 ≈ 3.5ms，我们逐行 ReplaceLine 三行 ≈ 15ms
+        //   · 执行后**选区原样保留**，不用再 SetSelection 摆回去
+        //   · 改动进 VBE 自己的 Undo 栈，一次 Ctrl+Z 就整块回来
+        //   · FindControl 首次 18ms、之后 <1ms —— 必须缓存，否则每次按都白付 18ms
+        // ==================================================================
+        public const int CmdCommentBlock = 192;
+        public const int CmdUncommentBlock = 2552;
+        private const int MsoControlButton = 1;
+
+        private object _cmdComment;     // 缓存住的 CommandBarControl（只在 UI 线程用）
+        private object _cmdUncomment;
+
+        /// <summary>
+        /// 直接执行 VBE 自己的命令。返回 false 表示"没做成"——调用方**必须**回退到
+        /// 手写路径，绝不能拿 true 当"大概成了"（吞键却什么都没发生是最坏的结果）。
+        /// </summary>
+        public bool RunVbeCommand(int id)
+        {
+            for (int attempt = 0; attempt < 2; attempt++)
+            {
+                try
+                {
+                    object ctl = id == CmdCommentBlock ? _cmdComment : _cmdUncomment;
+                    if (ctl == null)
+                    {
+                        dynamic vbe = ComCtx.Vbe();
+                        if (ReferenceEquals(vbe, null)) return false;
+                        dynamic bars = vbe.CommandBars;
+                        if (ReferenceEquals(bars, null)) return false;
+                        // FindControl(Type, Id) —— 后面三个参数是可选的。
+                        ctl = bars.FindControl(MsoControlButton, id);
+                        if (ReferenceEquals(ctl, null)) return false;
+                        if (id == CmdCommentBlock) _cmdComment = ctl; else _cmdUncomment = ctl;
+                    }
+
+                    dynamic d = ctl;
+                    if (!d.Enabled)
+                    {
+                        // 命令控件存在、只是**当前上下文**不让用（VBE 不在前台 / 焦点
+                        // 不在代码窗时亲眼见过 Enabled=false）。缓存本身是好的，别丢 ——
+                        // 丢了下次还得再付一次 18ms 的 FindControl。
+                        // 交给调用方回退手写路径，两边结果必须一模一样。
+                        return false;
+                    }
+                    d.Execute();
+                    return true;
+                }
+                catch (Exception e)
+                {
+                    // 绝大多数是"VBE 关掉又打开、缓存的 IDispatch 已失效"。
+                    // 清缓存重取一次，第二次仍然失败才认输（并记日志）。
+                    DropCmdCache(id);
+                    if (attempt == 1) { Fail(e); return false; }
+                }
+            }
+            return false;
+        }
+
+        private void DropCmdCache(int id)
+        {
+            if (id == CmdCommentBlock) _cmdComment = null;
+            else if (id == CmdUncommentBlock) _cmdUncomment = null;
+        }
+
+        /// <summary>
         /// 把 text 写回第 lineNo 行。VBE 允许光标停在【模块最后一行的下一行】
         /// （一个尚不存在的"虚拟空行"）：那时 `Lines()` 读出来是空串、看着一切
         /// 正常，但 `ReplaceLine()` 会抛"无效的过程调用或参数"（Python 版真机

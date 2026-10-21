@@ -1105,6 +1105,54 @@ namespace VbeComplete
                         && f1[2].TrimStart().StartsWith("'", StringComparison.Ordinal)
                         && f2[1] == "    n = 1" && f2[2] == "    n = 2",
                         "加后=[" + f1[1] + "][" + f1[2] + "] 还原后=[" + f2[1] + "][" + f2[2] + "]");
+
+                    // 9. 用例 G：**40 行**批量注释 —— 验 v145 换上的"VBE 原生执行"
+                    //    在大选区上既不慢也不错。
+                    //    旧实现：40 次 Lines(i,1) + 40 次 ReplaceLine + 1 次 SetSelection
+                    //    = 81 次跨进程往返（真机 340ms 上下，用户就是这么感觉到"慢"的）；
+                    //    现在：1 次 Lines(from,n) + 1 次 Execute + 0 次还原（选区原生保留）。
+                    var many = new string[39];
+                    for (int i = 1; i <= 39; i++) many[i - 1] = "    v" + i + " = " + i;
+                    RebuildScaffold(app, be, at, "    v0 = 0", many);
+                    app.RunOnUi(() =>
+                    {
+                        be.ForceReloadModule();
+                        be.SetSelectionRange(at + 1, 1, at + 40, 200);
+                    });
+                    Thread.Sleep(300);
+                    SendCombo(app, Native.VK_OEM_2, ctrl: true);
+                    Thread.Sleep(900);
+                    string[] g1 = ReadLines(app, be, at, 42);
+                    int quoted = 0;
+                    for (int i = 1; i <= 40; i++)
+                        if (g1[i].TrimStart().StartsWith("'", StringComparison.Ordinal)) quoted++;
+                    SendCombo(app, Native.VK_OEM_2, ctrl: true);
+                    Thread.Sleep(900);
+                    string[] g2 = ReadLines(app, be, at, 42);
+                    int plain = 0;
+                    for (int i = 1; i <= 40; i++)
+                        if (!g2[i].TrimStart().StartsWith("'", StringComparison.Ordinal) && g2[i].Contains("v"))
+                            plain++;
+
+                    // 同一批 40 行，直接量"命令本身"的耗时（不掺键盘延迟）。
+                    long msSet = -1, msUnset = -1;
+                    app.RunOnUi(() =>
+                    {
+                        be.ForceReloadModule();
+                        be.SetSelectionRange(at + 1, 1, at + 40, 200);
+                        long t = Environment.TickCount64;
+                        Commands.ToggleComment(be);
+                        msSet = Environment.TickCount64 - t;
+                        long t2 = Environment.TickCount64;
+                        Commands.ToggleComment(be);
+                        msUnset = Environment.TickCount64 - t2;
+                    });
+
+                    check("G 40 行批量注释（一次 Execute，不再逐行）",
+                        quoted == 40 && plain == 40 && msSet >= 0 && msSet < 200
+                        && g1[40].TrimStart().StartsWith("'", StringComparison.Ordinal),
+                        "注释 " + quoted + "/40 · 还原 " + plain + "/40 · 耗时 "
+                        + msSet + "ms/" + msUnset + "ms（旧实现约 340ms）");
                 }
                 catch (Exception e)
                 {
@@ -1163,7 +1211,9 @@ namespace VbeComplete
                         StringComparison.OrdinalIgnoreCase)) { head = i; break; }
                 }
                 if (head < 0) break;
-                for (int i = head + 1; i <= Math.Min(cnt, head + 40); i++)
+                // ★上限别卡太死：用例 G 的块有 42 行，原来写的是 head+40 —— 于是
+                //   找不到 End Sub、整个块留在用户模块里（cleanup 0 / restored False）。
+                for (int i = head + 1; i <= Math.Min(cnt, head + 500); i++)
                 {
                     if (string.Equals((be.LineAt(i) ?? "").Trim(), "End Sub",
                         StringComparison.OrdinalIgnoreCase)) { tail = i; break; }

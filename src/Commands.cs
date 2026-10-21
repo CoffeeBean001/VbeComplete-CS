@@ -72,6 +72,7 @@ namespace VbeComplete
         /// <summary>Ctrl+/：整行注释开关。有选区就逐行处理。</summary>
         public static bool ToggleComment(VbeBackend be)
         {
+            long t0 = Environment.TickCount64;      // 从进函数算起：读选区+读行+执行都算
             // ★v144：**不要用 Snapshot()**。它有一条"多行选区一律返回 null"的判据
             //   （见 VbeBackend.Snapshot 里 `if (sl != el) return null`），而 Ctrl+
             //   的典型用法恰恰是"选中一段代码批量注释"—— 于是用户每次按都被判成
@@ -93,13 +94,13 @@ namespace VbeComplete
             if (count > 0 && to > count) to = count;
             if (to < from) return false;
 
-            var lines = new List<string>();
-            for (int i = from; i <= to; i++)
-            {
-                string t = be.LineAt(i);
-                if (t == null) t = "";                 // 读失败就当空行，绝不中断整批
-                lines.Add(Rules.Rstrip(t));
-            }
+            // ★v145：整段**一次**读回来。原来是逐行 `be.LineAt(i)` —— 选 30 行就是
+            //   30 次跨进程往返，光是"读"就够用户感觉到卡。VBE 的 `Lines(from, n)`
+            //   一次就能把整段给你（CRLF 拼好），拆开用就行。
+            int n = to - from + 1;
+            string block = be.LinesBlock(from, n);
+            if (block == null) return false;
+            var lines = SplitBlock(block, n);
             if (lines.Count == 0) return false;
 
             // 全是注释 -> 取消；否则整段加注释。空行不参与"算不算注释"的判断。
@@ -113,6 +114,25 @@ namespace VbeComplete
             }
             if (!anyContent) return false;             // 全空白：根本没得注释，把键还回去
 
+            // ★v145：先请 VBE 自己动手 —— `FindControl(1, 192|2552).Execute()` 等价于
+            //   用户点"设置注释块 / 解除注释块"按钮。真机实测 3.5ms（手写逐行 3 行要
+            //   15ms，30 行差得更远），而且：选区原样保留（不用再 SetSelection 摆回去）、
+            //   改动进 VBE 自己的 Undo 栈（按一次 Ctrl+Z 整块回来）、空行处理与原生一致。
+            //   只有它拿不到控件时（老版本 VBE / 控件失效）才走下面的手写兜底。
+            long ts = Environment.TickCount64;
+            if (be.RunVbeCommand(allCommented
+                    ? VbeBackend.CmdUncommentBlock
+                    : VbeBackend.CmdCommentBlock))
+            {
+                if (Log.Enabled)
+                    Log.Write("Ctrl+/{0} {1} 行 @{2}：VBE 原生 Execute {3}ms，全程 {4}ms",
+                        allCommented ? "解除" : "注释", lines.Count, from,
+                        Environment.TickCount64 - ts, Environment.TickCount64 - t0);
+                return true;
+            }
+            Log.Write("Ctrl+/{0} {1} 行 @{2}：VBE 原生命令不可用，回退逐行手写",
+                allCommented ? "解除" : "注释", lines.Count, from);
+
             bool wrote = false;
             for (int i = 0; i < lines.Count; i++)
             {
@@ -125,8 +145,11 @@ namespace VbeComplete
                 }
                 else
                 {
-                    int indent = LeadingWs(l).Length;
-                    nl = l.Substring(0, indent) + "'" + l.Substring(indent);
+                    // ★v145：撇号加在**行首**（缩进之前），和 VBE 原生"注释块"按钮
+                    //   一个字都不差。原来加在缩进之后（`    'n = 1`）——虽然语义一样，
+                    //   但一旦原生路径可用/不可用来回切换，用户就会看到"有时 ' 在行首、
+                    //   有时在缩进后"这种毫无道理的区别。两条路径的产出必须完全相同。
+                    nl = "'" + l;
                 }
                 // 中途失败也继续写完：写一半停下会让文档卡在"部分注释"，比写完更糟。
                 if (be.ReplaceLineRaw(from + i, nl)) wrote = true;
@@ -277,6 +300,21 @@ namespace VbeComplete
             int i = 0;
             while (i < s.Length && (s[i] == ' ' || s[i] == '\t')) i++;
             return s.Substring(0, i);
+        }
+
+        /// <summary>
+        /// 把 `CodeModule.Lines(from, n)` 读回来的一整段拆成 n 行（行尾空白已去掉）。
+        /// ★VBE 用 CRLF 拼接；末尾是空行时 split 会少一个元素，所以**按 n 补齐**——
+        ///   "最后几行是空行"在注释块里极常见（选到 Sub 结尾那种），少一行就会
+        ///   把上一行的撇号加到错的偏移上。
+        /// </summary>
+        private static List<string> SplitBlock(string block, int n)
+        {
+            var parts = (block ?? "").Split(new[] { "\r\n" }, StringSplitOptions.None);
+            var list = new List<string>(n);
+            for (int i = 0; i < n; i++)
+                list.Add(i < parts.Length ? Rules.Rstrip(parts[i]) : "");
+            return list;
         }
     }
 }
