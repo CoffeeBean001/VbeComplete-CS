@@ -370,6 +370,19 @@ namespace VbeComplete
                 {
                     string w = Clean(m.Value);
                     if (w.Length == 0) continue;
+
+                    // ★v146：**前面紧挨着点号 = 成员访问**（`wsR.Cells` 里的 Cells、
+                    //   `Range.Value` 里的 Value、`Debug.Print` 里的 Print）—— 它不是
+                    //   "本模块的自由名字"，收进来就会被当成全工程可用的裸名：
+                    //   用户在任意模块打 `cell` 都会冒出 `Cells`。这就是 v146 用户
+                    //   报的"输入 cell 提示 cells，是不是泄露"—— 确实是泄露，
+                    //   泄露的是**别的模块里某个对象的成员名**。
+                    //   注意方向别搞反：`LooksLikeHostObject` 看的是"**后面**跟点号"
+                    //   （`CommandButton1.Caption` → 对象名要留），这里看的是"**前面**
+                    //   是点号"（→ 成员名要丢）。
+                    //   裸用 `Cells(1,1)` 仍然照收 —— 那是用户真这么写了，该提示。
+                    if (IsMemberAccess(code, m)) continue;
+
                     if (VbaBuiltins.IsKeyword(w)) continue;
                     if (declared.Contains(w)) continue;
                     if (localNames.Contains(w)) continue;             // 别处的局部，不能漏过来
@@ -390,6 +403,18 @@ namespace VbeComplete
                 }
             }
             return ms;
+        }
+
+        /// <summary>
+        /// 这个标识符是不是"点号后面的成员名"（`wsR.Cells` 里的 `Cells`）？
+        /// 只看紧邻的前一个非空白字符：是 `.` 就算成员，否则不算。
+        /// 不追类型、不认大小写 —— 判据纯语法，绝不猜。
+        /// </summary>
+        private static bool IsMemberAccess(string code, Match m)
+        {
+            int p = m.Index - 1;
+            while (p >= 0 && (code[p] == ' ' || code[p] == '\t')) p--;
+            return p >= 0 && code[p] == '.';
         }
 
         /// <summary>

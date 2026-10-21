@@ -683,6 +683,28 @@ End Sub
             Ok("explicit/Set 的对象名保留", host.FreeIdents.Contains("按钮"),
                 string.Join(",", host.FreeIdents));
 
+            // ---- 成员名（点号后面的）绝不进自由标识符池 ----
+            // ★v146 用户报："输入 cell 为什么会提示 cells，是不是泄露？"
+            //   他的代码里只有 `wsR.Cells(...)` —— 这是**成员访问**，不是自由变量。
+            //   旧版把点号后面的每个词都当标识符收进池子，于是全工程任何模块打
+            //   `cell` 都会冒出 `Cells`。同理 `Value` / `Print` / `Range` 全在漏。
+            const string memberSample =
+                "Sub T()\r\n    n = wsR.Cells(r, 1).Value\r\nEnd Sub\r\n";
+            var mem = Scope.Analyze("M", memberSample);
+            Ok("成员名不进池（wsR.Cells / .Value 都不收）",
+                !mem.FreeIdents.Contains("Cells") && !mem.FreeIdents.Contains("Value"),
+                string.Join(",", mem.FreeIdents));
+            Ok("对象名照收（wsR 后面跟点号 -> 是对象，要提示）",
+                mem.FreeIdents.Contains("wsR"),
+                string.Join(",", mem.FreeIdents));
+
+            // 反过来也要成立：用户**真的**裸写了 `Cells(1,1)`（Excel 里合法，
+            // 等价于 Application.Cells），那就该提示 —— 判据只认语法，不做类型推断。
+            const string bareSample = "Sub T()\r\n    n = Cells(1, 1)\r\nEnd Sub\r\n";
+            Ok("裸用 Cells(1,1) 仍然收（用户真这么写了）",
+                Scope.Analyze("M", bareSample).FreeIdents.Contains("Cells"),
+                string.Join(",", Scope.Analyze("M", bareSample).FreeIdents));
+
             // ---- 引擎层面：Option Explicit 的模块里，未声明名字不该出现在候选 ----
             var eng2 = new Engine { Recent = new Recent() };
             var be = new FakeBackend

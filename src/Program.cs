@@ -1601,10 +1601,18 @@ namespace VbeComplete
                 "\n" +
                 "Public s1 As String\n" +
                 "Public s2 As String\n";
+            // ★v146：故意让这个模块里只有 `wsR.Cells(...)` 这种**成员访问**。
+            //   旧版会把它拆成"wsR"和"Cells"两个自由标识符，Cells 就此进了全工程
+            //   的裸名池 —— 用户在**任何**模块打 `cell` 都会冒出 `Cells`。
+            const string modMem =
+                "Sub W()\n" +
+                "    n = wsR.Cells(1, 1).Value\n" +
+                "End Sub\n";
 
             var synth = new SyntheticBackend()
                 .Add("模块1", 1, modStd)
-                .Add("cls1", 2, modCls);
+                .Add("cls1", 2, modCls)
+                .Add("modMem", 1, modMem);
 
             // 说明, 模块, 行, 行文本, 光标显示列, 期望该弹?, 必须有, 不许有
             Action<string, string, int, string, int, bool?, string[], string[]> sprobe =
@@ -1696,6 +1704,13 @@ namespace VbeComplete
             // ---- 5. 类模块的 Public 成员不许混进别的模块的裸名池（用户 v137 第 3 条）----
             sprobe("类模块成员不进裸名池（模块1 里打 s|）", "模块1", 11,
                 "    s", 6, null, null, new[] { "s1", "s2" });
+            // ★v146 用户报："输入 cell 为什么会提示 cells，是不是泄露？"
+            //   modMem 里只有 `wsR.Cells(1, 1).Value` —— 全是成员访问。
+            //   在**另一个模块**里打 `cell` 时，候选里不许出现 Cells。
+            sprobe("成员名不进裸名池（打 cell 不冒 Cells）", "模块1", 11,
+                "    cell", 8, null, null, new[] { "Cells" });
+            sprobe("同一个词继续：打 ws 仍能提示对象名 wsR", "模块1", 11,
+                "    ws", 6, true, new[] { "wsR" }, null);
             // 对照：在 cls1 自己里面它就是裸名 —— 必须提示（证明按模块过滤，不是一刀切）
             sprobe("对照：cls1 自己里 s1 照常提示（s|）", "cls1", 4,
                 "s", 2, true, new[] { "s1" }, null);
