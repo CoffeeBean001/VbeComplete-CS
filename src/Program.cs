@@ -470,7 +470,8 @@ namespace VbeComplete
             var snap = AutoStart.Capture();
             try
             {
-                sb.AppendLine("  原始注册表值 = " + (snap.HadValue ? snap.Value : "（无）"));
+                sb.AppendLine("  原始注册表值 = " +
+                    (snap.Values.Count == 0 ? "（无）" : JoinKv(snap.Values)));
                 sb.AppendLine("  原始 " + "autostart.txt = " + (snap.HadMarker ? snap.Marker.Trim() : "（无）"));
                 sb.AppendLine("  当前命令行 = " + AutoStart.CommandLine);
 
@@ -484,20 +485,50 @@ namespace VbeComplete
                 bool off = AutoStart.SetEnabled(false);
                 bool has2 = AutoStart.IsRegistered(out string v2);
                 check("关闭后注册表里没有了", off && !has2, "value=" + (v2 ?? "null"));
+
+                // ---- 历史值名（v162）：早期版本写的是 `VbeComplete`，关自启时必须一起清掉 ----
+                AutoStart.RawSet("VbeComplete", AutoStart.CommandLine);
+                bool seen = AutoStart.IsRegistered(out string v4) &&
+                            string.Equals(v4, AutoStart.CommandLine, StringComparison.OrdinalIgnoreCase);
+                check("能认出历史值名 VbeComplete 那一条", seen, "value=" + (v4 ?? "null"));
+
+                bool offLegacy = AutoStart.SetEnabled(false);
+                bool legacyGone = !AutoStart.IsRegistered(out string v5);
+                check("关闭自启时把历史值名一起清掉", offLegacy && legacyGone, "value=" + (v5 ?? "null"));
             }
             finally
             {
                 AutoStart.Restore(snap);
             }
-            bool restored = AutoStart.IsRegistered(out string v3);
-            check("测完已还原成测试前的状态",
-                restored == snap.HadValue &&
-                (!snap.HadValue || string.Equals(v3, snap.Value, StringComparison.OrdinalIgnoreCase)),
-                "value=" + (v3 ?? "null"));
+
+            // 还原判定：主名 + 历史值名全都要和快照一致（只看主名会漏掉旧值名那条）
+            var after = AutoStart.Capture();
+            bool same = after.Values.Count == snap.Values.Count;
+            foreach (var kv in snap.Values)
+            {
+                if (!after.Values.TryGetValue(kv.Key, out string av) ||
+                    !string.Equals(av, kv.Value, StringComparison.OrdinalIgnoreCase))
+                    same = false;
+            }
+            check("测完已还原成测试前的状态", same,
+                "before=" + (snap.Values.Count == 0 ? "无" : JoinKv(snap.Values)) +
+                " / after=" + (after.Values.Count == 0 ? "无" : JoinKv(after.Values)));
 
             sb.AppendLine(ok ? "RESULT: PASS" : "RESULT: FAIL");
             File.WriteAllText(Path.Combine(Settings.Home, "startuptest.log"), sb.ToString(), Encoding.UTF8);
             return ok ? 0 : 1;
+        }
+
+        /// <summary>把 Run 键快照拼成一行，只用于 --startuptest 的失败详情。</summary>
+        private static string JoinKv(Dictionary<string, string> d)
+        {
+            var sb = new StringBuilder();
+            foreach (var kv in d)
+            {
+                if (sb.Length > 0) sb.Append("; ");
+                sb.Append(kv.Key).Append("=").Append(kv.Value);
+            }
+            return sb.ToString();
         }
 
         private static int ParenTest()

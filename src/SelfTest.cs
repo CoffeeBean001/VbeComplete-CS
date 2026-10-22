@@ -53,6 +53,7 @@ namespace VbeComplete
                 TestEditing();
                 TestContinuation();
                 TestAutoTrigger();
+                TestAutoStart();
                 TestSnippets();
             }
             catch (Exception e)
@@ -1513,6 +1514,41 @@ End Sub
             Ok("auto-trigger/主键盘 / 算 slash 键", Native.IsSlashKey(Native.VK_OEM_2));
             Ok("auto-trigger/小键盘除号也算 slash 键", Native.IsSlashKey(Native.VK_DIVIDE));
             Ok("auto-trigger/别的符号键不算 slash", !Native.IsSlashKey(0xBC) && !Native.IsSlashKey('D'));
+        }
+
+        // ------------------------------------------------------------------
+        // 开机自启："这条注册表值是不是我们这份 exe"（v162）
+        // ★只是纯判断，不读写注册表（真登记走 --startuptest）。
+        //   起因：老版本写的值名是 VbeComplete，本版是 VbeComplete-CS，
+        //   只按自己的名字删 ⇒ 用户关了自启，开机照样被拉起来。
+        // ------------------------------------------------------------------
+        private static void TestAutoStart()
+        {
+            string me = AutoStart.ExePath();
+            Ok("autostart/取得到自己的 exe 路径", !string.IsNullOrEmpty(me), me ?? "null");
+
+            string dir = Path.GetDirectoryName(me);
+            string name = Path.GetFileName(me);
+
+            Ok("autostart/带引号的自己算我们的",
+                AutoStart.IsOurCommand("\"" + me + "\""));
+            Ok("autostart/带参数的自己算我们的",
+                AutoStart.IsOurCommand("\"" + me + "\" --tray"));
+            Ok("autostart/同目录同名（不带引号）也算",
+                AutoStart.IsOurCommand(Path.Combine(dir, name)));
+
+            // 别家的程序：文件名不同 -> 不是我们的，关闭自启时绝不许动它
+            Ok("autostart/notepad 不是我们的",
+                !AutoStart.IsOurCommand("\"C:\\Windows\\notepad.exe\""));
+            Ok("autostart/空值不是我们的", !AutoStart.IsOurCommand(""));
+            Ok("autostart/null 不是我们的", !AutoStart.IsOurCommand(null));
+
+            // 同名但文件还在的"别家安装"（模拟 PY 版另一份 exe）不许当成我们的
+            string other = Path.Combine("C:\\Windows", name);
+            if (File.Exists(other))
+                Ok("autostart/别处同名且文件还在 -> 不动它", !AutoStart.IsOurCommand(other));
+            else
+                Ok("autostart/别处同名但文件已失效 -> 算旧项", AutoStart.IsOurCommand(other));
         }
 
         // ------------------------------------------------------------------

@@ -16,8 +16,17 @@
 // ★默认是**开**（用户明确要求"开机自动启动"）；第一次运行没 marker 时按
 //   settings.ini 的 AUTO_START 走（默认 1）。想关：托盘菜单取消勾选，
 //   或者 settings.ini 里写 AUTO_START = 0 并把 autostart.txt 删掉。
+//
+// ★v162：只认"自己这一个值名"是不够的（真机踩到）。
+//   早期版本 / 外部脚本写进去的值名是 `VbeComplete`，本版用的是 `VbeComplete-CS`。
+//   老代码关闭时只 DeleteValue("VbeComplete-CS")，那条 `VbeComplete` 永远删不掉 ⇒
+//   用户上午把 autostart.txt 改成 0，下午开机它还是被拉起来了（表现为"任务管理器里
+//   有个多余的 VbeComplete.exe，结束掉也不影响什么"）。
+//   现在维护一张"历史值名"表，并且删除前一律用 IsOurCommand 判断
+//   "这条值指向的到底是不是我们这份 exe"，绝不误删别家的同名键。
 
 using System;
+using System.Collections.Generic;
 using System.IO;
 using Microsoft.Win32;
 
@@ -26,10 +35,25 @@ namespace VbeComplete
     internal static class AutoStart
     {
         private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+
+        /// <summary>当前使用的值名。</summary>
         private const string ValueName = "VbeComplete-CS";
+
+        /// <summary>历史上用过的值名 —— 清理 / 识别时一并算作"我们自己"。</summary>
+        private static readonly string[] LegacyNames = { "VbeComplete" };
+
         private const string StateFile = "autostart.txt";
 
         private static string StatePath => Path.Combine(Settings.Home, StateFile);
+
+        /// <summary>主名 + 历史别名，按"先主后旧"排列。</summary>
+        private static string[] AllNames()
+        {
+            var list = new List<string>(1 + LegacyNames.Length);
+            list.Add(ValueName);
+            list.AddRange(LegacyNames);
+            return list.ToArray();
+        }
 
         /// <summary>要登记的完整命令行（带引号，防路径里有空格）。</summary>
         public static string CommandLine
@@ -67,24 +91,78 @@ namespace VbeComplete
             return null;
         }
 
-        /// <summary>注册表里现在有没有这一条（顺带把值读出来，方便判断是不是指向旧路径）。</summary>
-        public static bool IsRegistered(out string value)
+        /// <summary>从注册表里的命令行取出 exe 路径（能处理 `"C:\a b\x.exe" -arg`）。</summary>
+        private static string ExeIn(string cmdline)
         {
-            value = null;
+            if (string.IsNullOrWhiteSpace(cmdline)) return "";
+            string s = cmdline.Trim();
+            if (s[0] == '"')
+            {
+                int q = s.IndexOf('"', 1);
+                if (q > 0) return s.Substring(1, q - 1).Trim();
+            }
+            // 没引号：退到第一个 ".exe" 为止（路径里可能有空格，不能简单按空格切）
+            int e = s.IndexOf(".exe", StringComparison.OrdinalIgnoreCase);
+            if (e > 0) return s.Substring(0, e + 4).Trim();
+            return s;
+        }
+
+        /// <summary>
+        /// 这条注册表值是不是"我们这份 exe"的。判据分两级：
+        ///   1) 同目录、同名 → 一定是；
+        ///   2) 不同目录但那个文件已经不在了 → 是当年登记后挪走/删掉的失效项，也算。
+        /// 只看文件名不够：别家可能也有个 VbeComplete.exe，那种文件还在的不许动。
+        /// </summary>
+        internal static bool IsOurCommand(string value)
+        {
+            string exe = ExeIn(value);
+            if (string.IsNullOrEmpty(exe)) return false;
+            string me = ExePath();
+            if (string.IsNullOrEmpty(me)) return false;
+            if (!string.Equals(Path.GetFileName(exe), Path.GetFileName(me),
+                               StringComparison.OrdinalIgnoreCase))
+                return false;
+            if (SameDir(exe, me)) return true;
+            try { return !File.Exists(exe); } catch { return false; }
+        }
+
+        /// <summary>Run 键里所有"属于我们"的项：(值名, 命令行)。</summary>
+        internal static List<KeyValuePair<string, string>> Ours()
+        {
+            var list = new List<KeyValuePair<string, string>>();
             try
             {
                 using (var k = Registry.CurrentUser.OpenSubKey(RunKey, false))
                 {
-                    if (k == null) return false;
-                    value = k.GetValue(ValueName) as string;
-                    return !string.IsNullOrWhiteSpace(value);
+                    if (k == null) return list;
+                    foreach (var name in AllNames())
+                    {
+                        string v = k.GetValue(name) as string;
+                        if (string.IsNullOrWhiteSpace(v)) continue;
+                        if (!IsOurCommand(v)) continue;
+                        list.Add(new KeyValuePair<string, string>(name, v));
+                    }
                 }
             }
             catch (Exception e)
             {
                 Log.Write("读开机自启注册表失败：{0}", e.Message);
-                return false;
             }
+            return list;
+        }
+
+        /// <summary>注册表里现在有没有"我们这一份"（主名优先，附带把值读出来）。</summary>
+        public static bool IsRegistered(out string value)
+        {
+            value = null;
+            var ours = Ours();
+            if (ours.Count == 0) return false;
+            foreach (var kv in ours)
+            {
+                if (kv.Key == ValueName) { value = kv.Value; return true; }
+            }
+            value = ours[0].Value;
+            return true;
         }
 
         /// <summary>用户意图：读 marker，没有就按配置（默认开）。</summary>
@@ -123,33 +201,46 @@ namespace VbeComplete
         /// </summary>
         public static void Sync()
         {
-            bool want = Desired;
-            if (!want)
+            var ours = Ours();
+
+            if (!Desired)
             {
-                // 没勾：值还在就删掉（别的工具写回来的也一并清掉）
-                if (IsRegistered(out _))
+                // 没勾：值还在就删掉（别的工具写回来的、早期版本留下的旧值名，一并清掉）
+                if (ours.Count > 0)
                 {
-                    if (Apply(false)) Log.Write("开机自启：已按你的设置关闭并清理注册表");
+                    var names = new List<string>();
+                    foreach (var kv in ours) names.Add(kv.Key);
+                    if (Apply(false))
+                        Log.Write("开机自启：已按你的设置关闭并清理注册表（删了 {0} 条：{1}）",
+                                  ours.Count, string.Join(", ", names.ToArray()));
                 }
                 return;
             }
 
             string cmd = CommandLine;
             if (cmd == null) { Log.Write("开机自启：取不到 exe 路径，跳过"); return; }
-            bool registered = IsRegistered(out string cur);
-            if (registered && string.Equals(cur, cmd, StringComparison.OrdinalIgnoreCase))
-                return;                                  // 已经指向当前 exe，不用动
+
+            // 已经是"恰好一条、主名、内容对得上"就不用动
+            if (ours.Count == 1 &&
+                ours[0].Key == ValueName &&
+                string.Equals(ours[0].Value, cmd, StringComparison.OrdinalIgnoreCase))
+                return;
 
             // ★"路径不一样就直接改写"是危险的：任何一次从 bin\Release、探针目录或
             //   临时解压目录运行，都会把用户装好的**正式版**登记顶掉（真机上发生过
             //   两次，表现为开机后跑的是调试产物、甚至跑不起来）。
-            //   规则改成：旧值指向的文件还在、且和当前 exe 不在同一个目录 ⇒ 只记日志，
+            //   规则改成：主名那条指向的文件还在、且和当前 exe 不在同一个目录 ⇒ 只记日志，
             //   绝不覆盖。只有"旧值已经失效"或"同一个目录里换了文件名"才自动修。
-            if (registered && !string.IsNullOrWhiteSpace(cur))
+            string mainVal = null;
+            foreach (var kv in ours)
             {
-                string oldExe = Unquote(cur);
+                if (kv.Key == ValueName) { mainVal = kv.Value; break; }
+            }
+            if (mainVal != null)
+            {
+                string oldExe = ExeIn(mainVal);
                 bool oldAlive = !string.IsNullOrEmpty(oldExe) && File.Exists(oldExe);
-                if (oldAlive && !SameDir(oldExe, Unquote(cmd)))
+                if (oldAlive && !SameDir(oldExe, ExeIn(cmd)))
                 {
                     Log.Write("开机自启：注册表指向另一个目录的 {0}（文件还在），本次不覆盖；" +
                               "要换成本目录的 exe，请在托盘菜单里关一次再打开", oldExe);
@@ -158,17 +249,7 @@ namespace VbeComplete
             }
 
             if (Apply(true))
-                Log.Write("开机自启：已登记 {0}（原值 {1}）", cmd, cur ?? "无");
-        }
-
-        /// <summary>去掉命令行两端的引号（注册表值的常见写法）。</summary>
-        private static string Unquote(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return "";
-            s = s.Trim();
-            if (s.Length >= 2 && s[0] == '"' && s[s.Length - 1] == '"')
-                s = s.Substring(1, s.Length - 2);
-            return s.Trim();
+                Log.Write("开机自启：已登记 {0}（原值 {1}）", cmd, mainVal ?? "无");
         }
 
         private static bool SameDir(string a, string b)
@@ -182,6 +263,7 @@ namespace VbeComplete
             catch { return false; }
         }
 
+        /// <summary>写 / 删注册表。on=true 时顺手把历史值名归一（只留主名一条）。</summary>
         private static bool Apply(bool on)
         {
             string cmd = CommandLine;
@@ -194,11 +276,34 @@ namespace VbeComplete
                     {
                         if (cmd == null) return false;
                         k.SetValue(ValueName, cmd, RegistryValueKind.String);
+                        // 归一：指向我们这份 exe 的旧值名删掉，免得开机被拉起两次
+                        foreach (var n in LegacyNames)
+                        {
+                            string v = k.GetValue(n) as string;
+                            if (string.IsNullOrWhiteSpace(v)) continue;
+                            if (IsOurCommand(v))
+                            {
+                                k.DeleteValue(n, false);
+                                Log.Write("开机自启：已把旧值名 {0}（{1}）归一到 {2}", n, v, ValueName);
+                            }
+                        }
+                        return true;
                     }
-                    else
+
+                    // 关闭：所有"我们的"值名一起删；同名但指向别处有效程序的键不动
+                    foreach (var n in AllNames())
                     {
-                        // DeleteValue 对不存在的值会抛，先判断
-                        if (k.GetValue(ValueName) != null) k.DeleteValue(ValueName, false);
+                        string v = k.GetValue(n) as string;
+                        if (v == null) continue;
+                        if (IsOurCommand(v))
+                        {
+                            k.DeleteValue(n, false);
+                            Log.Write("开机自启：已删除注册表项 {0} = {1}", n, v);
+                        }
+                        else
+                        {
+                            Log.Write("开机自启：{0} 指向别处的同名程序（{1}），不是我们的，不动", n, v);
+                        }
                     }
                     return true;
                 }
@@ -213,11 +318,25 @@ namespace VbeComplete
         /// <summary>给日志 / 托盘提示用的一句话状态。</summary>
         public static string Describe()
         {
-            bool reg = IsRegistered(out string cur);
-            if (Desired && reg) return "开机自启：已开启";
-            if (!Desired && !reg) return "开机自启：已关闭";
-            if (Desired && !reg) return "开机自启：应开启，但注册表里没有（可能被清理软件删了，下次启动会自愈）";
-            return "开机自启：应关闭，但注册表里还有（下次启动会清掉）";
+            var ours = Ours();
+            string extra = "";
+            foreach (var kv in ours)
+            {
+                if (kv.Key != ValueName) extra += kv.Key + " ";
+            }
+            extra = extra.Trim();
+
+            if (Desired)
+            {
+                if (ours.Count == 0)
+                    return "开机自启：应开启，但注册表里没有（可能被清理软件删了，下次启动会自愈）";
+                if (ours.Count > 1)
+                    return "开机自启：已开启，另有旧值名 " + extra + "（下次启动会归一成一条）";
+                return "开机自启：已开启";
+            }
+            if (ours.Count == 0) return "开机自启：已关闭";
+            return "开机自启：应关闭，但注册表里还有 " + ours.Count + " 条（含旧值名 " + extra +
+                   "），下次启动会一起清掉";
         }
 
         // ------------------------------------------------------------------
@@ -226,24 +345,39 @@ namespace VbeComplete
 
         internal sealed class State
         {
-            internal bool HadValue;
-            internal string Value;
+            /// <summary>值名 → 原始内容（主名与历史别名都拍下来）。</summary>
+            internal readonly Dictionary<string, string> Values =
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
             internal bool HadMarker;
             internal string Marker;
+
+            /// <summary>主名那条有没有值（老的打印接口）。</summary>
+            internal bool HadValue
+            {
+                get { return Values.ContainsKey(ValueName); }
+            }
+
+            internal string Value
+            {
+                get { string v; return Values.TryGetValue(ValueName, out v) ? v : null; }
+            }
         }
 
         internal static State Capture()
         {
             var st = new State();
-            IsRegistered(out string v);
             try
             {
                 using (var k = Registry.CurrentUser.OpenSubKey(RunKey, false))
                 {
                     if (k != null)
                     {
-                        object raw = k.GetValue(ValueName);
-                        if (raw != null) { st.HadValue = true; st.Value = raw as string; }
+                        foreach (var n in AllNames())
+                        {
+                            object raw = k.GetValue(n);
+                            if (raw != null) st.Values[n] = raw as string ?? "";
+                        }
                     }
                 }
             }
@@ -268,8 +402,18 @@ namespace VbeComplete
                 {
                     if (k != null)
                     {
-                        if (st.HadValue) k.SetValue(ValueName, st.Value ?? "", RegistryValueKind.String);
-                        else if (k.GetValue(ValueName) != null) k.DeleteValue(ValueName, false);
+                        foreach (var n in AllNames())
+                        {
+                            if (st.Values.TryGetValue(n, out string v))
+                            {
+                                k.SetValue(n, v ?? "", RegistryValueKind.String);
+                            }
+                            else
+                            {
+                                string cur = k.GetValue(n) as string;
+                                if (cur != null && IsOurCommand(cur)) k.DeleteValue(n, false);
+                            }
+                        }
                     }
                 }
             }
@@ -280,6 +424,19 @@ namespace VbeComplete
                 else if (File.Exists(StatePath)) File.Delete(StatePath);
             }
             catch (Exception e) { Log.Write("还原 {0} 失败：{1}", StateFile, e.Message); }
+        }
+
+        /// <summary>自检专用：直接写某个值名的原始内容（不做"是不是我们的"判断）。</summary>
+        internal static void RawSet(string name, string value)
+        {
+            try
+            {
+                using (var k = Registry.CurrentUser.CreateSubKey(RunKey, true))
+                {
+                    if (k != null) k.SetValue(name, value ?? "", RegistryValueKind.String);
+                }
+            }
+            catch (Exception e) { Log.Write("自检写注册表 {0} 失败：{1}", name, e.Message); }
         }
     }
 }
