@@ -233,6 +233,20 @@ namespace VbeComplete
                 sb.AppendLine("trigger  = " + shown + "  items = " + eng.Items.Count +
                               (eng.TruncatedFrom > 0 ? " (total " + eng.TruncatedFrom + ")" : ""));
                 sb.AppendLine("cands    = " + string.Join(", ", eng.Items.Take(40).Select(c => c.Name)));
+                // 判据逐条摊开：Trigger 静默返回 false 时，靠这几行定位是哪条挡的
+                string lt = snap.Text ?? "";
+                int cc = Rules.CharColFromDisp(lt, snap.CaretCol);
+                int ws0;
+                string w0 = Rules.WordBefore(lt, cc, out ws0);
+                int ss = Rules.StatementStart(lt, Math.Max(0, cc - 1));
+                int se = Math.Max(ss, Math.Min(cc - 1, lt.Length));
+                sb.AppendLine("gates    = word=[" + w0 + "] ws=" + ws0 + " cc=" + cc +
+                              " seg=[" + lt.Substring(ss, se - ss) + "]" +
+                              " dead=" + Rules.InDeadZone(lt, cc) +
+                              " declPos=" + Rules.InDeclarationPosition(lt, cc) +
+                              " afterType=" + Rules.AfterTypeKeyword(lt, ws0) +
+                              " dotCol=" + Rules.MemberDotCol(lt, cc) +
+                              " pool=" + eng.PoolCount);
             }
             catch (Exception e)
             {
@@ -2377,20 +2391,12 @@ namespace VbeComplete
                             dynamic cm = cp.CodeModule;
                             sb.AppendLine("  module = " + Convert.ToString(cm.Name) +
                                           " lines = " + Convert.ToInt32(cm.CountOfLines));
-                            try
-                            {
-                                dynamic sel = cp.Selection;
-                                sb.AppendLine("  Selection = " +
-                                    Convert.ToInt32(sel.StartLine) + "," + Convert.ToInt32(sel.StartColumn) +
-                                    " .. " + Convert.ToInt32(sel.EndLine) + "," + Convert.ToInt32(sel.EndColumn));
-                            }
-                            catch (Exception e) { sb.AppendLine("  Selection ERR " + e.Message); }
-                            try
-                            {
-                                object g = cp.GetSelection();
-                                sb.AppendLine("  GetSelection = " + (g == null ? "null" : g.GetType().FullName));
-                            }
-                            catch (Exception e) { sb.AppendLine("  GetSelection ERR " + e.Message); }
+                            // CodePane 没有 Selection 属性，GetSelection 又是 4 个 ByRef
+                            // （dynamic 填不回来）—— 走产品自己那条 ComCall.CallFourOut。
+                            if (be.TryGetSelection(out int sl, out int sc, out int el, out int ec))
+                                sb.AppendLine("  GetSelection = " + sl + "," + sc + " .. " + el + "," + ec);
+                            else
+                                sb.AppendLine("  GetSelection = 失败（没有活动代码窗，正常）");
                         }
                     }
                     catch (Exception e) { sb.AppendLine("  ActiveCodePane ERR " + e.Message); }
@@ -2427,14 +2433,55 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 只采样一次"让位判据"（App.PollOnce 用的同一个函数）。
-        /// 不碰 COM，一次约 2ms —— 真机上要连测"VBE 的列表出现时我们能不能看见"，
-        /// 走 --probe 太重（要过一遍 COM，几秒钟）。
+        /// 让位判据采样：先把 VBE 自己的成员列表**真弹出来**（抢前台 + Ctrl+Space），
+        /// 再采样 App.PollOnce 用的同一个函数。
+        /// ★不促发的话这条判据永远读到 false —— 那是"绿着但什么都没验"。
         /// </summary>
         private static int YieldProbe()
         {
             var sb = new StringBuilder();
             int visible = 0, seen = 0;
+            try
+            {
+                var be = new VbeBackend();
+                Snapshot snap = be.Snapshot();
+                if (snap == null)
+                {
+                    sb.AppendLine("no code module, skip");
+                    File.WriteAllText(Path.Combine(Settings.Home, "yieldprobe.log"), sb.ToString(), Encoding.UTF8);
+                    return 1;
+                }
+                sb.AppendLine("module = " + snap.Module + "  caret = L" + snap.Line + " C" + snap.CaretCol);
+
+                IntPtr frame = Native.FindWindow("wndclass_desked_gsk", null);
+                bool fg = false;
+                for (int i = 0; i < 10 && !fg; i++)
+                {
+                    Native.ForceForeground(frame);
+                    be.SetCaret(snap.Line, snap.CaretCol);
+                    Thread.Sleep(150);
+                    fg = frame != IntPtr.Zero && Native.GetForegroundWindow() == frame;
+                }
+                uint tid = 0;
+                if (frame != IntPtr.Zero)
+                {
+                    uint pid;
+                    tid = Native.GetWindowThreadProcessId(frame, out pid);   // ★返回值才是线程 id
+                }
+                sb.AppendLine("foreground(VBE) = " + fg + "  focusClass = " +
+                              Native.ClassNameOf(Native.FocusedHwndOf(tid)));
+                if (!fg)
+                {
+                    sb.AppendLine("抢不到前台，促发不了列表（结论无效）");
+                    File.WriteAllText(Path.Combine(Settings.Home, "yieldprobe.log"), sb.ToString(), Encoding.UTF8);
+                    return 1;
+                }
+
+                Native.SendVk(Native.VK_SPACE, ctrl: true);
+                Thread.Sleep(400);
+            }
+            catch (Exception e) { sb.AppendLine("促发异常 " + e.Message); }
+
             for (int i = 0; i < 5; i++)
             {
                 seen++;
@@ -2449,6 +2496,8 @@ namespace VbeComplete
             }
             sb.AppendLine("RESULT: " + (visible > 0 ? "VBE-LIST-VISIBLE" : "VBE-LIST-NOT-VISIBLE") +
                           " (" + visible + "/" + seen + ")");
+            // 探针不许留下副作用：把促发出来的列表按 Esc 关掉
+            if (visible > 0) { Native.SendVk(Native.VK_ESCAPE); Thread.Sleep(120); }
             File.WriteAllText(Path.Combine(Settings.Home, "yieldprobe.log"), sb.ToString(), Encoding.UTF8);
             return visible > 0 ? 0 : 1;
         }

@@ -177,6 +177,16 @@ namespace VbeComplete
             Ok("decl-position/裸 Global", Rules.InDeclarationPosition("Global g", 8));
             Ok("decl-position/裸 Public As", Rules.InDeclarationPosition("Public g As Long", 16));
             Ok("decl-position/Public Sub 不算裸声明误判", Rules.InDeclarationPosition("Public Sub DoIt(", 16));
+            // ★v164：光标停在**词中间**时不能把半截词当关键字 —— `subKeysArr` 截到
+            //   光标只剩 `sub`，而 `Sub\b` 在串尾成立，整行被判成过程声明，
+            //   那个位置从此永远不弹（用户模块里 subKeysArr/subItemsArr 一大把）。
+            Ok("decl-position/词中间 subKeysArr 不算声明",
+                !Rules.InDeclarationPosition("        subKeysArr = itemsArr(i).keys", 12));
+            Ok("decl-position/词中间 FunctionName 不算声明",
+                !Rules.InDeclarationPosition("    FunctionName = 1", 10));
+            // 反过来：拼完整了就该拦，别修过头
+            Ok("decl-position/完整 Sub 仍算声明", Rules.InDeclarationPosition("    Sub", 8));
+
 
             // ★v137：`As` / `New` 之后一律不弹 —— 与 decl-position 互补：
             //   那条认"声明语句的行首"，这条认 `Set c = New |` / `For i As |` /
@@ -794,6 +804,20 @@ End Sub
             Ok("裸名赋值 cells = 5 仍按变量收（v163 别修过头）",
                 Scope.Analyze("M", bareAssignSample).FreeIdents.Contains("cells"),
                 string.Join(",", Scope.Analyze("M", bareAssignSample).FreeIdents));
+
+            // ★v164：Enum 一行能用 `:` 写多个成员（`A_ = 1: B_: C_`，NoExplicitPub 就是
+            //   这么写的）。只认行首会让 `B_`/`C_` 落进模块级自由标识符池 —— 私有 Enum
+            //   的成员于是能被别的模块看到。
+            const string enumColonSample =
+                "Private Enum E\r\n    A_ = 1: B_: C_\r\nEnd Enum\r\n" +
+                "Sub T()\r\n    n = A_\r\nEnd Sub\r\n";
+            var ec = Scope.Analyze("M", enumColonSample);
+            Ok("Enum 冒号分隔的成员都算声明（v164）",
+                ec.Decls.Any(d => d.Name == "B_") && ec.Decls.Any(d => d.Name == "C_"),
+                string.Join(",", ec.Decls.Select(d => d.Name)));
+            Ok("Enum 冒号成员不进自由标识符池（v164）",
+                !ec.FreeIdents.Contains("B_") && !ec.FreeIdents.Contains("C_"),
+                string.Join(",", ec.FreeIdents));
 
             // ---- 引擎层面：Option Explicit 的模块里，未声明名字不该出现在候选 ----
             var eng2 = new Engine { Recent = new Recent() };

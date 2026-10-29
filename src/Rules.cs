@@ -168,11 +168,18 @@ namespace VbeComplete
             if (string.IsNullOrEmpty(line)) return false;
             int end = Math.Max(0, Math.Min(caretCol - 1, line.Length));
 
+            // ★v164：光标停在词中间时（`sub|KeysArr = ...`），截到光标只剩 `sub`，
+            //   而 `Sub\b` 在字符串**末尾**是成立的 —— 整行就被当成过程声明，
+            //   从此在这个位置永远不弹候选（用户模块里 `subKeysArr` / `subItemsArr`
+            //   这类名字一大把）。先把 seg 补到词的末尾，让关键字必须整词命中。
+            int segEnd = end;
+            while (segEnd < line.Length && IsIdentChar(line[segEnd])) segEnd++;
+
             // ★只看**光标所在的语句段**：VBA 允许 `Dim x As Long: x = Ms|`，
             //   整行以 Dim 开头不代表光标这段是声明 —— 用整行判会把冒号后面
             //   那条普通赋值也当成"造新名字"，从此在那里永远不弹候选。
             int segStart = StatementStart(line, end);
-            string seg = line.Substring(segStart, end - segStart);
+            string seg = line.Substring(segStart, segEnd - segStart);
             if (!ReDeclHead.IsMatch(seg)) return false;
 
             // `Const PI = 3.14` 的值位置不是名字位置，也不是类型位置

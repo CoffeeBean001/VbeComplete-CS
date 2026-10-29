@@ -314,23 +314,22 @@ namespace VbeComplete
                 if (inTypeBlock)
                 {
                     if (ReEndType.IsMatch(code)) { inTypeBlock = false; typeOwner = null; continue; }
-                    // 成员：`Name As Long` 或 `Name = 1`
-                    var mm = Regex.Match(code, @"^[ \t]*(" + Id + ")");
-                    if (mm.Success)
+                    // 成员：`Name As Long` / `Name = 1`。一行可以用 `:` 写多个 ——
+                    //   Enum 里极常见（`A_ = 1: B_: C_`），只认行首会把 `B_`/`C_` 漏成自由标识符。
+                    foreach (string seg in code.Split(':'))
                     {
+                        var mm = Regex.Match(seg, @"^[ \t]*(" + Id + ")");
+                        if (!mm.Success) continue;
                         string mem = Clean(mm.Groups[1].Value);
-                        if (mem.Length > 0 && !VbaBuiltins.IsKeyword(mem))
+                        if (mem.Length == 0 || VbaBuiltins.IsKeyword(mem)) continue;
+                        // Enum 成员模块级可见（`clRed` 不用写 `Color2.clRed`）；Type 成员只能
+                        // 通过变量访问（`p.X`），挂 "type:Owner" 伪过程键把它从普通候选里排除。
+                        ms.Decls.Add(new Decl
                         {
-                            // ★Enum 成员是**模块级可见**的（`clRed` 不用写 `Color2.clRed`）；
-                            //   Type 成员只能通过变量访问（`p.X`），所以挂一个
-                            //   "type:Owner" 的伪过程键，把它从普通候选里排除掉。
-                            ms.Decls.Add(new Decl
-                            {
-                                Name = mem,
-                                Proc = typeIsEnum ? null : "type:" + typeOwner,
-                                IsPrivate = typePrivate,
-                            });
-                        }
+                            Name = mem,
+                            Proc = typeIsEnum ? null : "type:" + typeOwner,
+                            IsPrivate = typePrivate,
+                        });
                     }
                     continue;
                 }

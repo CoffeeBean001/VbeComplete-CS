@@ -103,6 +103,9 @@ namespace VbeComplete
         /// </summary>
         public int TruncatedFrom { get; private set; }
 
+        /// <summary>当前裸名池的条目数（诊断用：池子空了会表现为"什么都不弹"）。</summary>
+        public int PoolCount => _poolNames.Count;
+
         // ------------------------------------------------------------------
         // 池子
         // ------------------------------------------------------------------
