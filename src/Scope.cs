@@ -222,8 +222,16 @@ namespace VbeComplete
 
         // ---- v155：与 PY 版 _RE_IMP_ASSIGN / _RE_IMP_FOR / _RE_IMP_FOR_EACH 等价 ----
         // 只认**写入**（赋值目标、循环变量）。"只读用法"另走宽扫描，靠下面两张名单压噪音。
+        //
+        // ★v163：**只认裸名写入**，带下标/实参的写法（`Cells(p, "a") = ...`）不算。
+        //   原来这里写成 `(Id)\s*(?:\([^()]*\))?\s*=`，把"给单元格赋值"和"给变量赋值"
+        //   当成同一件事，于是 `Cells(p, "a") = p - 2` 这种满篇都是的写法把 `Cells`
+        //   记进 written，绕过下面"宿主对象名不收"那道闸（v155）—— 用户打 `c`
+        //   第一条就是 `Cells`，而他从没把 cells 当过变量（v163 用户报的就是这条）。
+        //   语义上两者本来就不同：`range = 1` 是"名字被当变量用了"（该收）；
+        //   `Cells(p, "a") = x` 是"给宿主对象的某个单元格赋值"（不该收）。
         private static readonly Regex ReImpAssign = new Regex(
-            @"^[ \t]*(?:Let[ \t]+|Set[ \t]+)?(" + Id + @")\s*(?:\([^()]*\))?\s*=(?!=)",
+            @"^[ \t]*(?:Let[ \t]+|Set[ \t]+)?(" + Id + @")\s*=(?!=)",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private static readonly Regex ReImpForEach = new Regex(
             @"^[ \t]*For[ \t]+Each[ \t]+(" + Id + @")\s+In\b",

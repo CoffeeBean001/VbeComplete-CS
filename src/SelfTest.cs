@@ -777,6 +777,24 @@ End Sub
                 !Scope.Analyze("M", bareSample).FreeIdents.Contains("Cells"),
                 string.Join(",", Scope.Analyze("M", bareSample).FreeIdents));
 
+            // ★v163 用户报："输入 c 会提示 cells，我并没有使用 cells 作为变量"。
+            //   他的模块里满篇 `Cells(p, "a") = ...` —— **给单元格赋值**。旧版把
+            //   `名字(实参) =` 一并记进"本模块给这个名字赋过值"，于是宿主对象那道闸
+            //   （v155）被绕过，`Cells` 以工程名档位进了池子，排在内建 `Chr`/`CStr`
+            //   前面。修复口径：**只有裸名赋值才算"当变量用了"**。
+            const string cellWriteSample =
+                "Sub T()\r\n    Cells(p, \"a\") = p - 2\r\n    Range(\"A1\") = 5\r\nEnd Sub\r\n";
+            var cw = Scope.Analyze("M", cellWriteSample);
+            Ok("给单元格赋值不把 Cells/Range 收成变量（v163）",
+                !cw.FreeIdents.Contains("Cells") && !cw.FreeIdents.Contains("Range"),
+                string.Join(",", cw.FreeIdents));
+            // 另一面：真把它当变量用了（裸名赋值）就必须收，否则"cells = 5"之后
+            // 打 cell 反倒提示不出来 —— 那是把修复做成新 bug。
+            const string bareAssignSample = "Sub T()\r\n    cells = 5\r\n    n = cells + 1\r\nEnd Sub\r\n";
+            Ok("裸名赋值 cells = 5 仍按变量收（v163 别修过头）",
+                Scope.Analyze("M", bareAssignSample).FreeIdents.Contains("cells"),
+                string.Join(",", Scope.Analyze("M", bareAssignSample).FreeIdents));
+
             // ---- 引擎层面：Option Explicit 的模块里，未声明名字不该出现在候选 ----
             var eng2 = new Engine { Recent = new Recent() };
             var be = new FakeBackend
