@@ -1242,18 +1242,39 @@ namespace VbeComplete
                     //     中/英状态影响），再发一个**裸空格**：既要验列表收了，也要验
                     //     空格照常落进文档（我们只收窗、不吞键）。
                     RebuildScaffold(app, be, at, "    n = 1");
-                    app.RunOnUi(() => { be.ForceReloadModule(); be.SetCaret(at + 1, 1); });
-                    Thread.Sleep(300);
-                    SendCombo(app, Native.VK_SPACE, ctrl: true);
-                    Thread.Sleep(600);
-                    bool shownH = app.PopupVisible;
+                    // ★v163：这一步原来只发**一次** Ctrl+Space、睡 600ms 就断言，
+                    //   真机上有约一半次数"唤不出来"（拿 v162 的 exe 复跑同样一半失败，
+                    //   和候选池无关）。日志里只有 `唤出=False`，看不出是"窗子没弹"还是
+                    //   "弹了又被收"，等于绿/红都不可信。
+                    //   现在：先读回光标/选区/快照（多行选区会让 Snapshot() 返回 null，
+                    //   Trigger 直接 Hide —— v144 那条），唤不出来就再摆一次光标重试，
+                    //   并把诊断串写进断言消息里。
+                    string hdiag = "";
+                    bool shownH = false;
+                    for (int attempt = 0; attempt < 3 && !shownH; attempt++)
+                    {
+                        app.RunOnUi(() =>
+                        {
+                            be.ForceReloadModule();
+                            bool caretOk = be.SetCaret(at + 1, 1);
+                            be.TryGetSelection(out int sl, out int sc, out int el, out int ec);
+                            var s = be.Snapshot();
+                            hdiag = "try" + (attempt + 1) + " caret=" + caretOk
+                                    + " sel=" + sl + ":" + sc + "-" + el + ":" + ec
+                                    + " snap=" + (s == null ? "null" : "L" + s.Line + "C" + s.CaretCol);
+                        });
+                        Thread.Sleep(250);
+                        SendCombo(app, Native.VK_SPACE, ctrl: true);
+                        Thread.Sleep(500);
+                        shownH = app.PopupVisible;
+                    }
                     SendKeys(app, Native.VK_SPACE);
                     Thread.Sleep(500);
                     bool hiddenH = !app.PopupVisible;
                     string[] h = ReadLines(app, be, at, 3);
                     check("H 空格收起候选窗（用户报的 set + 空格不收）",
                         shownH && hiddenH && h[1] == "     n = 1",
-                        "唤出=" + shownH + " 空格后收起=" + hiddenH + " 行=[" + h[1] + "]");
+                        "唤出=" + shownH + " 空格后收起=" + hiddenH + " 行=[" + h[1] + "] " + hdiag);
 
                     // 11. 用例 I：**Ctrl+↑ / Ctrl+↓（不带 Shift）** —— 用户从 Python 版
                     //     点名要的两个过程内跳转。CS 版一直只搬了**带 Shift** 的那一组，
