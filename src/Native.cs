@@ -566,16 +566,11 @@ namespace VbeComplete
         // ------------------------------------------------------------------
         // 输入法：中文标点 / 全角时，标点不能被我们"翻成"半角
         //
-        // 用户报过的 bug（Python 版 v108 原话）："我不能输入中文的双括号和中文双
-        // 引号，一输入就会自动变成英文的双括号和英文双引号。"
-        // 根因是自动配对只看"虚拟键 + Shift"，不看输入法状态 —— 中文标点档下
-        // Shift+9 敲出来的是 `（`，我们却一律插半角 `()`。
-        //
-        // 取法（Python 版实测有效的那一条）：跨进程拿不到 ImmGetContext，只能
-        // 走 `ImmGetDefaultIMEWnd(hwnd)` + `SendMessageTimeout(WM_IME_CONTROL,
-        // IMC_GETCONVERSIONMODE)`。★必须用 SendMessageTimeout + SMTO_ABORTIFHUNG：
-        // 目标窗口卡死时立刻返回，绝不解把钩子线程钉死（低级键盘钩子超时会被
-        // 系统悄悄摘掉，那是最坏的结果）。
+        // 用户报"输入中文双括号/双引号会被自动变成英文的"：自动配对只看虚拟键 + Shift、
+        // 不看输入法状态 —— 中文标点档下 Shift+9 敲出来的是 `（`，我们却一律插半角 `()`。
+        // 跨进程拿不到 ImmGetContext，只能 ImmGetDefaultIMEWnd + SendMessageTimeout
+        // (WM_IME_CONTROL / IMC_GETCONVERSIONMODE)。★必须带 SMTO_ABORTIFHUNG：目标窗口卡死
+        // 时立刻返回，绝不能让钩子线程被钉住（低级键盘钩子超时会被系统悄悄摘掉）。
         // ------------------------------------------------------------------
         private const uint WM_IME_CONTROL = 0x0283;
         private const int IMC_GETCONVERSIONMODE = 0x0001;

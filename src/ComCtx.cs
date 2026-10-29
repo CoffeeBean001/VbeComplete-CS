@@ -1,14 +1,10 @@
-// COM 接入层：拿到正在运行的 VBE 对象，并把它缓存起来。
+// COM 接入层：拿到正在运行的 VBE 对象并缓存。
 //
-// 为什么不用 Microsoft.Office.Interop.*：那套程序集绑定具体 Excel 版本，
-// 而且会让"装的是 WPS / 只有 Word / 换了 Office 版本"统统编译期就绑死。
-// 这里全部走 IDispatch 后期绑定（C# 的 dynamic），与 Python 版 comtypes 同一路子。
-//
-// ★三条硬规矩（与 Python 版一致）：
-//   1. 只有 UI 线程（STA）能调这些方法，钩子线程一次都不许碰；
-//   2. 宿主不在时立刻退让并进入退避，绝不反复试 —— 每次失败的 COM 调用
-//      在宿主忙的时候会阻塞到超时，那是"卡死"的来源；
-//   3. 缓存代理对象，但每次使用前先探活；探活失败立刻丢弃缓存。
+// 不用 Microsoft.Office.Interop.*：那套绑定具体 Office 版本，装 WPS / 只有 Word / 换版本
+// 都会在编译期绑死。这里全部走 IDispatch 后期绑定（dynamic），与 PY 的 comtypes 同路。
+// ★三条硬规矩：① 只有 UI 线程（STA）能调，钩子线程一次都不许碰；② 宿主不在时立刻退让并
+//   退避，绝不反复试（宿主忙时失败调用会阻塞到超时，"卡死"就是这么来的）；③ 缓存代理对象，
+//   每次用前探活，探活失败立刻丢弃。
 
 using System;
 using System.Runtime.InteropServices;

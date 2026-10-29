@@ -1,30 +1,14 @@
-// 词库：两个**由用户自己维护**的 SQLite 库。
-//
-//   keywords.db   —— VBA 语言关键字（Dim / If / Then ...）
-//   functions.db  —— VBA 函数名 + 类型名（MsgBox / Split / String ...）
-//
-// ★为什么是两个库而不是一张表：用户明确要求分开 —— 关键字和函数在他的脑子里
-//   就是两类东西，改一个不该动到另一个。分开之后每个库只有 1~4 列，拿任何
-//   SQLite 客户端（DB Browser for SQLite 之类）打开就能当表格改。
-//
-// ★绝不与 Python 版共用文件：那是另一个项目。文件名带 `-cs` 后缀，路径在
-//   程序目录下，谁也读不到谁。
-//
-// ★枚举一律不收。用户原话："vba里的枚举太多了，不要作为提示词。"
-//   所以种子里没有任何 vb*/xl*/mso* 常量，只有语言关键字、函数、类型。
-//
-// ★启动时一次性全量读进内存（几十~几千条，读完就不碰磁盘），
-//   之后每一个按键的候选匹配都是纯内存操作 —— 编辑词库需要重启程序才生效，
-//   这是刻意的：把"文件被别人改了"这种不确定性挡在运行期之外。
-//
-// 表结构（首次运行自动创建并灌入默认词条；表非空就不再灌，尊重用户的删除）：
-//   keywords (word TEXT PRIMARY KEY, wants_space INTEGER, enabled INTEGER)
-//   functions(word TEXT PRIMARY KEY, kind TEXT, wants_parens INTEGER, enabled INTEGER)
-//
-//   want_space / wants_parens 决定"按 Tab 补完之后跟什么"：
-//     * 关键字：绝大多数后面要空格（`Dim `），少数不要（`Me` / `True`）
-//     * 函数：默认补一对括号；类型名（String / Long）绝不能补括号
-//   enabled = 0 表示"这条我知道，但别提示我" —— 删掉也行，留 0 更好（记得住）。
+// 词库：两个**由用户自己维护**的 SQLite 库（keywords-cs.db / functions-cs.db）。
+// ★为什么分两个库：用户口径"关键字和函数是两类东西"，改一个不该动到另一个；每个库只有
+//   1~4 列，拿 DB Browser for SQLite 之类打开就能当表格改。
+// ★绝不与 Python 版共用文件（那是另一个项目），文件名带 `-cs` 后缀。
+// ★枚举一律不收（用户原话："vba里的枚举太多了，不要作为提示词"）。
+// ★启动时一次性全量读进内存，之后每个按键都是纯内存匹配；改词库要重启才生效 —— 刻意把
+//   "文件被别人改了"这种不确定性挡在运行期之外。
+// 表结构（首次运行创建并灌种子；表非空就不再灌，尊重用户的删除）：
+//   keywords (word, wants_space, enabled) / functions(word, kind, wants_parens, enabled)
+//   wants_space / wants_parens 决定补完跟什么：关键字多数要空格（`Dim `），函数默认补括号，
+//   类型名（String / Long）绝不能补括号；enabled = 0 = "知道但别提示我"。
 
 using System;
 using System.Collections.Generic;
@@ -284,13 +268,10 @@ namespace VbeComplete
     }
 
     /// <summary>
-    /// "这个关键字补完之后要不要跟空格"的**种子判据**。
-    /// 词库建好之后以库里的 wants_space 列为准，这里只在首次灌种子时用一次。
-    ///
-    /// ★直接沿用 BuiltinTables.KeywordsWantSpace 那份人工校准过的清单
-    ///   （`Me` / `Next` / `True` 这些不要空格，`Dim` / `If` / `Set` 这些要）。
-    ///   别自己再推一套"看它是不是完整值"的规则 —— 两套判据早晚会打架。
-    ///   Python 版和这一版在这张表上是一致的，用户已经按它调过手感。
+    /// "这个关键字补完之后要不要跟空格"的种子判据（只在首次灌种子时用，之后以库里的
+    /// wants_space 列为准）。
+    /// ★直接沿用 BuiltinTables 那份人工校准过的清单，别自己再推一套"看它是不是完整值"的
+    ///   规则 —— 两套判据早晚打架。
     /// </summary>
     internal static class KeywordSeeds
     {

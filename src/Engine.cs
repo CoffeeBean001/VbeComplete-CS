@@ -1,18 +1,10 @@
 // 候选引擎：攒池子、匹配、排序、决定弹不弹、以及"选完之后该补什么"。
 //
-// ★这个类不引用 WinForms 的任何东西 —— 窗口通过回调接进来。
-//   于是引擎的全部行为（弹不弹、排第几、补括号还是补空格）都能在没有界面的
-//   情况下测。
-//
-// ★v132：排序与匹配彻底对齐 Python 版（那一版是用户在真机上一条条调出来的）。
-//   最关键的修正是【排序键的顺序】：
-//     旧：作用域 > 命中位置 > 跨度 > 最近使用 > ...
-//     新：命中质量 > 命中位置 > 跨度 > 作用域 > 最近使用 > 内建 >
-//         作用域优先 > 名字长度
-//   旧顺序把"工程内的名字"一律顶到最前，于是打了 `msgbox` 也会因为某个工程内
-//   的 8 字母变量只是"松散命中"而排在 MsgBox 前面 —— 用户看到的就是
-//   "最像的那个不在第一个"。Python 版的注释里明确写过"作用域放最前 = 会顶掉
-//   匹配得更好的候选，明确不要"。
+// ★不引用 WinForms —— 窗口通过回调接进来，于是"弹不弹 / 排第几 / 补括号还是补空格"
+//   全都能在没有界面的情况下测。
+// ★v132：排序键顺序对齐 Python 版（那版是用户在真机上一条条调出来的）：
+//   命中质量 > 命中位置 > 跨度 > 作用域 > 最近使用 > 内建 > 名字长度。
+//   ⚠️ 别把"作用域"提到最前 —— 它会把匹配得更好的候选顶掉（用户口径明确不要）。
 
 using System;
 using System.Collections.Generic;
@@ -116,12 +108,9 @@ namespace VbeComplete
         // ------------------------------------------------------------------
 
         /// <summary>
-        /// 重建池子。key 带"本模块文本长度 + 全工程签名 + 被挖掉的词"：
-        /// 本模块一边打字一边重解析（保证自己新写的变量立刻能提示），
-        /// 别的模块只在行数变了之后才重解析（不然每次按键都要重扫整个工程）。
-        ///
-        /// blank*(1-based) 是"正在输入的那个词"的位置 —— 解析前把它挖成空格，
-        /// 候选池里就不会出现"用户正打到一半的那个名字自己"。
+        /// 重建池子。key 带"本模块文本长度 + 全工程签名 + 被挖掉的词"：本模块边打字边
+        /// 重解析（新写的变量立刻能提示），别的模块只在行数变了之后才重解析。
+        /// blank*(1-based) 是正在输入的那个词 —— 解析前挖成空格，池子里就不会出现它自己。
         /// </summary>
         private void EnsurePool(string moduleName, string moduleText,
             int blankLine = 0, int blankStart = 0, string blankToken = null)
@@ -169,12 +158,9 @@ namespace VbeComplete
             _poolScoped.Clear();
             foreach (var ms in scopes)
             {
-                // ★对象模块（类模块 2 / 窗体 3 / 文档模块 100）的声明是**成员**，
-                //   只能 `c.s1` 这样访问，绝不能当裸名提示。
-                //   把它们并进池子，用户在别的模块里打一个 `s` 就会看到 `s1`
-                //   —— 用户 v137 报的"变量泄露"就是这条（cls1 里的 Public s1）。
-                //   正在编辑的那个模块例外：在自己模块里它当然是裸名。
-                //   类型未知（0，合成测试 / COM 抖动）按标准模块处理，宁可多提示。
+                // ★对象模块（类模块 2 / 窗体 3 / 文档模块 100）的声明是**成员**，只能
+                //   `c.s1` 这样访问，绝不能当裸名提示（v137 报的"变量泄露"）。正在编辑的
+                //   那个模块例外；类型未知（0）按标准模块处理，宁可多提示。
                 bool isCur = ReferenceEquals(ms, cur) ||
                              string.Equals(ms.Module, moduleName ?? "",
                                            StringComparison.OrdinalIgnoreCase);
@@ -194,12 +180,8 @@ namespace VbeComplete
                 foreach (var f in ms.FreeIdents)
                 {
                     if (nameSeen.Add(f)) names.Add(f);
-                    // ★v154：无 Option Explicit 时"用过但没声明"的名字，在 VBA 里是
-                    //   **模块私有**的隐式变量（别的模块看不见）。以前只把它并进池子、
-                    //   不进 _poolScoped，于是 A 模块里随手写的 `foo = 1` 会让 B 模块
-                    //   打 `fo` 也冒出 `foo` —— 用户眼里的"别的模块的变量跑我这儿来了"。
-                    //   进 _poolScoped 后，当前模块靠 Visible() 的 rank 2 保留，
-                    //   别的模块查不到档位就被剔除。
+                    // ★v154：无 Option Explicit 时"用过但没声明"的名字在 VBA 里是模块私有。
+                    //   不进 _poolScoped 的话，A 模块的 `foo = 1` 会让 B 模块打 `fo` 也冒出它。
                     _poolScoped.Add(f);
                 }
                 foreach (var p in ms.Procs)
@@ -234,12 +216,9 @@ namespace VbeComplete
             foreach (var ms in _scopes)
             {
                 bool isCur = string.Equals(ms.Module, curModule, StringComparison.OrdinalIgnoreCase);
-                // ★v160：对象模块（类模块 2 / 窗体 3 / 文档模块 100）的声明是**成员**，
-                //   只能 `c.s1` 这样访问 —— EnsurePool 早就跳过它们了，但这里以前没跳，
-                //   于是类模块的 Public 成员仍然进了 rank 表。后果很隐蔽：只要有同名的
-                //   名字从**别的路**（比如别的模块里的隐式变量 s1）进了池子，就会在
-                //   这里被"认领"成 rank 2 并通过作用域判定 —— 用户看到的就是
-                //   "模块1 里打 s 冒出了 cls1 的 s1"（v137 修过一次的那个泄露）。
+                // ★v160：对象模块的成员也不能进 rank 表。否则同名的名字从别的路（比如别的
+                //   模块的隐式变量 s1）进池后，会在这里被"认领"成 rank 2 并通过作用域判定
+                //   —— 就是 v137 那个"模块1 打 s 冒出 cls1 的 s1"。
                 if (!isCur && ms.ComponentType != 0 && ms.ComponentType != 1) continue;
                 var src = isCur ? ms.Visible(curProc) : ms.Exported();
                 foreach (var kv in src)
@@ -278,14 +257,10 @@ namespace VbeComplete
             snap = snap ?? Backend?.Snapshot();
             if (snap == null) { Hide(); return false; }
 
-            // VBE 自己的成员列表正画着 —— 一律让位。让位不是"不提示"：
-            // 它的列表比我们的更准（有真类型信息），等它关掉之后下一次触发
-            // 我们再补位（Python 版同一套口径）。
-            //
-            // ★v157：让位带一个 250ms 的宽限期（对齐 PY 的 YIELD_GRACE）。VBE 的
-            //   列表要等一个 WM_TIMER 才 Show，我们往往比它先跑完 —— 只判"此刻
-            //   可见"的话，我们会在它前面闪一下再被压住。同一位置让过一次后，
-            //   接下来 250ms 内继续让；过了就照常弹，不会"这里永远不提示"。
+            // VBE 自己的成员列表正画着 —— 一律让位：它的列表有真类型信息，比我们准，
+            // 等它关掉之后下一次触发我们再补位。
+            // ★v157：让位带 250ms 宽限期（它的列表要等 WM_TIMER 才 Show，我们往往先跑完，
+            //   只判"此刻可见"会闪一下）。同一位置让过一次后 250ms 内继续让，之后照常弹。
             if (!manual)
             {
                 string ykey = (snap.Module ?? "") + "|" + snap.Line + "|" + snap.CaretCol;
@@ -333,18 +308,11 @@ namespace VbeComplete
                 return false;
             }
 
-            // ★v138：点号之后**一个候选都不出**，整个让给 VBE（与 Python 版
-            //   v103c 同一口径）。用户口径（原话）："输入 student.，点号后面就
-            //   不要出提示框了"——我们的池子是裸名池（变量名 / 过程名 / 关键字），
-            //   出在点号后面就是噪音；VBE 在这个位置按【真类型】弹真成员，比我们准。
-            //
-            //   位置判据只有一份：Rules.MemberDotCol（标识符 / `)` / `]` 之后，
-            //   以及 With 块的 `.成员`）。
-            //   ⚠️ 放在 EnsurePool 之前：点号是高频键，这一处既不需要池子也不需要
-            //   COM，先判完再决定要不要去取模块全文。Python 版同样放在最前面
-            //   （放后面的话，那条"宽限期到、把候选补回来"的补位路径还会走一遍）。
-            //   ⚠️ MEMBER_POPUP=1 恢复旧行为；Ctrl+Space（manual）是用户点名要
-            //   列表，两种情形照弹。
+            // ★v138：点号之后**一个候选都不出**，整个让给 VBE（同 PY v103c，用户原话：
+            //   "输入 student.，点号后面就不要出提示框"）。池子是裸名池，出在点号后面就是噪音。
+            //   位置判据只有一份：Rules.MemberDotCol。
+            //   ⚠️ 放在 EnsurePool 之前：点号是高频键，这一步不需要池子也不需要 COM。
+            //   ⚠️ MEMBER_POPUP=1 恢复旧行为；Ctrl+Space（manual）两种情形照弹。
             if (!manual && !MemberPopup && Rules.MemberDotCol(line, caret) >= 0)
             {
                 Hide();
@@ -407,13 +375,10 @@ namespace VbeComplete
                 }
                 else if (!ranks.TryGetValue(name, out rank))
                 {
-                    // 声明出来的名字查不到档位 = 当前位置根本看不见它
-                    // （别的过程的局部变量 / 别的模块的 Private）—— 直接剔除。
-                    // ★v151：但**内建**是全局可见的。用户只要在某个过程里写过
-                    //   `Dim Date As Date` / `Dim Left As Long`，`_poolScoped` 里就
-                    //   有了这个名字，于是别的过程里 `Date` / `Left` 一律被这条
-                    //   一票否决 —— 而词库里那份内建因为同名去重根本没进池子，
-                    //   结果是"内建函数从此不提示了"。内建不参与这条否决。
+                    // 声明出来的名字查不到档位 = 当前位置看不见它（别的过程的局部 / 别的
+                    // 模块的 Private），直接剔除。
+                    // ★v151：内建是全局可见的 —— 用户在某过程里 `Dim Left As Long`，别的过程
+                    //   里内建的 Left 就会被这条一票否决（词库那份已因同名去重没进池）。
                     if (!isBuiltin && _poolScoped.Contains(name)) continue;
                     rank = 2;
                 }
@@ -488,10 +453,8 @@ namespace VbeComplete
 
         /// <summary>
         /// `root.` 的成员名单；**类型不确定时返回 null**（调用方据此整个让给 VBE）。
-        ///
-        /// 类型来源只有两条，都是代码里写死的：`Dim c As Cls` / `Set c = New Cls`。
-        /// 刻意不做推断（返回值类型、With 块、宿主对象）—— 猜错就会弹出
-        /// "这个对象根本没有的成员"，比不弹更糟。
+        /// 类型来源只有 `Dim c As Cls` / `Set c = New Cls` 两条，刻意不做推断 ——
+        /// 猜错就会弹出"这个对象根本没有的成员"，比不弹更糟。
         /// </summary>
         private List<string> MemberPool(string root, Snapshot snap)
         {
@@ -731,13 +694,10 @@ namespace VbeComplete
             while (endCol <= acceptLine.Length && Rules.IsIdentChar(acceptLine[endCol - 1]))
                 endCol++;
 
-            // ★v151：复核"现在这个位置还是当初算候选的那个位置吗"。
-            //   候选窗开着时按 Home/End、或鼠标点到同一行的别处，行文本没变、
-            //   轮询不重触发，列表里还是旧候选；此时按 Tab 会拿**新**的 wordStart
-            //   去替换 —— 按过 Home 就变成"把候选插到行首"，点到词中间就变成
-            //   "把那个词截成两半"。位置对不上就收起窗口，把 Tab 还给 VBE。
-            //   注意只比"行号 / 取词起点 / 模块"，不比词本身：用户多打一个字母
-            //   是正常的（`MsgB` → Tab），那时 wordStart 不变、必须放行。
+            // ★v151：复核"现在还是当初算候选的那个位置吗"。候选窗开着时按 Home/End 或点到
+            //   同一行别处，行文本没变、轮询不重触发；此时按 Tab 会拿新的 wordStart 去替换
+            //   （插到行首 / 把词截成两半）。只比行号/取词起点/模块，不比词本身（多打一个
+            //   字母是正常的，那时 wordStart 不变、必须放行）。
             if (_ctxModule != null &&
                 (snap.Line != _ctxLine ||
                  wordStart != _ctxWordStart ||
@@ -783,9 +743,8 @@ namespace VbeComplete
 
         /// <summary>
         /// 空格确认：只在"光标前的词还没打全"时才接管。
-        /// ★旧版只要选中项是关键字就吃 —— 于是 `Set w` 时选中 `With`，按空格
-        ///   就把 `w` 变成 `With`，`Set ws = ...` 直接写坏。Python 版的口径是
-        ///   "already complete 就不吃"。
+        /// ★旧版只要选中项是关键字就吃 —— `Set w` 时选中 `With`，按空格就把 `w` 变成
+        ///   `With`，整行写坏。口径是"already complete 就不吃"。
         /// </summary>
         public bool CanSpaceConfirm()
         {

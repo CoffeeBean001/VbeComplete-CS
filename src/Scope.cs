@@ -1,19 +1,13 @@
-// 作用域分析：从一段模块文本里算出"每个名字属于谁、在别处看不看得见"。
+// 作用域分析：从模块文本算出"每个名字属于谁、在别处看不看得见"。
 //
-// ★为什么必须有这一层：旧的候选池是"整模块的全量标识符"，于是
-//     Sub A 里的 `Dim tmp As Long`
-//   会在
-//     Sub B 里被提示出来 —— 而 VBA 里 B 根本看不见 A 的局部变量。
-//   Python 版早就按 4/3/2 三档过滤了（本过程局部 > 本模块模块级 > 别的模块
-//   Public），C# 版一直是"一锅端"，这是"提示里混着用不了的名字"的主因。
+// ★为什么要有这一层：候选池原来是"整模块全量标识符"，于是 Sub A 里的 `Dim tmp`
+//   会在 Sub B 里被提示出来 —— 而 VBA 里 B 根本看不见它。这一层不碰 COM、不碰 UI，
+//   只吃字符串，所以每条可见性规则都能写成断言。
 //
-// ★这一层不碰 COM、不碰 UI，只吃字符串 —— 因此能把每一条可见性规则写成断言。
-//
-// 档位（越大越"近"，排序时优先）：
-//   4 = 本过程的局部变量 / 参数
-//   3 = 本模块的模块级名字（含 Private —— 自己模块当然看得见）
-//   2 = 别的模块的 Public（以及"本模块引用过、但没声明"的名字）
-//   0 = 不可见（别的过程的局部、别的模块的 Private）—— 不进候选池
+// 档位（越大越近，排序优先）：
+//   4 = 本过程局部 / 参数    3 = 本模块模块级（含 Private）
+//   2 = 别的模块的 Public（以及本模块"用过但没声明"的名字）
+//   0 = 不可见（别的过程的局部、别的模块的 Private）—— 不进池
 
 using System;
 using System.Collections.Generic;
@@ -47,15 +41,12 @@ namespace VbeComplete
         public List<string> FreeIdents = new List<string>();
 
         /// <summary>
-        /// 隐式变量**首次出现**所在的过程（ScopeKey；null = 模块级 / 过程外）。
-        /// <para>★v155（对齐 PY 版默认的 scope="proc"）：VBA 里未声明变量的作用域
-        /// 就是它首次出现的过程 —— A 过程里 `num = 1`、B 过程里也写 `num`，那是
-        /// 两个变量。把 A 的那个提示到 B 去，等于教用户写一行运行时报错的代码。</para>
+        /// 隐式变量出现过的过程集合（ScopeKey；空串 = 模块级）。
+        /// ★v155（对齐 PY 的 scope="proc"）：VBA 里未声明变量的作用域就是首次出现的那个
+        ///   过程 —— A 里 `num = 1`、B 里也写 `num` 是两个变量，提示过去就是教用户写错。
+        /// ★v161：值是**过程集合**而不是单个过程。只记第一次出现的那个，第二个过程就再也
+        ///   看不见它（用户报的 getTitle2 里打 di 提示不出 dic）。
         /// </summary>
-        /// <para>★v161：值是**过程集合**，不是单个过程。同一个隐式变量名可以在多个
-        /// 过程里各出现一次（VBA 里它们本来就是各自独立的变量）—— 只记第一次出现的
-        /// 那个过程，第二个过程就再也看不见它了。用户报的 `getTitle`/`getTitle2`
-        /// 里都有 `Set dic = ...`，结果 getTitle2 里打 di 提示不出 dic。</para>
         public readonly Dictionary<string, HashSet<string>> FreeIdentProc =
             new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
 
@@ -63,14 +54,9 @@ namespace VbeComplete
         public bool OptionExplicit;
 
         /// <summary>
-        /// VBE 组件类型：1=标准模块、2=类模块、3=窗体、100=文档模块（ThisWorkbook /
-        /// Sheet1）、0=未知（合成测试文本 / 还没读出来）。
-        ///
-        /// ★它只影响一件事：**这个模块的声明能不能进"裸名池"**。
-        ///   类模块（2）/ 窗体（3）/ 文档模块（100）里的 `Public s1` 是**对象成员**，
-        ///   只能 `c.s1` 这样访问；把它们并进裸名池，用户在别的模块里打一个 `s`
-        ///   就会看到 `s1` —— 那是真·变量泄露（用户 v137 报的）。
-        ///   当前正在编辑的那个模块不受这条限制（在自己模块里它当然是裸名）。
+        /// VBE 组件类型：1=标准模块、2=类模块、3=窗体、100=文档模块、0=未知（合成测试/还没读出）。
+        /// ★只影响一件事：这个模块的声明能不能进裸名池。类/窗体/文档模块里的 `Public s1`
+        ///   是对象成员（只能 `c.s1`），并进池子就是真·变量泄露（v137）。当前编辑的模块不受限。
         /// </summary>
         public int ComponentType;
 
@@ -137,13 +123,10 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 本模块自己的**全部模块级成员**（含 Private），给 `Me.` 用。
-        ///
-        /// ★v150：`Me.` 后面 Private 成员完全合法（窗体里的 Private Sub、
-        ///   类模块里的 Private m_x），拿 <see cref="Exported"/> 去填是错的 ——
-        ///   那份名单是"别的模块看得见什么"，正好把 Private 全滤掉了，
-        ///   于是 `Me.` 后面收不到自己的私有过程。
-        /// ★不收过程的局部（`Proc != null`）和 `type:` 伪键：它们不是 Me 的成员。
+        /// 本模块自己的全部模块级成员（含 Private），给 `Me.` 用。
+        /// ★v150：`Me.` 后面 Private 完全合法，拿 Exported() 去填是错的 —— 那份名单是
+        ///   "别的模块看得见什么"，正好把 Private 滤掉，于是收不到自己的私有过程。
+        /// ★不收过程局部和 `type:` 伪键。
         /// </summary>
         public Dictionary<string, KeyValuePair<string, int>> Members()
         {
@@ -195,12 +178,10 @@ namespace VbeComplete
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         // 过程外不带 Dim 的声明：`Private x As Long` / `Public g As Long`
-        // ★v150：尾部那个 `(?=\s*(?:As|\(|$))` 前瞻必须去掉 —— 它要求**首名**
-        //   后面紧跟 As/(/行尾，于是 `Public a, b As Long` 这种逗号多名声明
-        //   整行匹配不上，a 和 b 就都没进过候选池（用户报的"公有变量不提示"）。
-        //   改成把修饰符之后**整段**交给 DeclTypes 按逗号切，与 Dim 分支同一套口径。
-        //   ⚠️ 负面前瞻仍然保留：`Public Sub` / `Private Type` / `Friend Const`
-        //   这些不是变量声明，交给后面的过程/Type/Const 分支各自处理。
+        // ★v150：别在首名后面加 `(?=As|\(|$)` 前瞻 —— 它会让 `Public a, b As Long`
+        //   整行匹配不上、多个名字一起丢（用户报的"公有变量不提示"）。修饰符之后整段
+        //   交给 DeclTypes 按逗号切。⚠️ 负面前瞻保留：`Public Sub` / `Private Type` /
+        //   `Friend Const` 都不是变量声明。
         private static readonly Regex ReModuleBare = new Regex(
             @"^[ \t]*(Public|Private|Global|Friend)[ \t]+(?!(?:Sub|Function|Property|Declare|Type|Enum|Const|Dim|WithEvents|Event)\b)" +
             @"(.+)$",
@@ -220,16 +201,11 @@ namespace VbeComplete
 
         private static readonly Regex ReIdent = new Regex(Id, RegexOptions.Compiled);
 
-        // ---- v155：与 PY 版 _RE_IMP_ASSIGN / _RE_IMP_FOR / _RE_IMP_FOR_EACH 等价 ----
-        // 只认**写入**（赋值目标、循环变量）。"只读用法"另走宽扫描，靠下面两张名单压噪音。
-        //
-        // ★v163：**只认裸名写入**，带下标/实参的写法（`Cells(p, "a") = ...`）不算。
-        //   原来这里写成 `(Id)\s*(?:\([^()]*\))?\s*=`，把"给单元格赋值"和"给变量赋值"
-        //   当成同一件事，于是 `Cells(p, "a") = p - 2` 这种满篇都是的写法把 `Cells`
-        //   记进 written，绕过下面"宿主对象名不收"那道闸（v155）—— 用户打 `c`
-        //   第一条就是 `Cells`，而他从没把 cells 当过变量（v163 用户报的就是这条）。
-        //   语义上两者本来就不同：`range = 1` 是"名字被当变量用了"（该收）；
-        //   `Cells(p, "a") = x` 是"给宿主对象的某个单元格赋值"（不该收）。
+        // ---- v155：与 PY 的 _RE_IMP_ASSIGN / _RE_IMP_FOR / _RE_IMP_FOR_EACH 等价 ----
+        // 只认**写入**（赋值目标、循环变量）。★v163：还必须是**裸名**写入 ——
+        //   `Cells(p, "a") = x` 是给宿主对象的单元格赋值，不是"这个名字被当变量用了"。
+        //   带上 `(?:\([^()]*\))?` 就会把 Cells 记进 written，绕过下面宿主对象那道闸
+        //   （用户打 `c` 第一条是 Cells）。真正的例外只有 `range = 1` 这种裸名赋值。
         private static readonly Regex ReImpAssign = new Regex(
             @"^[ \t]*(?:Let[ \t]+|Set[ \t]+)?(" + Id + @")\s*=(?!=)",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -457,19 +433,10 @@ namespace VbeComplete
             ms.OptionExplicit = Parser.OptionExplicit(text);
 
             // ---- 全量标识符：只留"没被任何过程声明为局部"的 ----
-            // ★v158：声明要**按作用域**排，不能按名字一刀切。真实案例（用户报的）：
-            //   ```vba
-            //   Sub 查询()
-            //       Set conditions = getConditions()     ' 隐式变量 conditions
-            //       If isMeet(conditions, ws, t, r) Then ' 打 condi 提示不出 conditions
-            //   End Sub
-            //   Private Function isMeet(conditions, ws, t, r)   ' ← 形参也叫 conditions
-            //   ```
-            //   旧实现把所有 Decls 的名字并成一个 `declared` 集合，于是"isMeet 的形参
-            //   conditions"把"查询里的隐式变量 conditions"挡在 FreeIdents 之外，而
-            //   Visible("查询") 里又因为形参属于 isMeet 而跳过它 —— 结果两边都不认。
-            //   PY 版早就分了 `declared_global` / `declared_by_proc` 两份（parser.py
-            //   里那条"主过程的 num 被 Function f(ws, num) 挡住"的注释就是同一个坑）。
+            // ★v158：声明要**按作用域**排，不能按名字一刀切。真实案例：`查询()` 里
+            //   `Set conditions = getConditions()`，而 `isMeet(conditions, …)` 的形参也叫
+            //   conditions —— 一份全局 `declared` 集合会让两边都不认（打 condi 提示不出）。
+            //   PY 版同样分 declared_global / declared_by_proc 两份。
             var declaredGlobal = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var declaredByProc = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
             foreach (var d in ms.Decls)
@@ -482,12 +449,9 @@ namespace VbeComplete
             }
 
             // ---- v153：先分清"这个名字在模块里是怎么用的" ----
-            // `Range("d2")`、`InputBox("x")` 这种后面紧跟 `(` 的，是**函数/过程调用**，
-            // 不是"自动声明的变量"。无 Option Explicit 时把它们当变量收进池子，
-            // 就会拿工程名档位（rank 2）压过词库里的真函数 —— 用户打 `ra`，
-            // 第一条是 Excel 的 `Range`，把 `Rate`/`Randomize` 全顶到后面去。
-            // 判据只在"这个名字从没被当值用过"时才生效：`arr(1) = 5` 里的 arr
-            // 如果也在别处出现 `arr = Array()`，仍然按变量收。
+            // 后面紧跟 `(` 的是**函数/过程调用**，不是"自动声明的变量"。当变量收进去会拿
+            // 工程名档位压过词库里的真函数（打 `ra` 第一条成了 Range，Rate/Randomize 全被顶走）。
+            // 只在"从没被当值用过"时才生效：`arr(1) = 5` 的 arr 若别处还有 `arr = Array()` 仍按变量收。
             var callOnly = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var usedAsValue = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var raw in lines)
@@ -525,15 +489,9 @@ namespace VbeComplete
             }
 
             // ---- v155（对齐 PY 的 _implicit_names_in_stmt）：先扫"被写入"的名字 ----
-            // 【为什么需要】PY 版的隐式变量分两路：写入（赋值目标 / For / For Each）
-            // 是**精确**的，只有"只读用法"才走宽扫描。宽扫描里它靠三张名单压噪音：
-            // 宿主对象名（range/cells/…）、枚举常量前缀（vb*/xl*/mso*…）、
-            // 和一个"前导词"黑名单（as/new/lib/alias/…）。
-            //
-            // CS 之前只有一个"全量标识符"，于是 Worksheet 里 `Range("d2")` 和
-            // 实参 `xlUp` 都会变成"变量候选"——用户对照 PY 版一眼就看出来了。
-            // 这里补上同样的三道闸，并且保留一条例外：只要这个名字在**本模块里
-            // 被赋过值**（`range = 1` 这种怪用法），照样按变量收。
+            // PY 的隐式变量分两路：写入（赋值目标 / For / For Each）精确，只读用法走宽扫描；
+            // 宽扫描靠三张名单压噪音（宿主对象名、枚举前缀 vb*/xl*/mso*、前导词黑名单）。
+            // 这里补上同样三道闸，并留一条例外：本模块给这个名字赋过值（`range = 1`）就照收。
             var written = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var raw in lines)
             {
@@ -582,16 +540,11 @@ namespace VbeComplete
                     string w = Clean(m.Value);
                     if (w.Length == 0) continue;
 
-                    // ★v146：**前面紧挨着点号 = 成员访问**（`wsR.Cells` 里的 Cells、
-                    //   `Range.Value` 里的 Value、`Debug.Print` 里的 Print）—— 它不是
-                    //   "本模块的自由名字"，收进来就会被当成全工程可用的裸名：
-                    //   用户在任意模块打 `cell` 都会冒出 `Cells`。这就是 v146 用户
-                    //   报的"输入 cell 提示 cells，是不是泄露"—— 确实是泄露，
-                    //   泄露的是**别的模块里某个对象的成员名**。
-                    //   注意方向别搞反：`LooksLikeHostObject` 看的是"**后面**跟点号"
-                    //   （`CommandButton1.Caption` → 对象名要留），这里看的是"**前面**
-                    //   是点号"（→ 成员名要丢）。
-                    //   裸用 `Cells(1,1)` 仍然照收 —— 那是用户真这么写了，该提示。
+                    // ★v146：前面紧挨着点号 = 成员访问（`wsR.Cells` 的 Cells、`.Value`、
+                    //   `Debug.Print` 的 Print）。收进来就成了全工程可用的裸名 —— 用户在任意
+                    //   模块打 `cell` 都会冒出 `Cells`（v146 报的那条）。
+                    //   ★方向别搞反：LooksLikeHostObject 看"后面跟点号"（对象名要留），
+                    //   这里看"前面是点号"（成员名要丢）。
                     if (IsMemberAccess(code, m)) continue;
 
                     // ★v154：下面这几类**按位置**判断（不能只看名字）：
@@ -622,13 +575,8 @@ namespace VbeComplete
                     //   `_IMPLICIT_STOPWORDS` + `_RE_BUILTIN_CONST` 两道闸的作用。
                     if (!written.Contains(w) && (IsHostObjectName(w) || IsHostEnumConst(w)))
                         continue;
-                    // ★v158：**按作用域**判"声明过没有"。
-                    //   模块级声明 → 全模块排除；
-                    //   过程级声明（Dim / 形参）→ 只在**那个过程**里排除。
-                    //   旧实现用一份 `declared` 名字集合一刀切，于是 isMeet 的形参
-                    //   `conditions` 把"查询"里的隐式变量 `conditions` 挡在池外
-                    //   （用户报的 condi 提示不出 conditions 就是这条）。
-                    //   `localNames` 那条同理，已经由 declaredByProc 覆盖，删掉。
+                    // ★v158：按作用域判"声明过没有" —— 模块级排全模块，过程级（Dim/形参）
+                    //   只排那个过程。理由见上面"全量标识符"那段（isMeet 的形参 conditions）。
                     string curProc = (ln + 1) < owner.Length ? owner[ln + 1] : null;   // owner 是 1-based
                     bool declaredHere = declaredGlobal.Contains(w);
                     if (!declaredHere && curProc != null)
@@ -704,12 +652,9 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 后面跟括号的这个名字，其实是**数组变量**而不是函数调用吗？
-        /// 两条判据（都只看语法，不猜类型）：
-        ///   * 前面是 `ReDim` / `ReDim Preserve` —— `ReDim arr(10)`；
-        ///   * 位于语句起点、且括号配平后紧跟 `=` —— `arr(1) = 5`（数组元素赋值）。
-        /// `If arr(1) = 5 Then` 不算（前面有 `If`，不是语句起点）—— 那种情况
-        /// 仍归"调用"，但通常同一个 arr 在别处也被赋值过，不影响。
+        /// 后面跟括号的这个名字，其实是**数组变量**而不是函数调用吗（只看语法）：
+        ///   * 前面是 `ReDim` / `Preserve` / `Let`；* 语句起点且括号配平后紧跟 `=`。
+        /// `If arr(1) = 5 Then` 不算（前面有 If，不是语句起点）。
         /// </summary>
         private static bool IsArrayLikeUse(string code, Match m)
         {
@@ -786,10 +731,8 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 这个标识符后面是不是紧跟一个 `(` —— 也就是它被当成**函数/过程调用**用了。
-        /// 只跳过空白，不做任何类型推断（`Range ("d2")` 这种带空格的写法也认）。
-        /// 与 <see cref="LooksLikeHostObject"/> 的区别：那边看"后面跟点号"（对象），
-        /// 这边看"后面跟括号"（调用）。
+        /// 这个标识符后面是不是紧跟 `(`（= 被当成函数/过程调用）。只跳空白，不做类型推断。
+        /// 与 LooksLikeHostObject 的分工：那边看"后面跟点号"（对象），这边看"后面跟括号"（调用）。
         /// </summary>
         private static bool FollowedByParen(string code, Match m)
         {
@@ -799,13 +742,10 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 这个名字像不像"宿主给的对象"（窗体控件、Application、隐式全局）？
-        /// 只认一条最直接的语法证据：**后面紧跟点号**（`CommandButton1.Caption`）。
-        /// <para>★v156：**去掉**了原来"前面是 `Set`"那条。`Set x = ...` 的 x 是
-        /// **被赋值的变量**，不是宿主给的对象 —— 在 `Option Explicit` 模块里它没
-        /// `Dim` 就是编译错误，把它当宿主对象放行等于教用户写错代码。真正的宿主
-        /// 对象（控件本身、Application）都会以 `控件.成员` 的形式出现，走点号那条。</para>
-        /// 不做类型推断：拿不准就按普通自由标识符处理。
+        /// 像不像"宿主给的对象"？只认一条语法证据：**后面紧跟点号**（`CommandButton1.Caption`）。
+        /// ★v156：去掉了"前面是 Set"那条 —— `Set x = ...` 的 x 是被赋值的变量，Option Explicit
+        ///   模块里没 Dim 就是编译错误，放行等于教用户写错代码。
+        /// 不做类型推断，拿不准按普通自由标识符处理。
         /// </summary>
         private static bool LooksLikeHostObject(string code, Match m)
         {

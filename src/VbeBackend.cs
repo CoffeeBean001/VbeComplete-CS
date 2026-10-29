@@ -319,14 +319,10 @@ namespace VbeComplete
 
         /// <summary>
         /// 全工程每个模块的作用域分析（含"别的模块的 Public 也能提示"）。
-        ///
-        /// ★为什么必须有：旧版候选池只收**当前模块**，于是在 Module2 里写
-        ///   `Public Sub Refresh()`、在 Module1 里敲 `ref` 什么都提示不出来 ——
-        ///   而 VBA 里这是完全合法的跨模块调用。Python 版一直是全工程。
-        ///
-        /// signature 是"各组件名 + 行数"的滚动哈希，供引擎判"池子要不要重建"。
-        /// 行数没变就复用上一次的分析结果（读全文 + 跑正则比读 CountOfLines
-        /// 贵两个数量级，而打字时每秒要触发十几次）。
+        /// ★旧版只收当前模块，于是在 Module2 写 `Public Sub Refresh()`、在 Module1 敲 `ref`
+        ///   什么都提示不出来 —— 而 VBA 里这是合法的跨模块调用。PY 版一直是全工程。
+        /// signature = "各组件名 + 行数"的滚动哈希，供引擎判"池子要不要重建"（行数没变就复用：
+        /// 读全文跑正则比读 CountOfLines 贵两个数量级，而打字时每秒触发十几次）。
         /// </summary>
         public List<ModuleScope> ProjectScopes(out int signature)
         {
@@ -605,17 +601,10 @@ namespace VbeComplete
 
         // ==================================================================
         // VBE 内置命令 —— "设置注释块"/"解除注释块"
-        //
-        // ★v145：这两个 ID 是 VBE 自己的命令控件 ID，**与 VBE 的语言版本无关**
-        //   （中文版叫"设置注释块/解除注释块"，英文版叫 Comment Block/Uncomment
-        //   Block，ID 都是 192 / 2552）。所以绝不要按 Caption 找控件 ——
-        //   按名字找在别的语言版本上必然找不到。
-        //
-        // 真机实测（Excel 365 / VBE 7.1）：
-        //   · Execute() 一次 ≈ 3.5ms，我们逐行 ReplaceLine 三行 ≈ 15ms
-        //   · 执行后**选区原样保留**，不用再 SetSelection 摆回去
-        //   · 改动进 VBE 自己的 Undo 栈，一次 Ctrl+Z 就整块回来
-        //   · FindControl 首次 18ms、之后 <1ms —— 必须缓存，否则每次按都白付 18ms
+        // ★v145：控件 ID **与 VBE 语言版本无关**（中文"设置注释块"、英文 Comment Block 都是
+        //   192 / 2552）—— 绝不要按 Caption 找控件，换语言版本必然找不到。
+        // 真机实测（Excel 365 / VBE 7.1）：Execute() ≈ 3.5ms（逐行 ReplaceLine 三行约 15ms）；
+        //   执行后选区原样保留；改动进 VBE 自己的 Undo 栈；FindControl 首次 18ms、之后 <1ms ⇒ 必须缓存。
         // ==================================================================
         public const int CmdCommentBlock = 192;
         public const int CmdUncommentBlock = 2552;
@@ -715,15 +704,12 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// Shift+Enter（smart=false）/ 回车（smart=true）：在光标所在行【下方】
-        /// 新起一行，光标落在缩进之后，本行一个字符都不动。
-        ///
-        /// smart=true 时多四道保险（任一不满足就返回 false，让调用方把回车原样
-        /// 还给系统）：有选区、光标不在行尾（那是拆行）、空行、引号没闭合。
-        /// smart=false 时刻意**不**要求光标在行尾 —— 那条路本来就不拆行。
-        ///
-        /// align_branch：本行是 Else / ElseIf / Case 时先把【本行】拉回该在的层级。
-        /// auto_close：块头后面补一行收尾（保守口径见 Editing.CloserNeeded）。
+        /// Shift+Enter（smart=false）/ 回车（smart=true）：在光标行【下方】新起一行，光标落在
+        /// 缩进之后，本行一个字符都不动。
+        /// smart=true 多四道保险（任一不满足返回 false，让调用方把回车还给系统）：有选区、
+        /// 光标不在行尾（那是拆行）、空行、引号没闭合。smart=false 刻意不要求行尾。
+        /// alignBranch：本行是 Else/ElseIf/Case 时先把【本行】拉回该在的层级。
+        /// autoClose：块头后面补一行收尾（保守口径见 Editing.CloserNeeded）。
         /// </summary>
         public bool NewLineBelow(bool smart, bool autoClose, bool alignBranch)
         {
@@ -1138,15 +1124,10 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 把一段（可能多行的）代码片段插到光标处。落点模型是整行拼接：
-        ///     前半行 + 片段第 1 行
-        ///     片段第 2..n-1 行
-        ///     片段最后 1 行 + 后半行
-        /// 于是"光标在行中间"也能插；有选区则是替换语义（单行 / 多行都支持）。
-        ///
-        /// 写入"尽量原子"：中间 n-1 行用**一次** InsertLines 灌进去，再覆盖首行；
-        /// 任何一步失败都回到"什么都没发生"（绝不留下半截片段 —— 那会让用户再
-        /// 点一次，片段就插两遍）。
+        /// 把一段（可能多行的）片段插到光标处。落点模型是整行拼接：前半行 + 片段第 1 行、
+        /// 片段 2..n-1 行、片段最后一行 + 后半行 —— 于是"光标在行中间"也能插；有选区是替换语义。
+        /// 写入尽量原子：中间 n-1 行用**一次** InsertLines 灌进去，再覆盖首行；任何一步失败都
+        /// 回到"什么都没发生"（留下半截片段会让用户再点一次，片段就插两遍）。
         /// </summary>
         public bool InsertSnippet(string text)
         {

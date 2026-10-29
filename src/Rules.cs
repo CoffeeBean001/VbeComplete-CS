@@ -46,12 +46,10 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// VBE 重排过整行之后，找回补全词真正的结束下标（0-based 排他）。
-        /// 只认【整词】出现（前后都不是标识符字符），多处出现取起点最接近 near0 的；
-        /// 找不到就用 fallback0。
-        /// ★v131b：原来用 LastIndexOf 且不校验词边界 —— 行里出现两次同名
-        ///   （`Split = Split(x)`）时会取到最后一个，光标就跑到别的词后面去。
-        ///   判据与 Python 版 `_find_completion_end` 同一份语义。
+        /// VBE 重排整行之后，找回补全词真正的结束下标（0-based 排他）。只认**整词**出现，
+        /// 多处取起点最接近 near0 的，找不到用 fallback0。
+        /// ★v131b：原来只用 LastIndexOf 不校验词边界 —— `Split = Split(x)` 会取到最后一个，
+        ///   光标跑到别的词后面去。
         /// </summary>
         public static int FindCompletionEnd(string actual, string completion, int near0, int fallback0)
         {
@@ -74,10 +72,9 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// VBE 编辑器里一个 Tab 等于几个显示列。出厂值是 4。
-        /// <para>★v157：从 settings.ini 的 `TAB_WIDTH` 读。三个换算函数传
-        /// `tabw &lt;= 0` 就表示"用这个全局值" —— 用户把 VBE 的制表符宽度
-        /// 从 4 改成 8 之后，候选取词和光标落点才继续对得上（以前写死 4）。</para>
+        /// VBE 编辑器里一个 Tab 等于几个显示列（出厂 4，可用 settings.ini 的 TAB_WIDTH 改）。
+        /// ★v157：三个换算函数传 tabw &lt;= 0 表示"用这个全局值" —— 用户把 VBE 制表符宽度改成 8
+        ///   之后，取词和光标落点才继续对得上。
         /// </summary>
         public static int TabWidth = Settings.Int("TAB_WIDTH", 4, 1, 16);
 
@@ -105,9 +102,8 @@ namespace VbeComplete
 
         /// <summary>
         /// "第 charCol 个字符之前" -> VBE 认的显示列（1-based）。
-        /// ★v131c：`SetCaret` 的列语义唯一实现。DispCol(i) 给的是"字符 i 之前"，
-        ///   所以第 charCol 个字符之前 = DispCol(charCol - 1)。差这一格，真机上
-        ///   就是"光标永远比你以为的右一格"。
+        /// ★v131c：SetCaret 的列语义唯一实现。DispCol(i) 是"字符 i 之前"，所以这里取
+        ///   DispCol(charCol - 1) —— 差这一格，真机上就是"光标永远比你以为的右一格"。
         /// </summary>
         public static int CaretColForCharCol(string text, int charCol, int tabw = -1)
         {
@@ -122,12 +118,10 @@ namespace VbeComplete
             (c >= 0xFFE0 && c <= 0xFFE6);
 
         /// <summary>
-        /// 反向换算：VBE 给的"显示列"（1-based）-> 1-based 字符列。
-        /// ★v131b：`CodePane.GetSelection` 返回的列是**显示列**（真机实测：
-        ///   `    学生 = Split()` 里 `(` 前是 17 列，按字符数是 15）。把它直接
-        ///   当字符列去取词，含中文/全角的行会取错位置甚至取到空词 ——
-        ///   症状是"这一行根本不弹候选"。凡是吃 `snap.CaretCol` 的判据，
-        ///   都必须先过这一道。
+        /// 反向换算：VBE 给的显示列（1-based）-> 1-based 字符列。
+        /// ★v131b：GetSelection 返回的是**显示列**（`    学生 = Split()` 里 `(` 前是 17 列，
+        ///   按字符数是 15）。直接当字符列取词，含中文的行会取错甚至取到空词 —— 症状是
+        ///   "这一行根本不弹候选"。凡是吃 snap.CaretCol 的判据都必须先过这一道。
         /// </summary>
         public static int CharColFromDisp(string text, int dispCol, int tabw = -1)
         {
@@ -150,12 +144,9 @@ namespace VbeComplete
 
         /// <summary>
         /// 声明语句的"头"：带 Dim 的常规声明，以及**不带 Dim 的裸声明**。
-        ///
-        /// ★v133 补上裸声明这一支：`Public gCount` / `Private m_arr` / `Global g`
-        ///   是模块级变量的常见写法，旧正则只认 `Public Sub` 这种"修饰符 + 关键字"，
-        ///   于是 `Public g|` 被判成普通表达式 —— 弹窗照弹，而候选池里刚好有
-        ///   它自己（解析时把 `Public g` 当成了已声明的名字），用户看到的就是
-        ///   "定义全局变量时提示它自己"。
+        /// ★v133：补上裸声明这一支 —— `Public gCount` / `Private m_arr` 是模块级变量的常见
+        ///   写法，旧正则只认"修饰符 + 关键字"，于是 `Public g|` 被判成普通表达式、弹窗照弹，
+        ///   而候选池里刚好有它自己（"定义全局变量时提示它自己"）。
         /// </summary>
         private static readonly Regex ReDeclHead = new Regex(
             @"^[ \t]*(?:" +
@@ -167,13 +158,10 @@ namespace VbeComplete
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         /// <summary>
-        /// 光标是不是停在"造一个新名字 / 写一个类型"的位置 —— 这类位置一律不弹候选。
-        ///
-        /// ★v133 起语义变了（用户口径）：
-        ///   * `As` 后面【不弹】。那里只可能是类型名，VBE 自己的处理更准，
-        ///     我们弹一层上去只会挡住它、打断打字节奏。
-        ///   * 裸声明的名字位置【不弹】（见 ReDeclHead 的说明）。
-        ///   例外：`Const PI = 3.14` 的等号右边是**表达式**，那里要照常提示。
+        /// 光标是不是停在"造新名字 / 写类型"的位置 —— 这类位置一律不弹。
+        /// ★v133 口径：`As` 后面不弹（那里只可能是类型名，VBE 自己的处理更准，弹上去只会挡住
+        ///   它）；裸声明的名字位置不弹。
+        /// 例外：`Const PI = 3.14` 的等号右边是表达式，照常提示。
         /// </summary>
         public static bool InDeclarationPosition(string line, int caretCol)
         {
@@ -221,15 +209,10 @@ namespace VbeComplete
 
         /// <summary>
         /// 光标前那个词是不是紧跟在 `As` / `New` 这类"后面只可能是类型名"的关键字后面。
-        ///
-        /// ★为什么单独一条、不并进 <see cref="InDeclarationPosition"/>：
-        ///   那条只认 `Dim` / `Const` / `ReDim` / `WithEvents` **开头的整行**；
-        ///   而 `Set c = New |`、`dic.Add 1, New |`、`For i As |`、过程参数
-        ///   `Sub Foo(a As |)` 的行首都不是声明关键字 —— 旧实现里它们照弹。
-        ///   用户口径（v137）：`New` 后面跟 `As` 一样，不弹。
-        ///
-        ///   wordStartCol 是"正在输入的那个词"的起始列（1-based 字符列）。
-        ///   词还没开始（`New |`）时 <see cref="WordBefore"/> 会给回 caret 本身。
+        /// ★为什么不并进 InDeclarationPosition：那条只认 `Dim`/`Const`/`ReDim`/`WithEvents`
+        ///   开头的整行，而 `Set c = New |`、`dic.Add 1, New |`、`Sub Foo(a As |)` 的行首都
+        ///   不是声明关键字，旧实现里它们照弹（用户口径 v137：New 后面也一样不弹）。
+        /// wordStartCol 是正在输入的词的起始列；词还没开始时 WordBefore 会回 caret 本身。
         /// </summary>
         public static bool AfterTypeKeyword(string line, int wordStartCol)
         {
@@ -244,16 +227,10 @@ namespace VbeComplete
 
         /// <summary>
         /// 把模块全文里"正在输入的那个词"挖成空格。
-        ///
-        /// ★为什么要这一步：作用域分析看到的是**当前**文本，而用户打到一半的
-        ///   名字（`Dim glo` / `Public g`）本身会被解析成一个声明。于是候选池里
-        ///   出现了"这个词自己"，弹出来就是自我提示。挖掉之后池子里只剩
-        ///   "已经写完的名字"，自我提示从根上没了。
-        ///
-        /// ★先核对"模块全文那一行那一列确实就是这个词"，对不上就原样返回：
-        ///   模块全文有 1.5 秒缓存，偶尔会比光标慢一拍；那时宁可这一次不挖，
-        ///   也绝不能拿错位的位置去把别人挖掉（挖坏 `Dim` 会让整个模块的过程
-        ///   解析失败）。
+        /// ★用户打到一半的名字（`Dim glo` / `Public g`）本身会被解析成一个声明，池子里就出现
+        ///   这个词自己（自我提示）。挖掉之后只剩"已经写完的名字"。
+        /// ★先核对那一行那一列确实就是这个词，对不上就原样返回：模块全文有缓存、偶尔比光标慢
+        ///   一拍，宁可这次不挖，也不能拿错位的位置把别人挖掉（挖坏 Dim 会让整个模块解析失败）。
         /// </summary>
         public static string BlankToken(string moduleText, int line1, int startCol1, string token)
         {
@@ -284,20 +261,11 @@ namespace VbeComplete
 
         /// <summary>
         /// 光标若停在**成员访问位置**，返回那个点号的 0-based 下标；否则 -1。
-        ///
-        /// ★v138：这是"要不要把这一处让给 VBE"的**唯一判据**，从 Python 版
-        /// `_member_list_dot_col` 整条移植（用户口径："输入 student.，点号后面
-        /// 就不要出提示框了"）。原先 `InMemberPosition` 只认"光标紧跟点号"，
-        /// 于是 `Range("A1").|` / `student.na|` 这类位置漏判 —— 漏判的后果是
-        /// 我们的裸名池照弹、压在 VBE 的成员列表上面。
-        ///
-        /// 认的位置：
-        ///   `student.|` / `student.na|`      标识符.成员
-        ///   `Range("A1").|` / `arr(0).x|`    点号左边是 `)` / `]` / `}`
-        ///   `    .Size|` / `Set f = .Font|`  With 块的成员访问
-        /// 不认的位置（VBE 在这些地方不弹，我们照旧提示）：
-        ///   `1.5`（小数点）、`x = "abc".c`（点号贴着一个完整串字面量）、
-        ///   注释 / 字符串里的点号。
+        /// ★v138：这是"要不要让给 VBE"的唯一判据（从 PY 的 _member_list_dot_col 整条移植）。
+        ///   原先只认"光标紧跟点号"，`Range("A1").|` / `student.na|` 漏判 —— 我们的裸名池
+        ///   会照弹、压在 VBE 的成员列表上面。
+        /// 认：`student.|`、`Range("A1").|`、With 块的 `    .Size`。
+        /// 不认：`1.5`、`"abc".c`、注释/字符串里的点。
         /// </summary>
         public static int MemberDotCol(string line, int caretCol)
         {
@@ -352,10 +320,8 @@ namespace VbeComplete
             => MemberDotCol(line, caretCol) >= 0;
 
         /// <summary>
-        /// 光标是不是在 `对象.|` 或 `对象.前|` 这种位置。成立时 root = 点号前那个
-        /// 标识符，dotCol = 点号的 1-based 列。
-        /// 只认"点号前是一个简单标识符"（`Me` / `c` / `m_arr`）—— `Range("A1").`
-        /// 这种要真做表达式求值，不在这一层猜。
+        /// 光标是不是在 `对象.|` 或 `对象.前|` 这种位置。成立时 root = 点号前的标识符。
+        /// 只认"点号前是简单标识符"（`Me` / `c` / `m_arr`）—— `Range("A1").` 要真求值，不在这一层猜。
         /// </summary>
         public static bool MemberRoot(string line, int caretCol, out string root, out int dotCol)
         {
@@ -377,12 +343,9 @@ namespace VbeComplete
 
         /// <summary>
         /// 光标是不是在**注释**里（`'...` 或语句开头的 `Rem ...`）。
-        /// ★与 <see cref="InCommentOrString"/> 的差别只在"字符串算不算"这一条 ——
-        /// 自动配对必须用这一版，原因见 `Editing.CloseOf` 那一段：
-        /// 打 `s = "abc` 再按 `"` 时，光标在未闭合的字符串**内部**，那一下正是
-        /// 收尾的引号；若按"在字符串里就不配对"提前放弃，VBE 会老实插一个 `"`，
-        /// 结果是 `s = "abc""`。正确行为是只补一个收尾引号（Python 版
-        /// `_classify(...)[1]` 就是只看 in_comment）。
+        /// ★与 InCommentOrString 的差别只在"字符串算不算"。自动配对必须用这一版：打
+        ///   `s = "abc` 再按 `"` 时，光标正在未闭合字符串内部，那一下正是收尾的引号；
+        ///   按"在字符串里就不配对"提前放弃，结果是 `s = "abc""`。
         /// </summary>
         public static bool InCommentOnly(string line, int caretCol) =>
             ScanDead(line, caretCol, strCounts: false, remCounts: true);
@@ -392,21 +355,17 @@ namespace VbeComplete
             ScanDead(line, caretCol, strCounts: true, remCounts: false);
 
         /// <summary>
-        /// 光标是不是落在"写什么都无所谓"的位置 —— 注释（`'` 或 `Rem`）或字符串里。
-        ///
-        /// ★v150：候选弹窗原来只过 <see cref="InCommentOrString"/>，它不认 `Rem`，
-        ///   于是 `Rem 说明 |` 里照样弹全工程候选、按 Tab 还能把注释改写掉。
-        ///   两个判据各自漏的那块正好被对方补上，取并集才是全的。
+        /// 光标是不是落在注释（`'` 或 `Rem`）或字符串里 —— 候选弹窗用这一条。
+        /// ★v150：它原来只过 InCommentOrString（不认 `Rem`），于是 `Rem 说明 |` 里照样弹
+        ///   全工程候选、按 Tab 还能把注释改写掉。两个判据各自漏的正好互补，取并集。
         /// </summary>
         public static bool InDeadZone(string line, int caretCol) =>
             ScanDead(line, caretCol, strCounts: true, remCounts: true);
 
         /// <summary>
-        /// 上面三个判据的公共扫描。旧实现是两份几乎逐行重复的循环，改一处漏一处。
+        /// 上面三个判据的公共扫描（旧实现是两份几乎逐行重复的循环，改一处漏一处）。
+        /// strCounts = 未闭合字符串算不算死区；remCounts = 语句开头的 `Rem` 算不算注释。
         /// </summary>
-        /// <param name="strCounts">未闭合的字符串算不算"死区"。
-        ///   true = 算（弹候选没意义）；false = 不算（自动配对要能进到字符串里收尾）。</param>
-        /// <param name="remCounts">语句开头的 `Rem` 算不算注释。</param>
         private static bool ScanDead(string line, int caretCol, bool strCounts, bool remCounts)
         {
             if (string.IsNullOrEmpty(line)) return false;
@@ -462,9 +421,7 @@ namespace VbeComplete
 
         // ------------------------------------------------------------------
         // 匹配
-        //
-        // ★模糊匹配的实现【只有一份】，在 Fuzzy.cs（逐字符命中 + 5 档质量）。
-        //   这里曾经也有一套"前缀 + 词边界跳步"的简版，两个一起用会出现
+        // ★模糊匹配的实现只有一份，在 Fuzzy.cs。这里曾经也有一套简版，两个一起用会出现
         //   "排序按 A 算法、高亮按 B 算法"的自相矛盾 —— 已删除。
         // ------------------------------------------------------------------
 
@@ -510,20 +467,12 @@ namespace VbeComplete
         public static string Rstrip(string s) => (s ?? "").TrimEnd(' ', '\t', '\r', '\n');
 
         /// <summary>
-        /// 自动弹出候选窗的总判据（v141）。四个条件同时成立才弹：
-        ///   1. <paramref name="changed"/> —— 快照真的变了；
-        ///   2. <paramref name="modSwitched"/> 为假 —— 只是切了代码窗，不是打字；
-        ///   3. <paramref name="keyTriggered"/> —— 最近按过键（鼠标右键粘贴、拖拽、
-        ///      别的程序用 COM 改模块都不算）；
-        ///   4. <paramref name="lineJumped"/> 为假 —— **光标没有跳到别的行**。
-        ///
-        /// ★第 4 条是 v141 修的用户报的 bug："有时候鼠标单击到某个变量名，它会
-        ///   自动弹提示词框。" 鼠标单击另一行上的变量时，快照的"当前行 + 行文本"
-        ///   全变了，看起来和"刚敲了一个字"一模一样；而"最近 1.2 秒按过键"这个
-        ///   判据又拦不住它（用户往往是打完字顺手点一下）。真打字时行号绝不会变
-        ///   （回车换到的是空行，那种位置本来也没词可提示），方向键上下、Ctrl+Home
-        ///   这类"只移动光标"的操作则一定会变 —— 所以行号一变就当"光标移动"处理：
-        ///   **只收不弹**。
+        /// 自动弹出候选窗的总判据（v141）：四个条件同时成立才弹 —— 快照真的变了、不是切了
+        /// 代码窗、最近按过键、**光标没有跳到别的行**。
+        /// ★第 4 条修的是"鼠标单击到某个变量名就自动弹"：点另一行的变量时"行号 + 行文本"
+        ///   全变，和刚敲一个字长得一样，而"最近按过键"拦不住（用户常打完字顺手点一下）。
+        ///   真打字时行号绝不会变，方向键 / Ctrl+Home 这类只移动光标的操作一定会变 ——
+        ///   所以行号一变就当"光标移动"：只收不弹。
         /// </summary>
         public static bool AutoTriggerWanted(bool changed, bool modSwitched,
             bool keyTriggered, bool lineJumped)

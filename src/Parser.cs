@@ -1,12 +1,7 @@
 // VBA 源码解析：从模块全文里收"工程自己定义的名字"。
-//
-// ★这一层【完全不碰 COM】，只吃一段字符串 —— 于是它能被单独测试，
-//   也是"候选池里到底有什么"的唯一事实来源。
-//
-// 收什么（用户一条条要求出来的口径）：
-//     过程名（Sub/Function/Property）、变量与常量、类型与枚举名、
-//     窗体/控件名、参数名、以及其他一切出现过标识符形状的词。
-// 不收：注释里和字符串里的词（那是在说人话，不是代码）。
+// ★完全不碰 COM，只吃字符串 —— 能被单独测试，也是"候选池里到底有什么"的唯一事实来源。
+// 收：过程名、变量/常量、类型/枚举名、窗体/控件名、参数名，以及一切标识符形状的词。
+// 不收：注释里和字符串里的词。
 
 using System;
 using System.Collections.Generic;
@@ -71,10 +66,6 @@ namespace VbeComplete
 
         private static readonly Regex ReTypeHead = new Regex(
             @"^[ \t]*(?:(?:Public|Private)[ \t]+)?Type[ \t]+(" + IDENT + ")",
-            RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
-        private static readonly Regex ReDeclare = new Regex(
-            @"^[ \t]*(?:(?:Public|Private)[ \t]+)?Declare[ \t]+(?:PtrSafe[ \t]+)?(?:Sub|Function)[ \t]+(" + IDENT + ")",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         private static readonly Regex ReOptionExplicit = new Regex(

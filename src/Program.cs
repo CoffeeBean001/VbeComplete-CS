@@ -160,14 +160,9 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 写入链路验证：在模块【末尾】追加一行测试代码 -> 用补全改它 -> 删掉。
-        /// 全程可逆，最后逐字节比对原文；比对失败会把原文整段写进日志。
-        /// ★只由用户显式运行 `--writetest` 触发，正常运行一次都不会动用户代码。
-        /// </summary>
-        /// <summary>
-        /// 把当前代码窗模块的全文写到 moddump.txt（只读，一个字节都不改）。
-        /// 真机跑 --writetest / --hktest / --carettest 之前先 dump 一份，
-        /// 跑完再 dump 一份 diff —— 那几条用例都会"改完再删"，这是唯一的核对手段。
+        /// 把当前代码窗模块的全文写到 moddump.txt（只读）。真机跑 --writetest / --hktest /
+        /// --carettest 前 dump 一份、跑完再 dump 一份 diff —— 那几条用例都会"改完再删"，
+        /// 这是唯一的核对手段。
         /// </summary>
         private static int DumpModule()
         {
@@ -290,6 +285,10 @@ namespace VbeComplete
             return 1;
         }
 
+        /// <summary>
+        /// 写入链路验证：在模块末尾追加一行 -> 用补全改它 -> 删掉，最后逐字节比对原文。
+        /// ★只在用户显式跑 `--writetest` 时动，正常运行一次都不会碰用户代码。
+        /// </summary>
         private static int WriteTest()
         {
             var sb = new StringBuilder();
@@ -363,16 +362,6 @@ namespace VbeComplete
             File.WriteAllText(Path.Combine(Settings.Home, "writetest.log"), sb.ToString(), Encoding.UTF8);
             return ok && restored ? 0 : 1;
         }
-
-        /// <summary>
-        /// 括号补全验证（真机）：走 Engine.AcceptName 这条**真路径**（不是直接调
-        /// Backend.ApplyCompletion），确认"选词库里的函数"真的会得到一对括号、
-        /// 光标真的落在两个括号中间；类型名 / 关键字一个括号都不许补。
-        ///
-        /// ★为什么要单开一条：用户报"选中的是 vba 函数提示词，没有自动补全双括号"。
-        ///   括号逻辑分散在四处（Followup 判档位 → IsCallSite 判位置 →
-        ///   InCallStatement 判 Call 语句 → ApplyCompletion 落光标），只有真机
-        ///   走一遍才知道断在哪一环。全程只动模块末尾的临时行，最后逐字节还原。
         /// </summary>
         /// <summary>日志用：安全截一段字符串（越界不抛，换行写成 \n）。</summary>
         private static string SafeSlice(string s, int from, int len)
@@ -531,6 +520,13 @@ namespace VbeComplete
             return sb.ToString();
         }
 
+        /// <summary>
+        /// 括号补全验证（真机）：走 Engine.AcceptName 这条真路径（不是直接调
+        /// Backend.ApplyCompletion），确认选函数真的补一对括号、光标落在括号中间；
+        /// 类型名 / 关键字一个都不许补。全程只动模块末尾的临时行，最后逐字节还原。
+        /// ★单开一条的原因：括号逻辑分散在四处（Followup 判档位 → IsCallSite 判位置 →
+        ///   InCallStatement 判 Call 语句 → ApplyCompletion 落光标），只有真机走一遍才知道断在哪。
+        /// </summary>
         private static int ParenTest()
         {
             var sb = new StringBuilder();
@@ -638,22 +634,10 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 光标落点验证（真机）：模拟"打到一半 + Tab 补全"，读回 VBE 真实光标列，
-        /// 跟"按读回来的真行算出来的列"对数，并把光标左右两截文本打出来。
-        /// ★只在 `--carettest` 时执行；动的是模块末尾的临时行，finally 里删干净
-        /// 并逐字节比对原文。
-        /// </summary>
-        /// <summary>
         /// 真机验证四个命令：Ctrl+Shift+Enter / Ctrl+D / Ctrl+K / Ctrl+/。
-        /// （`Ctrl+Shift+↑/↓` 的用例 v149 随功能一起删除；`Ctrl+↑/↓` 由 --enterprobe 的
-        ///   用例 I 走真钩子验证。）
-        ///
-        /// ★为什么要这个：用户报"快捷键全都没了"。按键有没有走到钩子，在沙箱里
-        ///   没法用真键盘试（钩子按设计不理注入键）；但"命令本身能不能干活"可以
-        ///   100% 验证 —— 因为这里调的就是钩子调的那几个 Commands.* 函数。
-        ///   命令全过 ⇒ 问题只可能在路由（焦点判定 / 修饰键 / 别的软件抢钩子），
-        ///   App 里那两行"热键被跳过 / 热键未命中"日志就是给这种情况准备的。
-        ///
+        /// ★为什么要这个：用户报"快捷键全都没了"。按键有没有走到钩子没法在这里试（钩子按设计
+        ///   不理注入键），但"命令本身能不能干活"可以 100% 验证 —— 这里调的就是钩子调的
+        ///   那几个 Commands.*。命令全过 ⇒ 问题只可能在路由（焦点 / 修饰键 / 别的软件抢钩子）。
         /// 全程只动模块末尾临时追加的 6 行，最后删干净并逐字节比对原文。
         /// </summary>
         private static int HkTest()
@@ -985,19 +969,10 @@ namespace VbeComplete
 
         /// <summary>
         /// 真机"回车补结构"探针 —— **走真键盘钩子**。
-        ///
-        /// ★为什么非要有这一条：`--hktest` 是直接调 `VbeBackend.NewLineBelow`（等于
-        ///   只验后端），而用户真正的路径是
-        ///   `WH_KEYBOARD_LL → FreshHookSnap → EnterIndentWanted → Post → NewLineBelow`。
-        ///   v137 就是栽在这上面：后端 15 条全 PASS，真机上回车照样不补 `Next`
-        ///   （用户第二次报同一个问题）。所以这里把真 `App` 起起来（真钩子 + 真轮询），
-        ///   用 SendInput 敲键，再回读模块——**验的是用户手指走的那条路**。
-        ///
-        /// 用例：
-        ///   A) 光标停在现成的 `    For i = 1 To 3` 行尾，按一下回车；
-        ///   B) 从空行**逐字符敲** `    For i = 1 To 3`，最后一个字符后 0ms 立刻回车
-        ///      （模拟真人手速：这条专门盯着 `_pendingKeys` 那个"输入法组字"判据）；
-        ///   C) 同上敲 `    If x > 0 Then`，验 `End If`。
+        /// ★为什么非要有：--hktest 直接调 VbeBackend.NewLineBelow（只验后端），用户真正的路径是
+        ///   WH_KEYBOARD_LL → FreshHookSnap → EnterIndentWanted → Post → NewLineBelow。v137 就栽在
+        ///   这上面：后端 15 条全 PASS，真机回车照样不补 Next（用户第二次报同一个问题）。
+        ///   所以这里起真 App（真钩子 + 真轮询）、用 SendInput 敲键 —— 验的是用户手指走的那条路。
         /// </summary>
         private static int EnterProbe()
         {
@@ -1230,17 +1205,11 @@ namespace VbeComplete
                         "注释 " + quoted + "/40 · 还原 " + plain + "/40 · 耗时 "
                         + msSet + "ms/" + msUnset + "ms（旧实现约 340ms）");
 
-                    // 10. 用例 H：**空格收起候选窗** —— 用户报的 "set + 空格不收、let 收"。
-                    //     旧实现里钩子对空格什么都不做，全指望轮询的 changed 兜；而
-                    //     changed 比的是 **Rstrip 之后**的文本（行尾空白刻意不算文档
-                    //     变化），`Set ` 与 `Set` 在它眼里一字不差 ⇒ 永远走不到 Trigger
-                    //     ⇒ 列表就那么挂着（轮询那条 else 只是把窗子挪到新光标位置）。
-                    //     let 之所以"看起来对"，是它打到第三个字母时已判成"打全了"
-                    //     提前收的，跟空格无关。
-                    //
-                    //     这里用 Ctrl+Space 手动唤出（比"打字才弹"稳定，不受输入法
-                    //     中/英状态影响），再发一个**裸空格**：既要验列表收了，也要验
-                    //     空格照常落进文档（我们只收窗、不吞键）。
+                    // 10. 用例 H：空格收起候选窗（用户报的 "set + 空格不收"）。
+                    //     钩子对空格什么都不做时全靠轮询的 changed 兜，而 changed 比的是 Rstrip 之后的
+                    //     文本：`Set ` 与 `Set` 一字不差 ⇒ 走不到 Trigger，列表就一直挂着。
+                    //     这里用 Ctrl+Space 手动唤出（不受输入法状态影响），再发裸空格：既要验列表
+                    //     收了，也要验空格照常落进文档（只收窗、不吞键）。
                     RebuildScaffold(app, be, at, "    n = 1");
                     // ★v163：这一步原来只发**一次** Ctrl+Space、睡 600ms 就断言，
                     //   真机上有约一半次数"唤不出来"（拿 v162 的 exe 复跑同样一半失败，
@@ -1735,15 +1704,11 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 候选判定的**真机**回归：拿真实模块文本 + 人造快照跑 Trigger，
-        /// 逐条验证"这个位置到底弹不弹、弹出的第一条是什么"。
-        ///
-        /// ★为什么不直接敲键盘：钩子按设计不理注入键，没法在这里模拟打字。
-        ///   但 Trigger 的全部输入就是 (模块文本, 行, 列)，人造快照与真打字
-        ///   走的是同一条代码路径 —— 判定逻辑 100% 覆盖，只有"按键有没有送到
-        ///   钩子"覆盖不到（那部分由 --hktest 的命令级用例兜）。
-        ///
-        /// 本命令纯读，一个字符都不写模块。
+        /// 候选判定的**真机**回归：拿真实模块文本 + 人造快照跑 Trigger，逐条验证"弹不弹、
+        /// 第一条是什么"。
+        /// ★不直接敲键盘的原因：钩子按设计不理注入键。Trigger 的全部输入就是 (模块文本, 行, 列)，
+        ///   人造快照走同一条代码路径 —— 判定逻辑 100% 覆盖，"按键有没有送到钩子"由 --hktest 兜。
+        /// 纯读，一个字符都不写模块。
         /// </summary>
         private static int EngineTest()
         {
@@ -2108,13 +2073,11 @@ namespace VbeComplete
             public string EnclosingProcName() => "test";
         }
 
-        private static string LineOf(string text, int line1)
-        {
-            if (text == null || line1 < 1) return "";
-            var all = Parser.SplitLines(text);
-            return line1 <= all.Length ? all[line1 - 1] : "";
-        }
-
+        /// <summary>
+        /// 光标落点验证（真机）：模拟"打到一半 + Tab 补全"，读回 VBE 真实光标列，跟按真行
+        /// 算出来的列对数，并把光标左右两截打出来。
+        /// ★动的是模块末尾的临时行，finally 里删干净并逐字节比对原文。
+        /// </summary>
         private static int CaretTest()
         {
             var sb = new StringBuilder();

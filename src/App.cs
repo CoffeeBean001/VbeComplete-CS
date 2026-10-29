@@ -1,15 +1,10 @@
 // 主流程：全局钩子 + 自适应轮询 + 按键路由 + 各种"改一行"的操作。
 //
-// ★这是整个工具唯一允许"决定吃不吃一个按键"的地方，所以三条铁律在这里落地：
-//   1. 钩子线程只读内存里的状态（_codePaneFocused / _popupVisible / _lastKeyTs），
-//      一次 COM 都不许碰 —— 碰一次就可能让全系统的键盘卡住；
-//   2. 真动作一律投递到 UI 线程执行；
-//   3. 吃掉的键如果最后没做成事，必须把键还回去（绝不"吞了但什么都没发生"）。
-//
-// ★CPU 上花的功夫也在这里：
-//   * 前台不是 VBE 代码窗时【完全不调 COM】—— 用户在 Excel 表格里、
-//     在浏览器里的时候，我们一个 COM 都不发；
-//   * 在代码窗里也按"刚敲过键没有"来调频率：打字时 50ms，停手 200ms。
+// ★这里唯一有权"决定吃不吃一个键"，三条铁律：
+//   1. 钩子线程只读内存状态，一次 COM 都不许碰（碰一次可能卡住全系统键盘）；
+//   2. 真动作一律投递到 UI 线程；
+//   3. 吃掉的键最后没做成事，必须原样还回去。
+// CPU：前台不是代码窗时完全不调 COM；在代码窗里按"刚敲过键没有"调频率（打字 50ms / 停手 200ms）。
 
 using System;
 using System.Collections.Generic;
@@ -57,12 +52,9 @@ namespace VbeComplete
         private volatile IntPtr _snippetHwnd;
         private long _lastKeyTs;
 
-        // ---- 探针专用（--enterprobe）：默认 0 = 注入键一律不理，与生产行为一致 ----
-        // ★为什么需要它：真实的按键路径是"钩子 → 判据 → Post → COM"，而 SendInput
-        //   发出来的键带 LLKHF_INJECTED 标记，钩子会（也必须）跳过它们 —— 否则我们
-        //   自己补的空格 / 括号会自己触发自己。真机探针要验的正是这条路，于是给它
-        //   开一个**只对测试键**生效的放行口：0 = 全不理，-1 = 全放行（模拟连续打字），
-        //   其它值 = 只放行这一个 vk。
+        // ---- 探针专用：0 = 注入键一律不理（= 生产行为），-1 = 全放行，其它 = 只放行这一个 vk ----
+        // 钩子必须跳过 LLKHF_INJECTED（否则自己补的空格/括号会自己触发自己），而
+        // --enterprobe 要验的正是这条路径，所以留了这个只对测试键生效的放行口。
         internal static volatile int AcceptInjectedVk;
 
         // ---- 探针用的只读视图（生产路径一个都不读） ----
@@ -90,7 +82,6 @@ namespace VbeComplete
         // ---- 轮询状态 ----
         private Snapshot _lastSnap;
         private string _lastModName = "";
-        private DateTime _lastPollAt = DateTime.MinValue;
         private int _shutdownDone;                // Shutdown 的幂等标志（Interlocked）
 
         // ---- 代码片段 ----
@@ -363,11 +354,9 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 钩子回调的**唯一**入口：只负责把异常挡在 native 边界之内。
-        /// <para>★v151：以前整个回调没有 try/catch。托管异常一旦穿过
-        /// <c>CallNextHookEx</c> 的调用帧，CLR 会直接 FailFast 终止进程 ——
-        /// 用户看到的是"托盘图标突然没了、日志里一个字都没有"，而且已经被
-        /// Swallow 的按键也不会还原。这里兜住：记一笔、把键原样放行。</para>
+        /// 钩子回调的唯一入口：只负责把异常挡在 native 边界之内。
+        /// ★v151：托管异常一旦穿过 CallNextHookEx，CLR 会 FailFast 直接杀进程
+        /// （托盘图标突然消失、日志一个字没有），已吞掉的键也不会还原。
         /// </summary>
         private IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam)
         {
@@ -426,16 +415,11 @@ namespace VbeComplete
             bool alt = Native.Down(Native.VK_MENU);
             bool win = Native.Down(Native.VK_LWIN) || Native.Down(Native.VK_RWIN);
 
-            // 不在 VBE 代码窗（或片段窗正占着焦点）：一个键都不碰。
-            // ★片段窗那道闸必须看【实时前台】而不是"窗子开着就算"：
-            //   `_codePaneFocused` 是轮询算的，片段窗刚弹出来的那一两百毫秒里它还
-            //   停在 true —— 这时候在搜索框里打字会被当成在代码里打字（敲个 `(`
-            //   就往模块里补一对括号、敲回车就跑"自动缩进"）。反过来，只看
-            //   "窗子开着"又会把"用户点了下代码窗继续写、顺手 Ctrl+Q 收起"一起
-            //   冻住。GetForegroundWindow 是纯 Win32（微秒级），每次按键问一次没成本。
-            // ★但如果按的是我们"该管"的组合键却因为焦点判定被跳过，就记一笔 ——
-            //   这正是"快捷键全都不灵了"最常见的真因（焦点探测说不在代码窗，
-            //   于是连一次路由都没走）。只在 LOG=1 时落盘，平时零成本。
+            // 不在 VBE 代码窗（或片段窗占着焦点）：一个键都不碰。
+            // ★片段窗那道闸必须看【实时前台】而不是"窗子开着就算"：_codePaneFocused
+            //   是轮询算的，片段窗刚弹出的几十上百毫秒里还是 true，那时在搜索框打字
+            //   会被当成在代码里打字。GetForegroundWindow 是纯 Win32，没成本。
+            // ★该管的组合键被焦点判定跳过时要记一笔 —— 那是"快捷键全不灵"最常见的真因。
             bool snipActive = SnippetFormActive();
             if (!_codePaneFocused || snipActive)
             {
@@ -496,17 +480,10 @@ namespace VbeComplete
                     Post(() => _eng.Move(-_eng.PageSize));
                     return Swallow(vk);
                 }
-                // ★v147：**空格 = "这个词打完了"**，VBE 自己的列表也是在这一下收的。
-                //   以前这里对空格什么都不做，全靠轮询的 changed 兜 —— 而 changed 比
-                //   的是 **Rstrip 之后**的文本（行尾空白刻意不算文档变化，免得光标
-                //   在行尾摆动时反复触发），于是 `Set ` 与 `Set` 在轮询眼里一字不差，
-                //   永远走不到 Trigger，`else if (_popupVisible)` 那条只是把窗子挪到
-                //   新的光标位置 ⇒ 列表就那么一直挂着。
-                //   用户报的 "set + 空格不收、let + 空格会收" 正是这条：let 是打到
-                //   第三个字母时 PrefixIsResolved 判成"打全了"提前收的，跟空格无关；
-                //   set 因为工程里还有更长的 `Set…` 名字（或 Reset/LSet 之类），
-                //   判不成打全 ⇒ 列表还在，于是空格这一下必须由我们自己收。
-                //   只收窗、**不吞键** —— 空格照常落进文档。
+                // ★v147：空格 = "这个词打完了"，VBE 自己的列表也是这一下收的。
+                //   轮询比的是 Rstrip 之后的文本（行尾空白刻意不算文档变化），于是
+                //   `Set ` 与 `Set` 一字不差 ⇒ 走不到 Trigger，列表就一直挂着
+                //   （用户报的 "set + 空格不收"）。这里只收窗、不吞键。
                 if (vk == Native.VK_SPACE)
                 {
                     Post(() => _eng.Hide());
@@ -519,13 +496,9 @@ namespace VbeComplete
                 }
                 if (vk == Native.VK_RETURN && !shift)
                 {
-                    // ★回车【不】确认候选 —— 回车在 VBE 里是换行，误触发代价太大
-                    //   （Python 版是用户在真机上明确要求去掉的："确认键只用 Tab"）。
-                    //   这里只收起列表。
-                    // ★v142：**不要在这里 return**。用户敲完 `If x > 0 Then` 立刻回车时，
-                    //   轮询还没看到最后那个 `n`，候选窗正巧还挂着（"The" 匹配到 "Then"），
-                    //   在这里 return 就等于把回车整个交回 VBE —— 于是"只换行、不补 End If"。
-                    //   改成"收起候选窗 + 继续往下走"，让下面的回车分支自己判。
+                    // ★回车【不】确认候选 —— 回车在 VBE 里是换行，误触代价太大（确认只用 Tab），这里只收列表。
+                    // ★v142：不要在这里 return。用户敲完 `Then` 立刻回车时轮询还没看到最后那个
+                    //   n，候选窗正巧还挂着，return 就等于把回车整个交回 VBE（只换行、不补 End If）。
                     Post(() => _eng.Hide());
                 }
                 if (vk == Native.VK_ESCAPE)
@@ -567,16 +540,11 @@ namespace VbeComplete
 
             // ==============================================================
             // 4. 会改写文本的组合键
-            // ★每一个都必须"做成了才算吃掉了键"。命令返回 false（没快照 / COM
-            //   失败 / 没有可落的位置）就把键原样送回去 —— 绝不"吞了但什么都没
-            //   发生"，那正是用户报"快捷键都没了"时屏幕上的样子。
+            // ★每一个都必须"做成了才算吃掉了键"：命令返回 false（没快照 / COM 失败 /
+            //   没有可落的位置）就把键原样送回去，绝不"吞了但什么都没发生"。
+            // ★v143：`/` 同时认主键盘 VK_OEM_2 和小键盘 VK_DIVIDE，并允许 Shift
+            //   （AZERTY 布局的 `/` 自带 Shift）。Ctrl+Shift+/ 在 VBE 里没有原生用途。
             // ==============================================================
-            // ★v143：`/` 的识别要放宽一点。用户报"Ctrl+/ 失效"时，最省事的解释
-            //   就是 vk 没对上：主键盘 `/` 是 VK_OEM_2，但**小键盘除号**是
-            //   VK_DIVIDE；而法语 AZERTY 这类布局里 `/` 本身就带 Shift。
-            //   以前 `!shift` 那条一挡，钩子就当没看见这个键 —— 快捷键没坏，
-            //   是我们不认。这里改成"两个 vk 都认、允许 Shift、排除 Alt"。
-            //   Ctrl+Shift+/ 在 VBE 里没有任何原生用途，多认这一种不会撞车。
             if (ctrl && !alt && Native.IsSlashKey(vk) && !NoComment)
             {
                 Post(() =>
@@ -601,13 +569,9 @@ namespace VbeComplete
                 return SwallowAndRun(Native.VK_RETURN, true, true, () => Commands.InsertLineAbove(_be),
                     replayOnFail: false);
             // ==============================================================
-            // 4c. Ctrl+↑ / Ctrl+↓（**不带 Shift**）：过程内的两个端点
-            //     ↑ 落到本过程【最后一个 Dim 行】的行尾；
-            //     ↓ 落到【过程收尾行上方最后一条代码】的行尾。
-            //     ★用户从 Python 版点名要的两个键。
-            //     ★v149：`Ctrl+Shift+↑/↓` 那一组（"上方最近的声明行 / 下方第一个空白行"）
-            //       已按用户要求整组删除，所以这里不再需要"排在带 Shift 那条之后"的顺序
-            //       约束；带 Shift 的组合现在原样落到系统/VBE。
+            // 4c. Ctrl+↑ / Ctrl+↓（不带 Shift）：过程内的两个端点
+            //     ↑ = 本过程最后一个 Dim 行行尾；↓ = 收尾行上方最后一条代码行尾。
+            //     （v149 已按用户要求整组删掉 Ctrl+Shift+↑/↓，这里不再有顺序约束）
             // ==============================================================
             if (ctrl && !shift && !alt && (vk == Native.VK_UP || vk == Native.VK_DOWN) && !NoCtrlNav)
             {
@@ -640,18 +604,11 @@ namespace VbeComplete
                     return SwallowAndRun(Native.VK_RETURN, false, false,
                         () => _be.NewLineBelow(true, !NoAutoClose, !NoBranchAlign));
 
-                // ★v142：快照"落后一两格"时也要接管 —— 这是用户报的那个 bug 的真因。
-                //   用户敲完 `For i = 1 To 3` 的最后一个字符【立刻】回车：那一瞬间
-                //   轮询还没把这一格读回来（`_pendingKeys > 0`、行文本少一个 `3`），
-                //   上面的判据必然 false ⇒ 回车原样交给 VBE ⇒ 只换行、不补 `Next`。
-                //   打字越快越常撞上，所以用户的感觉就是"根本不会补"。
-                //
-                //   这一档不猜结论，只做"先接管"，然后交给 UI 线程用【真 COM 数据】判：
-                //   NewLineBelow 内部会重新读行、重新判（不是块头 / 光标不在行尾 /
-                //   后面还有内容 -> 一律返回 false），判不过就把回车原样还回去 ——
-                //   绝不"吞了却什么都没发生"。
-                //   ⚠️ 输入法正在组字时**绝不接管**：那一下回车是"上屏"，抢了就成了
-                //      "字没上屏反而多一行"。这一问走 Win32（ImmGetContext），不碰 COM。
+                // ★v142：快照"落后一两格"时也要接管 —— 用户敲完 `To 3` 立刻回车，
+                //   那一瞬间 _pendingKeys > 0、行文本少一个字符，上面的判据必然 false。
+                //   这一档不猜结论，只"先接管"，由 NewLineBelow 用真 COM 数据重判，
+                //   判不过就把回车原样还回去。
+                //   ⚠️ 输入法正在组字时绝不接管 —— 那一下回车是"上屏"（走 ImmGetContext，不碰 COM）。
                 if (!Native.ImeComposing(Native.FocusedVbeWindow()) &&
                     Editing.LooksLikeBlockHeaderPrefix(lineText) &&
                     caretDisp + 16 >= Rules.DispCol(lineText, (lineText ?? "").Length))
@@ -731,22 +688,10 @@ namespace VbeComplete
 
         /// <summary>
         /// "吞掉这个键 → 去 UI 线程干事 → 干不成再把键原样还回去"。
-        /// <para>★全项目同一条铁律的**唯一**落地点。以前每个分支各写一遍
-        /// <c>Post(() =&gt; { if (!X()) SendVk(...); }); return Swallow(vk);</c>，
-        /// 写漏一次就是"吞了但什么都没发生"——用户看到的是"快捷键全没了"。</para>
+        /// ★全项目这条铁律的唯一落地点（以前每个分支各写一遍，写漏一次就是"快捷键全没了"）。
+        /// ⚠️ 字母键与回车必须 replayOnFail = false：SendVk 见 Ctrl 正被物理按住会刻意
+        /// 不合成 Ctrl，回放出去的其实是裸字母/裸回车，比"什么都没发生"糟得多。
         /// </summary>
-        /// <param name="vk">用户按的那个键（失败时按 <paramref name="replayOnFail"/> 决定要不要重放）。</param>
-        /// <param name="restoreCtrl">重放时是否带上 Ctrl（用户手指还按着，SendVk 不会合成）。</param>
-        /// <param name="restoreShift">重放时是否带上 Shift。</param>
-        /// <param name="work">真正要做的动作；返回 false = 没做成。</param>
-        /// <param name="hidePopup">做动作前先收起候选窗（改文本的动作都要）。</param>
-        /// <param name="replayOnFail">
-        /// 失败时要不要把键原样送回去。
-        /// <para>★v151：**字母键与回车必须传 false**。SendVk 见到"Ctrl 正被物理按住"
-        /// 会刻意不合成 Ctrl（见 Native.SendVk 的说明），于是"回放"出去的其实是
-        /// 裸 `d` / `k` / 回车 —— 直接把字母打进用户代码、或者多插一行，
-        /// 比"什么都没发生"糟得多。方向键这类**无副作用**的键才允许回放。</para>
-        /// </param>
         private IntPtr SwallowAndRun(int vk, bool restoreCtrl, bool restoreShift,
             Func<bool> work, bool hidePopup = true, bool replayOnFail = true)
         {
@@ -850,12 +795,7 @@ namespace VbeComplete
             }
         }
 
-        /// <summary>
-        /// 是不是"我们该管的"组合键（用于诊断日志，避免每天打的字都进日志）。
-        /// 列表只跟钩子里**真吃键**的分支对齐：Ctrl+D / Ctrl+K / Ctrl+Q /
-        /// Ctrl+/ 一族 / 回车 / 上下键 / 空格。（Ctrl+Shift+L 与 Ctrl+Shift+↑↓
-        /// 分别于 v150、v149 删除，这里也一并摘掉了。）
-        /// </summary>
+        /// <summary>是不是"我们该管的"组合键（只用于诊断日志，免得每天打的字都进日志）。</summary>
         private static bool IsWatchedHotkey(int vk) =>
             vk == 'D' || vk == 'K' || vk == 'Q' ||
             Native.IsSlashKey(vk) ||
@@ -863,21 +803,16 @@ namespace VbeComplete
             vk == Native.VK_SPACE;
 
         /// <summary>
-        /// 诊断用：Ctrl + **任何一个符号键**（OEM 键区 0xBA~0xDF 与小键盘除号）
-        /// 没命中任何分支时也要留痕。
-        /// ★v143：以前只有 <see cref="IsWatchedHotkey"/> 里那几个 vk 会被记录，
-        ///   于是"用户按的其实是另一个 vk"这种情况日志里一个字都没有 ——
-        ///   排查"快捷键失效"时最怕的正是这个盲区。
+        /// 诊断用：Ctrl + 任何一个符号键（OEM 0xBA~0xDF 与小键盘除号）没命中分支时也留痕。
+        /// ★v143：以前只记 IsWatchedHotkey 里那几个 vk，"用户按的其实是另一个 vk"在日志里一个字都没有。
         /// </summary>
         private static bool IsHotkeyDiagVk(int vk) =>
             IsWatchedHotkey(vk) || (vk >= 0xBA && vk <= 0xDF);
 
         /// <summary>
-        /// 候选窗"现在真的还能用"吗？
-        /// <para>★为什么要心跳而不是只看 <see cref="_popupVisible"/>：UI 线程一旦卡住
-        /// （COM 阻塞、Excel 弹模态框、调试断点），轮询就停了，而这个标志还是 true。
-        /// 那一整段时间里 ↑/↓/PgUp/PgDn/Esc/Tab 全被我们吞掉，屏幕上毫无反应 ——
-        /// 用户的感觉是"键盘死了"。3 秒没有心跳就当窗子已经不在，把键还给系统。</para>
+        /// 候选窗"现在真的还能用"吗 —— 看心跳，不只看 _popupVisible。
+        /// ★UI 线程卡住（COM 阻塞 / Excel 模态框 / 断点）时轮询停了而标志还是 true，
+        ///   那段时间 ↑↓/Tab/Esc 全被吞、屏幕毫无反应（用户感觉键盘死了）。3 秒没心跳就算没了。
         /// </summary>
         private bool PopupAlive =>
             _popupVisible && Environment.TickCount64 - _popupBeat < 3000;
@@ -1006,14 +941,10 @@ namespace VbeComplete
                     bool modSwitched = !string.Equals(snap.Module, _lastModName, StringComparison.OrdinalIgnoreCase)
                                        && _lastSnap != null;
 
-                    // ★v141：**行号变了 ⇒ 光标是被"搬"过去的，不是在打字。**
-                    //   用户报的 bug（"有时候鼠标单击到某个变量名就自动弹提示框"）：
-                    //   鼠标点到另一行上的变量时，快照的"行号 + 行文本"全变了，
-                    //   看起来和敲了一个字一模一样；而"最近 1.2 秒按过键"拦不住
-                    //   它（用户常常打完字顺手点一下变量看定义）。方向键上下 /
-                    //   Ctrl+Home / 点滚动条也一样。
-                    //   真打字时行号绝不会变 —— 回车换到的是空行，那种位置本来
-                    //   也没词可提示，所以这条不会误伤正常输入。
+                    // ★v141：行号变了 ⇒ 光标是被"搬"过去的，不是在打字。
+                    //   鼠标点另一行的变量时"行号 + 行文本"全变，和敲一个字长得一样，
+                    //   "最近 1.2 秒按过键"拦不住（用户常打完字顺手点一下变量）。
+                    //   真打字时行号绝不会变（回车换到的是空行，本来也没词可提示）。
                     bool lineJumped = _lastSnap != null && snap.Line != _lastSnap.Line;
                     int prevLine = _lastSnap == null ? 0 : _lastSnap.Line;
 
@@ -1058,14 +989,9 @@ namespace VbeComplete
                 }
                 else if (_popupVisible)
                 {
-                    // 文本没变、光标动了 —— 那是"移动光标"，不是打字。
-                    // ★v159：以前这里无条件 `ShowPopupAtCaret()`（把窗子挪到新光标处），
-                    //   于是**在同一行里点一下鼠标 / 按左右方向键 / 按 Home**，候选窗
-                    //   就跟着光标跑、列表一直挂着。用户报的"打 sh4 弹出 Sheet4 之后
-                    //   点别处，提示不消失还跟着鼠标走"就是这条。
-                    //   v147 修空格时绕过它（空格特判自己收窗），但病根在这里：
-                    //   "移动光标"一律该收起本次补全，跟按 ←/→ 的处理保持一致。
-                    //   光标真没动（轮询空转）就什么都不做，窗子留在原位。
+                    // 文本没变、光标动了 = 移动光标，不是打字。
+                    // ★v159：以前这里无条件 ShowPopupAtCaret()，于是同行里点一下鼠标 /
+                    //   按左右键 / 按 Home，候选窗就跟着光标跑、列表一直挂着。一律收起。
                     if (_lastSnap == null || _lastSnap.CaretCol != snap.CaretCol)
                     {
                         if (_popupVisible)

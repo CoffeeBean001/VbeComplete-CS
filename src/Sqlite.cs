@@ -1,14 +1,9 @@
 // 极薄的 SQLite 封装：只 P/Invoke 系统自带的 winsqlite3.dll，不引任何 NuGet。
 //
-// ★为什么不装 Microsoft.Data.Sqlite：那会把一坨原生 sqlite 二进制塞进产物里，
-//   而这个程序从第一天起的承诺就是"一个 exe 双击就能跑"。Windows 10 起
-//   System32 下自带 winsqlite3.dll，导出的就是标准 SQLite C API。
-//
-// ★这一层只管"把 SQL 跑掉、把列读回来"，不认识任何业务表。
-//   snippets-cs.db / keywords-cs.db / functions-cs.db 都建在它上面。
-//
-// ★写出去的必须是**真·SQLite 文件**：用户会用 DB Browser 之类去编辑词库，
-//   自造的 JSON 格式在这个需求面前没有意义。
+// ★不装 Microsoft.Data.Sqlite：那会把一坨原生二进制塞进产物，而本程序的承诺是"一个 exe
+//   双击就能跑"；Win10 起 System32 自带 winsqlite3.dll，导出标准 C API。
+// ★只负责"把 SQL 跑掉、把列读回来"，不认识任何业务表（三个 .db 都建在它上面）。
+// ★写出去的必须是真·SQLite 文件 —— 用户会拿 DB Browser 之类去编辑词库。
 
 using System;
 using System.Collections.Generic;

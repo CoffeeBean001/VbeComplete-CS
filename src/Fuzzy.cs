@@ -1,19 +1,11 @@
 // 模糊匹配：决定"打的这几个字命中哪几个候选、命中在哪几位、排第几档"。
 //
-// ★这份实现与 Python 版 engine.fuzzy_match 是同一套语义，逐条对齐：
-//   1) 优先【整块连续】——query 作为子串出现时直接用它（视觉上就是"我打的
-//      这几个字母连在一起"）。arr -> dataArr 命中 Arr，而不是散着的 a..r..r。
-//   2) 否则逐字符贪心，优先落在词边界上（首字母缩略型：ds -> dataSheet）。
-//   3) 贪心必须带【反向可行性上界】，否则会漏判：只看"这一档更优"、不管后面
-//      还凑不凑得齐，query 明明是子序列也会被判成不匹配。
-//      真实案例：getSettingTitle3 里输入 getse3 —— 第 3 个字符 t 贪心跳到词边界
-//      T(10)（档 1 优于接着用的 t(2) 档 2），再往后就没有 s 了；可
-//      [0,1,2,3,4,15] 本来就成立。
-//   4) 命中位置是【逐字符】的一组下标，不是一段区间 —— UI 要拿它逐字符上色。
-//      C# 旧版只给 (pos, span) 一段，所以 dataArr 打 da 会把 da 整段标红、
-//      打 ds 只能标一段，看起来跟 IDEA 完全不是一个东西。
-//
-// ★刻意不依赖任何 VBA 知识：这里只做"字符串匹配"，类别判定在 Engine。
+// ★与 PY 的 engine.fuzzy_match 同一套语义：① 优先整块连续（arr → dataArr 命中 Arr）；
+//   ② 否则逐字符贪心，优先落在词边界（ds → dataSheet）；
+//   ③ 贪心必须带**反向可行性上界**，否则"明明是子序列"也会被判不匹配
+//      （getSettingTitle3 里输 getse3 就是这个坑）；
+//   ④ 命中位置是**逐字符下标集合**，不是区间 —— UI 要拿它逐字符上色。
+// ★不依赖任何 VBA 知识：只做字符串匹配，类别判定在 Engine。
 
 using System;
 using System.Collections.Generic;
@@ -33,12 +25,8 @@ namespace VbeComplete
     internal static class Fuzzy
     {
         /// <summary>
-        /// 名字里的"词边界"下标集合。
-        /// 边界 = 首字符 / 下划线之后 / 小写→大写的切换处（camelCase 驼峰）。
-        /// 例如 dataSheet -> {0, 4}，DataArr -> {0, 4}。
-        ///
-        /// ★必须用原始 name，不能先小写 —— 大小写切换信息一丢，就再也认不出
-        ///   camelCase 的词首了，`ds` 想命中 `dataSheet` 的 D 和 S 就无从谈起。
+        /// 名字里的"词边界"下标集合：首字符 / 下划线之后 / 小写→大写处（驼峰）。
+        /// ★必须用原始 name，不能先小写 —— 大小写切换信息一丢就认不出驼峰词首。
         /// </summary>
         public static HashSet<int> WordBoundaries(string name)
         {
@@ -71,13 +59,9 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 无法整块连续命中时，逐字符挑位置：优先词边界，其次紧接上一个命中。
-        /// 档位越小越优先（同档取更靠前的）：
-        ///   0 既接在上一个命中之后、又落在词边界
-        ///   1 落在词边界（首字母缩略型：ds -> dataSheet）
-        ///   2 紧接上一个命中（尽量连成块）
-        ///   3 其它
-        /// 反向 maxpos 保证"只要 query 真的是子序列就一定能凑出来"。
+        /// 无法整块连续命中时逐字符挑位置（档位越小越优先，同档取靠前的）：
+        /// 0 = 既接上一个命中又在词边界、1 = 词边界（缩略型 ds→dataSheet）、
+        /// 2 = 紧接上一个命中、3 = 其它。反向 maxpos 保证"真是子序列就一定凑得出"。
         /// </summary>
         public static int[] GreedyPositions(string low, string query, HashSet<int> bounds)
         {

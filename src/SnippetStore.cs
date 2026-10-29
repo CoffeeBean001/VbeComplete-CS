@@ -1,15 +1,7 @@
 // 代码片段库：SQLite 两列表（title 主键 + code），外加标题模糊匹配。
-//
-// ★这是 C# 版**自己的**库：`snippets-cs.db`，只有这一个文件。
-//   与 Python 版没有任何读写关系 —— 两个是独立项目，谁也别指望对方的字段布局。
-//   （v136 起删掉了"从旧 snippets.db 一次性导入"那段：数据早已搬完，留着只会让人
-//     以为还有第二个库；项目里也不该再出现指向 PY 版文件的代码。）
-//
-// 表结构：
-//     CREATE TABLE IF NOT EXISTS snippets (title TEXT PRIMARY KEY, code TEXT NOT NULL)
-//   刻意不加 id：标题天然唯一、足以当主键，重命名走 UPDATE ... WHERE title=?。
-//
-// 本文件不碰 COM、不碰 WinForms —— 全是纯数据操作，能被 --snipetest 单独验证。
+// ★这是 C# 版自己的库 `snippets-cs.db`，与 Python 版没有任何读写关系。
+// 表结构：snippets(title TEXT PRIMARY KEY, code TEXT NOT NULL) —— 刻意不加 id：标题天然唯一。
+// 不碰 COM、不碰 WinForms，全是纯数据操作，能被 --snipetest 单独验证。
 
 using System;
 using System.Collections.Generic;
@@ -154,15 +146,12 @@ namespace VbeComplete
     }
 
     // ----------------------------------------------------------------------
-    // 标题模糊匹配（纯函数；三档命中，强度递减）：
-    //   整标题相等 > 前缀 > 任意位置连续子串 > 子序列（`gc` 命中 `GetCode`）。
+    // 标题模糊匹配（纯函数，强度递减）：整标题相等 > 前缀 > 连续子串 > 子序列（`gc` → `GetCode`）。
     // 多个词用空格分开，每个词都要命中（AND）。
-    //
-    // ⚠️ 大小写归一必须保持长度：`"İ".ToLower()` 会变成 2 个字符，一旦拿它当下标
-    //    去切原串就整体错位。所以逐字符转小写、长度不变才采用。
-    //
-    // ⚠️ 中文标题：逐字符比较天然支持，`char.IsUpper/IsLower` 对汉字都是 false，
-    //    于是"词边界加 3 分"只在英文驼峰上生效 —— 正是想要的。
+    // ⚠️ 大小写归一必须保持长度：`"İ".ToLower()` 会变 2 个字符，拿它当下标切原串会整体错位
+    //    —— 逐字符转小写、长度不变才采用。
+    // ⚠️ 中文标题逐字符比较天然支持（IsUpper/IsLower 对汉字都是 false），"词边界加 3 分"
+    //    只在英文驼峰上生效 —— 正是想要的。
     // ----------------------------------------------------------------------
     internal static class SnippetMatch
     {

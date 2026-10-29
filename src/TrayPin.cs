@@ -1,19 +1,11 @@
-// 让托盘图标"常驻显示"（而不是被 Windows 11 折叠进 ^ 溢出区）。
+// 让托盘图标"常驻显示"（而不是被 Win11 折叠进 ^ 溢出区）。
 //
-// ★为什么需要这一步：Win11 默认把所有新图标的默认状态设成"隐藏"，只留一个 ^。
-//   程序自己没法让图标跳到外面（那是用户的显示设置），但 Windows 会把每个托盘
-//   图标的状态记在：
-//       HKCU\Control Panel\NotifyIconSettings\<一个数字 id>\
-//           ExecutablePath  = 哪个 exe
-//           IsPromoted      = 1 表示"始终在任务栏显示"
-//   我们在启动后找到**自己那条**（按 ExecutablePath 精确比对，绝不碰别人的），
-//   把 IsPromoted 置 1。任务栏在下一次读取时生效 —— 实测"重启资源管理器/重新登录"
-//   之后就能看到；当前这一次会话里它仍然待在 ^ 里（我们不会去重启别人的 explorer）。
-//
-// ★这条记录是 Windows 在图标**第一次出现时**创建的。所以第一次运行时可能还找不到，
-//   下一次启动就找到了 —— 代码两种情况都容得下，找不到就安静返回。
-//
-// ★只改 IsPromoted 一个值，只改 ExecutablePath 等于本程序的子键。可逆、无副作用。
+// ★为什么需要：Win11 默认把新图标设成"隐藏"，它把每个托盘图标的状态记在
+//   HKCU\Control Panel\NotifyIconSettings\<id>\ 的 ExecutablePath / IsPromoted 上。
+//   启动后找到**自己那条**（ExecutablePath 精确比对，绝不碰别人的）把 IsPromoted 置 1，
+//   任务栏下次读取生效（重启 explorer / 重新登录后可见）。
+// ★这条记录是图标第一次出现时才创建的：第一次可能找不到，下次启动就找到了 —— 找不到就安静返回。
+// ★只改 IsPromoted、只改自己那条子键。可逆、无副作用。
 
 using System;
 using Microsoft.Win32;
