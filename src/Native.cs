@@ -365,6 +365,24 @@ namespace VbeComplete
         private static bool _memberListVisible;
 
         /// <summary>
+        /// VBE 主窗口在不在。★WPS 上这条判据很关键：VBE 没打开时 Application.VBE
+        /// 直接 E_FAIL（不是"被禁止访问"），此时不该提示用户去改信任设置。
+        /// </summary>
+        public static bool VbeFrameExists() =>
+            FindWindow("wndclass_desked_gsk", null) != IntPtr.Zero;
+
+        /// <summary>
+        /// WPS 的文档主窗口（类名 OpusApp）是不是已经没了/被隐藏 —— 用户点了关闭。
+        /// ★WPS 关主窗时 VBE 那个独立顶层窗口还在，光看 VbeFrameExists 会以为"还在编辑"，
+        ///   于是继续调 COM，正好卡在它退出的节骨眼上（用户报的"关 WPS 卡死"）。
+        /// </summary>
+        public static bool WpsMainWindowGone()
+        {
+            IntPtr h = FindWindow("OpusApp", null);
+            return h == IntPtr.Zero || !IsWindowVisible(h);
+        }
+
+        /// <summary>
         /// VBE 自己的【成员列表】(NameListWndClass) 此刻是不是画在屏幕上。
         /// 是的话我们就得让位 —— 两个列表叠在一起，用户根本不知道在看哪一个。
         /// 参数信息窗 (PopupTipWndClass) 不算：那个只要求我们挪开，不要求消失。

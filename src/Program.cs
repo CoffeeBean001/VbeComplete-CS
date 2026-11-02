@@ -56,7 +56,9 @@ namespace VbeComplete
             //   `-enterprobe`（单横线）会直接当成"正常启动"—— 两种都会让人以为
             //   "检查跑过了"，其实什么都没跑。多余 / 认不出的参数一律报错退出。
             // ★v161：`--pooldump <模块名>` 是唯一允许带参数的开关（离线诊断用）。
-            if (args.Length > 1 && !(args.Length == 2 && args[0] == "--pooldump"))
+            // ★`--vbetest <progid>`：直接探某个宿主的 VBE 对象模型（WPS / Word / PPT 兼容性排查）。
+            if (args.Length > 1 && !(args.Length == 2 &&
+                (args[0] == "--pooldump" || args[0] == "--vbetest")))
             {
                 Console.WriteLine("最多只接受一个开关，这次收到 " + args.Length + " 个：" +
                     string.Join(" ", args));
@@ -81,6 +83,7 @@ namespace VbeComplete
                     // ★v160：诊断用 —— 把当前模块的解析结果 + 光标处的候选全打出来，
                     //   池子里"该有的名字没有"时让用户跑一次，比来回猜快得多。
                     case "--pooldump":    return PoolDump(args.Length > 1 ? args[1] : null);
+                    case "--vbetest":     return VbeTest(args.Length > 1 ? args[1] : "Excel.Application");
                     case "--paretest":    return ParenTest();
                     case "--enginetest":  return EngineTest();
                     case "--startuptest": return StartupTest();
@@ -1087,7 +1090,10 @@ namespace VbeComplete
                     Thread.Sleep(700);
                     string[] a2 = ReadLines(app, be, at, 6);
                     check("A2 同级旧代码压着也要补 Next（用户报的那一条）",
-                        a2[3] == "    Next" && a2[4] == "    x = 1",
+                        // ★大小写不敏感：WPS 的 VBE 会把 `x = 1` 自动改成 `X = 1`（自动大写），
+                        //   拿 Ordinal 比会把它判成失败 —— 那不是回归，是宿主编辑器行为。
+                        a2[3] == "    Next" &&
+                        string.Equals(a2[4], "    x = 1", StringComparison.OrdinalIgnoreCase),
                         "[" + a2[1] + "][" + a2[2] + "][" + a2[3] + "][" + a2[4] + "]  diag{" + diagA2 + "}");
 
                     // 4. 用例 B：空行上逐字符敲 For 行（模拟真人），最后一下立刻回车
@@ -1125,7 +1131,9 @@ namespace VbeComplete
                     int afterD = 0;
                     app.RunOnUi(() => { be.ForceReloadModule(); afterD = be.LineCount(); });
                     check("D 单选 If 回车：不补 End If 但必须换行",
-                        afterD == beforeD + 1 && d[1] == "    If x Then y = 1" && d[2].Trim() == "",
+                        afterD == beforeD + 1 &&
+                        string.Equals(d[1], "    If x Then y = 1", StringComparison.OrdinalIgnoreCase) &&
+                        d[2].Trim() == "",
                         "lines " + beforeD + "->" + afterD + " " + Tail(d));
 
                     // 7. 用例 E：Ctrl+/ 注释开关 —— 走【同一条真键盘路径】。
@@ -2430,6 +2438,97 @@ namespace VbeComplete
             catch (Exception e) { sb.AppendLine("vbeMemberListVisible ERR " + e.Message); }
             File.WriteAllText(Path.Combine(Settings.Home, "probe-cs.log"), sb.ToString(), Encoding.UTF8);
             return 0;
+        }
+
+        /// <summary>
+        /// 直接探一个 ProgID 的 VBE 对象模型（WPS / Word / PPT 兼容性排查）。
+        /// ★每一步单独 try：坏在"拿不到 VBE"和坏在"拿不到 CodeModule"是完全不同的两件事，
+        ///   合成一个 catch 只会看到一句"发生意外"。
+        /// </summary>
+        private static int VbeTest(string progid)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("progid  = " + progid);
+            sb.AppendLine("64bit   = " + Environment.Is64BitProcess);
+
+            object app = ComCtx.GetActive(progid);
+            sb.AppendLine("GetActive = " + (app == null ? "null（ROT 里没有这个实例）" : "ok"));
+            if (app != null)
+            {
+                dynamic dapp = app;
+                try { sb.AppendLine("  Name    = " + Convert.ToString(dapp.Name)); }
+                catch (Exception e) { sb.AppendLine("  Name    ERR " + e.Message); }
+                try { sb.AppendLine("  Version = " + Convert.ToString(dapp.Version)); }
+                catch (Exception e) { sb.AppendLine("  Version ERR " + e.Message); }
+                try
+                {
+                    dynamic books = dapp.Workbooks;
+                    int bn = Convert.ToInt32(books.Count);
+                    var names = new List<string>();
+                    for (int i = 1; i <= bn; i++) names.Add(Convert.ToString(books.Item(i).Name));
+                    sb.AppendLine("  Workbooks = " + bn + " [" + string.Join(", ", names) + "]");
+                }
+                catch (Exception e) { sb.AppendLine("  Workbooks ERR " + e.Message); }
+                try
+                {
+                    dynamic vbe = dapp.VBE;
+                    sb.AppendLine("  VBE     = " + (ReferenceEquals(vbe, null) ? "null" : "ok"));
+                    if (vbe != null)
+                    {
+                        try
+                        {
+                            dynamic mw = vbe.MainWindow;
+                            sb.AppendLine("  MainWindow = " + Convert.ToString(mw.Caption) +
+                                          " hwnd=" + Convert.ToInt32(mw.HWND));
+                        }
+                        catch (Exception e) { sb.AppendLine("  MainWindow ERR " + e.Message); }
+                        try
+                        {
+                            dynamic ps = vbe.VBProjects;
+                            int n = Convert.ToInt32(ps.Count);
+                            sb.AppendLine("  VBProjects = " + n);
+                            for (int i = 1; i <= n; i++)
+                            {
+                                dynamic p = ps.Item(i);
+                                sb.AppendLine("    [" + i + "] " + Convert.ToString(p.Name));
+                            }
+                        }
+                        catch (Exception e) { sb.AppendLine("  VBProjects ERR " + e.Message); }
+                        try
+                        {
+                            dynamic cp = vbe.ActiveCodePane;
+                            sb.AppendLine("  ActiveCodePane = " + (ReferenceEquals(cp, null) ? "null" : "ok"));
+                            if (cp != null)
+                            {
+                                dynamic cm = cp.CodeModule;
+                                int cnt = Convert.ToInt32(cm.CountOfLines);
+                                sb.AppendLine("    module = " + Convert.ToString(cm.Name) + " lines = " + cnt);
+                                if (cnt > 0)
+                                {
+                                    int take = Math.Min(cnt, 3);
+                                    string txt = Convert.ToString(cm.Lines(1, take)) ?? "";
+                                    sb.AppendLine("    first " + take + " = " +
+                                        txt.Replace("\r", "\\r").Replace("\n", "\\n"));
+                                }
+                            }
+                        }
+                        catch (Exception e) { sb.AppendLine("  ActiveCodePane ERR " + e.Message); }
+                    }
+                }
+                catch (Exception e) { sb.AppendLine("  VBE     ERR " + e.Message); }
+            }
+
+            string text = sb.ToString();
+            File.WriteAllText(Path.Combine(Settings.Home, "vbetest.log"), text, Encoding.UTF8);
+            Console.WriteLine(text);
+
+            // 诊断用：VBECOMPLETE_HOLD_SEC=30 让本进程读完不退出（保持 COM 引用），
+            // 用来验证"客户端一直活着"是不是宿主关不掉的原因。
+            int hold = 0;
+            int.TryParse(Environment.GetEnvironmentVariable("VBECOMPLETE_HOLD_SEC") ?? "", out hold);
+            if (hold > 0) Thread.Sleep(hold * 1000);
+
+            return app == null ? 1 : 0;
         }
 
         /// <summary>

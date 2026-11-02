@@ -82,6 +82,7 @@ namespace VbeComplete
         // ---- 轮询状态 ----
         private Snapshot _lastSnap;
         private string _lastModName = "";
+        private bool _deniedShown;                // "VBE 访问被拒"的气泡只弹一次
         private int _shutdownDone;                // Shutdown 的幂等标志（Interlocked）
 
         // ---- 代码片段 ----
@@ -284,6 +285,17 @@ namespace VbeComplete
                             "写注册表被拒绝了（常见于安全软件拦截）。日志里有详细原因。");
                 };
                 menu.Items.Add(miAutoStart);
+                menu.Items.Add("允许访问 VBA 工程（WPS / Office）", null, (s, e) =>
+                {
+                    // ★WPS 默认 AccessVBOM=0，此时 Application.VBE 直接 E_FAIL —— 不开这个
+                    //   开关，工具在 WPS 里就像"完全没反应"。改的是 HKCU，不需要管理员。
+                    int n = VbaTrust.EnableAll();
+                    Log.Write("托盘开启 AccessVBOM：改了 {0} 处（{1}）", n, VbaTrust.Describe());
+                    ShowBalloon("已允许访问 VBA 工程",
+                        n > 0
+                            ? "已写入 " + n + " 处注册表。请重新打开 WPS / Excel 后生效。"
+                            : "注册表里已经是开着的。若仍不生效，请重开一次 WPS。");
+                });
                 menu.Items.Add("打开日志", null, (s, e) =>
                 {
                     // ★v151：路径必须加引号 —— 家目录带空格（`D:\我的 工具\…`）时
@@ -819,7 +831,17 @@ namespace VbeComplete
 
         private void Post(Action a)
         {
-            try { _disp.BeginInvoke(a); }
+            try
+            {
+                _disp.BeginInvoke((Action)(() =>
+                {
+                    // 每个键盘动作也是一次"COM 使用期"：WPS 上用完必须释放
+                    ComCtx.Begin();
+                    try { a(); }
+                    catch (Exception e) { Log.Write("UI 动作异常：{0}", e.Message); }
+                    finally { ComCtx.End(); }
+                }));
+            }
             catch (Exception e) { Log.Write("投递动作失败：{0}", e.Message); }
         }
 
@@ -872,12 +894,28 @@ namespace VbeComplete
             }
             catch (Exception e) { Log.Write("recent 写盘失败：{0}", e.Message); }
 
+            // ★WPS 上"用完即放"：整轮轮询期间允许缓存，轮询结束一定释放（见 ComCtx.End）。
+            ComCtx.Begin();
+            bool typingNow = false;
             try
             {
                 bool focused = InVbeCodePane();
                 _codePaneFocused = focused;
                 // 心跳：只要 UI 线程还活着、轮询还在跑，候选窗的"可用性"就续期一次
                 if (_popupVisible) _popupBeat = Environment.TickCount64;
+
+                // 用户已经在关 WPS（主窗没了/隐藏），只剩 VBE 那个独立窗口还挂着 ——
+                // 这时候一次 COM 调用都不能发，否则正好卡在它退出流程里。
+                if (ComCtx.IsWpsHost && Native.WpsMainWindowGone())
+                {
+                    ComCtx.Release();
+                    if (_popupVisible) _eng.Hide();
+                    _lastSnap = null;
+                    _hookSnap = null;
+                    _lastModName = "";
+                    SetInterval(250);
+                    return;
+                }
 
                 if (!focused)
                 {
@@ -898,9 +936,11 @@ namespace VbeComplete
                 {
                     if (_popupVisible) _eng.Hide();
                     _hookSnap = null;
+                    ExplainVbeDenied();
                     SetInterval(150);
                     return;
                 }
+                _deniedShown = false;
 
                 // ★v139：VBE 自己的提示词列表一出现，我们立刻收 —— 不能只靠
                 //   "下次触发时让位"。触发那一刻 VBE 的列表往往还没画出来（它等
@@ -919,8 +959,11 @@ namespace VbeComplete
                     }
                 }
 
-                bool typing = Environment.TickCount64 - _lastKeyTs < 900;
-                SetInterval(typing ? 50 : 150);
+                typingNow = Environment.TickCount64 - _lastKeyTs < 900;
+                // ★WPS 上单轮成本比 Office 高，间隔放宽一档：空闲 300ms / 打字 80ms。
+                SetInterval(typingNow
+                    ? (ComCtx.IsWpsHost ? 80 : 50)
+                    : (ComCtx.IsWpsHost ? 300 : 150));
 
                 // 给钩子线程留一份"最近的行 + 光标列"：回车缩进 / 退格那几条判据
                 // 全靠它（钩子线程一次 COM 都不许碰）。
@@ -1006,12 +1049,38 @@ namespace VbeComplete
             {
                 Log.Write("轮询异常：{0}", e.Message);
             }
+            finally
+            {
+                ComCtx.End(typingNow);
+            }
         }
 
         private void SetInterval(int ms)
         {
             if (_timer == null) return;
             if (_timer.Interval != ms) _timer.Interval = ms;
+        }
+
+        /// <summary>
+        /// 焦点在代码窗、却一个快照都拿不到，而 COM 层确认"宿主有实例、VBE 窗口也在、
+        /// 就是拿不到 VBE 对象" —— 这只可能是 AccessVBOM 没开（WPS 默认如此）。
+        /// ★先自动把它打开：用户装这个工具就是为了读写 VBA 工程，不打开等于工具是死的；
+        ///   但必须提示"要重开 WPS"，WPS 只在启动时读这个值。
+        /// </summary>
+        private void ExplainVbeDenied()
+        {
+            if (!ComCtx.VbeAccessDenied || _deniedShown) return;
+            _deniedShown = true;
+
+            int changed = 0;
+            if (VbaTrust.IsBlocked()) changed = VbaTrust.EnableAll();
+            Log.Write("拿不到 VBE：AccessVBOM 被禁，自动开启 {0} 处（当前 {1}）",
+                changed, VbaTrust.Describe());
+
+            ShowBalloon("WPS：需要允许访问 VBA 工程",
+                changed > 0
+                    ? "已自动开启「信任对 VBA 工程对象模型的访问」。\r\n请保存并重新打开 WPS（补全才能生效）。"
+                    : "请右键托盘图标 →「允许访问 VBA 工程（WPS / Office）」，然后重开 WPS。");
         }
 
         private void ShowPopupAtCaret()

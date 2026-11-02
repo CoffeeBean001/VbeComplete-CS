@@ -1,12 +1,1 @@
-﻿=== pool dump ===
-module   = 模块1  lines = 279
-optionExplicit = False
-caret    = L280 C1  line = []
-curProc  = (null)
-procs    = 计算课时费:5-86(计算课时费), get30H:89-106(get30H), turnToFormula:109-123(turnToFormula), getFormulasCols:126-137(getFormulasCols), isFormulasCol:139-153(isFormulasCol), getPriceInformation:155-199(getPriceInformation), getTitle:202-211(getTitle), getGradeSplit:214-229(getGradeSplit), getGradeFromContent:231-242(getGradeFromContent), whereDiff:244-271(whereDiff)
-decls    = Max_Col@-, Max_Row@-, SP@-, 计算课时费@-, get30H@-, t@get30H, r@get30H, turnToFormula@-, formulasColArr@turnToFormula, r@turnToFormula, colOffset@turnToFormula, getFormulasCols@-, arr@getFormulasCols, isFormulasCol@-, s@isFormulasCol, getPriceInformation@-, getTitle@-, ws@getTitle, r1@getTitle, r2@getTitle, getGradeSplit@-, grade@getGradeSplit, result@getGradeSplit, getGradeFromContent@-, content@getGradeFromContent, whereDiff@-, priceDic@whereDiff, grade@whereDiff, subject@whereDiff, teacher@whereDiff
-free     = priceDic@计算课时费, dataSht@计算课时费, dataTitle@计算课时费, lastRow@计算课时费/getPriceInformation, lastCol@计算课时费/getPriceInformation, dataArr@计算课时费/getPriceInformation, resultDic@计算课时费, grade@计算课时费/getPriceInformation, subject@计算课时费/getPriceInformation, teacher@计算课时费/getPriceInformation, key@计算课时费/getPriceInformation/whereDiff, kind@计算课时费/getPriceInformation, where@计算课时费/whereDiff, keysArr@计算课时费/whereDiff, itemsArr@计算课时费, subKeysArr@计算课时费, subItemsArr@计算课时费, actTitle@计算课时费, formulasColArr@计算课时费, arr@get30H/isFormulasCol/whereDiff, result@get30H/turnToFormula, hours@get30H, h2@get30H, priceSht@getPriceInformation, dic@getPriceInformation/getTitle, gradeArr@getPriceInformation, gradeArr2@getPriceInformation, gradeSplitArr1@getPriceInformation, firstGrade@getPriceInformation, endGrade@getPriceInformation, gradeSplitArr2@getPriceInformation, reg@getGradeSplit/getGradeFromContent, amount@whereDiff
-visible  = Max_Col, Max_Row, SP, 计算课时费, get30H, turnToFormula, getFormulasCols, isFormulasCol, getPriceInformation, getTitle, getGradeSplit, getGradeFromContent, whereDiff
-trigger  = False  items = 0
-cands    = 
-gates    = word=[] ws=1 cc=1 seg=[] dead=False declPos=False afterType=False dotCol=-1 pool=510
+﻿no code module（VBE 里没有打开任何代码窗）
