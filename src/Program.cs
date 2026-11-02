@@ -115,7 +115,7 @@ namespace VbeComplete
                     "  --hktest      真机验证行操作快捷键（改完即还原）\r\n" +
                     "  --enterprobe  真机验证「回车自动补结构」（走真键盘钩子，改完即还原）\r\n" +
                     "  --startuptest 图标 + 开机自启的登记/回滚（会短暂改注册表，随后还原）\r\n" +
-                    "  --trusttest   AccessVBOM 现状（只读；加 VBECOMPLETE_TRUST_WRITE=1 才真写）\r\n";
+                    "  --trusttest   AccessVBOM 现状（只读；VBECOMPLETE_TRUST_WRITE=1/0 才真写）\r\n";
                 Console.WriteLine("未知开关：" + args[0]);
                 Console.WriteLine(usage);
                 try
@@ -530,7 +530,7 @@ namespace VbeComplete
         /// <summary>
         /// AccessVBOM（"信任对 VBA 工程对象模型的访问"）现状。
         /// ★默认只读：这个开关直接决定 WPS / Office 里能不能拿到 VBE，误写等于改用户的
-        ///   安全设置，所以真写必须显式加 VBECOMPLETE_TRUST_WRITE=1。
+        ///   安全设置，所以真写必须显式加 VBECOMPLETE_TRUST_WRITE（=1 开、=0 关）。
         /// ★VBECOMPLETE_TRUST_BOX=1 时把托盘菜单那一项会弹的提示框也弹一遍 —— 用来验证
         ///   "点了到底有没有反应"（气泡在 Win11 上可能一个像素都不显示）。
         /// </summary>
@@ -539,13 +539,23 @@ namespace VbeComplete
             var sb = new StringBuilder();
             sb.AppendLine("=== AccessVBOM ===");
             sb.AppendLine("12 处全为 1 = " + VbaTrust.AllEnabled() +
-                          "；存在显式的 0 = " + VbaTrust.IsBlocked());
+                          "；存在显式的 0 = " + VbaTrust.IsBlocked() +
+                          "；用户自己关过 = " + VbaTrust.UserDisabled);
             sb.AppendLine(VbaTrust.Detail());
 
-            if (Environment.GetEnvironmentVariable("VBECOMPLETE_TRUST_WRITE") == "1")
+            // 写的时候必须指明方向：=1 开、=0 关（和托盘那一项点一下、再点一下对应）
+            string box = null;
+            string wr = Environment.GetEnvironmentVariable("VBECOMPLETE_TRUST_WRITE");
+            if (wr == "1" || wr == "0")
             {
-                int n = VbaTrust.EnableAll();
-                sb.AppendLine("写入：改动 " + n + " 处；现在全为 1 = " + VbaTrust.AllEnabled());
+                bool on = wr == "1";
+                bool wasOn = VbaTrust.AllEnabled();
+                int n = on ? VbaTrust.EnableAll() : VbaTrust.DisableAll();
+                sb.AppendLine("写入「" + (on ? "开" : "关") + "」：改动 " + n +
+                              " 处；现在全为 1 = " + VbaTrust.AllEnabled() +
+                              "；用户关过 = " + VbaTrust.UserDisabled);
+                // 弹的就是托盘那一项的同款文字（TrustMessage）
+                box = App.TrustMessage(wasOn, n);
             }
 
             Console.Write(sb.ToString());
@@ -558,8 +568,7 @@ namespace VbeComplete
 
             if (Environment.GetEnvironmentVariable("VBECOMPLETE_TRUST_BOX") == "1")
                 InfoBox.Show("允许访问 VBA 工程",
-                    "这是托盘菜单里那一项会弹的提示框（--trusttest 版）。\r\n\r\n当前状态：\r\n"
-                    + VbaTrust.Detail());
+                    box ?? ("当前状态：\r\n" + VbaTrust.Detail()));
             return 0;
         }
 

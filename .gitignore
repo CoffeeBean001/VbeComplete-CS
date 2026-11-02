@@ -64,6 +64,7 @@ tray-zoom.png
 # ---- 运行期状态（不进仓库）----
 firstrun.txt
 autostart.txt
+trust-off.txt
 startuptest.log
 VbeComplete.log
 usage.log

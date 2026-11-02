@@ -11,6 +11,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Forms;
@@ -213,6 +214,38 @@ namespace VbeComplete
         }
 
         /// <summary>
+        /// 托盘「允许访问 VBA 工程」点完之后给用户看的那段话。
+        /// ★抽成静态方法是为了让 `--trusttest` 弹**同一份**文字：用户将看到的字，和我验过的
+        ///   字必须是同一份，否则"验过了"是空话。
+        /// </summary>
+        internal static string TrustMessage(bool wasOn, int n)
+        {
+            var msg = new StringBuilder();
+            if (wasOn)
+            {
+                msg.Append(n > 0 ? "已关闭 " + n + " 处。\r\n\r\n" : "本来就没开着。\r\n\r\n");
+                msg.Append("关掉之后，工具在 WPS / Excel 里就拿不到 VBA 工程 —— "
+                         + "补全、回车补结构、Ctrl+/ 都会失效。\r\n");
+                msg.Append("想恢复：关掉这个框，再点一次这一项（勾会重新出现）。\r\n\r\n");
+            }
+            else
+            {
+                msg.Append(n > 0 ? "已开启（写入 " + n + " 处）。\r\n\r\n"
+                                 : "12 处注册表本来就是开着的，这次没有改动。\r\n\r\n");
+            }
+            msg.Append("当前状态（AccessVBOM）：\r\n");
+            msg.Append(VbaTrust.Detail());
+            msg.Append("\r\n");
+            msg.Append(n > 0
+                // 只在宿主启动时读一次 ⇒ 不重开就等于没改
+                ? "要让它在 WPS / Excel 里生效，\r\n必须把 WPS / Excel 完全退出（连托盘图标一起）再重新打开。\r\n"
+                : "如果 WPS 里还是没反应，多半不是这个开关的问题。\r\n");
+            if (!wasOn)
+                msg.Append("另外：WPS 必须先按一次 Alt+F11 打开过 VBE 窗口，工具才连得上。");
+            return msg.ToString();
+        }
+
+        /// <summary>
         /// 监听"又有人启动了第二个实例"。Program 那边发现互斥体已存在时会 Set
         /// 这个事件，我们收到就把托盘图标的存在感刷一遍 —— 否则用户双击后的
         /// 全部观感就是"什么都没发生"。
@@ -285,34 +318,24 @@ namespace VbeComplete
                             "写注册表被拒绝了（常见于安全软件拦截）。日志里有详细原因。");
                 };
                 menu.Items.Add(miAutoStart);
-                // 允许访问 VBA 工程：勾选状态按注册表的**真实情况**显示。
+                // 允许访问 VBA 工程：点一下开、再点一下关（v167）。
                 // ★这一项原来只弹气泡，Win11 上气泡静默不显示 ⇒ 用户点了"完全没反应"
                 //   （实测反馈）。改注册表这种动作必须让用户当场看到结果，所以走模态框。
                 var miTrust = new ToolStripMenuItem("允许访问 VBA 工程（WPS / Office）")
                 {
-                    ToolTipText = "写 HKCU 的 AccessVBOM，不需要管理员。WPS 默认关着，关着时工具在 WPS 里拿不到 VBE。",
+                    ToolTipText = "点一下切换开 / 关（勾 = 已开）。写 HKCU 的 AccessVBOM，不需要管理员。"
+                                + "关着时工具在 WPS 里拿不到 VBE。",
                 };
                 miTrust.Click += (s, e) =>
                 {
-                    // ★WPS 默认 AccessVBOM=0，此时 Application.VBE 直接 E_FAIL —— 不开这个
+                    // ★WPS 默认 AccessVBOM=0，此时 Application.VBE 直接 E_FAIL —— 关着这个
                     //   开关，工具在 WPS 里就像"完全没反应"。
-                    int n = VbaTrust.EnableAll();
+                    bool wasOn = VbaTrust.AllEnabled();
+                    int n = wasOn ? VbaTrust.DisableAll() : VbaTrust.EnableAll();
                     miTrust.Checked = VbaTrust.AllEnabled();
-                    Log.Write("托盘开启 AccessVBOM：改了 {0} 处（{1}）", n, VbaTrust.Describe());
-
-                    var msg = new System.Text.StringBuilder();
-                    msg.Append(n > 0
-                        ? "已写入 " + n + " 处注册表。\r\n\r\n"
-                        : "12 处注册表本来就是开着的，这次没有改动。\r\n\r\n");
-                    msg.Append("当前状态（AccessVBOM）：\r\n");
-                    msg.Append(VbaTrust.Detail());
-                    msg.Append("\r\n");
-                    msg.Append(n > 0
-                        // 只在宿主启动时读一次 ⇒ 不重开就等于没改
-                        ? "要让它在 WPS / Excel 里生效，必须把 WPS / Excel 完全退出（连托盘图标一起）再重新打开。\r\n"
-                        : "如果 WPS 里还是没反应，多半不是这个开关的问题。\r\n");
-                    msg.Append("另外：WPS 必须先按一次 Alt+F11 打开过 VBE 窗口，工具才连得上。");
-                    InfoBox.Show("允许访问 VBA 工程", msg.ToString());
+                    Log.Write("托盘切换 AccessVBOM -> {0}：改了 {1} 处（{2}）",
+                        wasOn ? "关" : "开", n, VbaTrust.Describe());
+                    InfoBox.Show("允许访问 VBA 工程", TrustMessage(wasOn, n));
                 };
                 menu.Items.Add(miTrust);
                 // 每次展开菜单都按注册表刷新勾选 —— 用户可能手工在 Office 里改过
@@ -1091,11 +1114,22 @@ namespace VbeComplete
         /// 就是拿不到 VBE 对象" —— 这只可能是 AccessVBOM 没开（WPS 默认如此）。
         /// ★先自动把它打开：用户装这个工具就是为了读写 VBA 工程，不打开等于工具是死的；
         ///   但必须提示"要重开 WPS"，WPS 只在启动时读这个值。
+        /// ★例外：用户在托盘里**自己关掉**的（VbaTrust.UserDisabled），一律不许动 ——
+        ///   他关掉是有意的，我们再写回去就是"设置自己变回来了"。
         /// </summary>
         private void ExplainVbeDenied()
         {
             if (!ComCtx.VbeAccessDenied || _deniedShown) return;
             _deniedShown = true;
+
+            if (VbaTrust.UserDisabled)
+            {
+                Log.Write("拿不到 VBE：AccessVBOM 是用户自己关掉的（{0}），不自动开启", "trust-off.txt");
+                ShowBalloon("VBA 工程访问是你关掉的",
+                    "托盘菜单「允许访问 VBA 工程」现在开着还是关着，你自己决定 —— 关着时补全在 WPS / Excel 里不工作。\r\n"
+                    + "要恢复：右键托盘图标点一次那一项，然后重开宿主。");
+                return;
+            }
 
             int changed = 0;
             if (VbaTrust.IsBlocked()) changed = VbaTrust.EnableAll();
