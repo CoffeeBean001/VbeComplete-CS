@@ -43,6 +43,36 @@ namespace VbeComplete
             return false;
         }
 
+        /// <summary>
+        /// 12 处**全是 1** 才算开着（缺值按"没开"算 —— Office 的出厂默认就是关的）。
+        /// ★和 IsBlocked 不是一回事：那个只认"显式写过 0"，用来决定要不要自动动手；
+        ///   这个用来给用户看真实状态（托盘菜单的勾）。
+        /// </summary>
+        public static bool AllEnabled()
+        {
+            foreach (var v in Versions)
+                foreach (var a in Apps)
+                    if (!(Read(v, a) is int i && i == 1)) return false;
+            return true;
+        }
+
+        /// <summary>逐版本一行的当前值，给提示框看（用户能自己核对）。</summary>
+        public static string Detail()
+        {
+            var sb = new StringBuilder();
+            foreach (var v in Versions)
+            {
+                sb.Append("  " + v + "   ");
+                foreach (var a in Apps)
+                {
+                    object val = Read(v, a);
+                    sb.Append(a + "=" + (val == null ? "未设置" : val.ToString()) + "   ");
+                }
+                if (v != Versions[Versions.Length - 1]) sb.Append("\r\n");
+            }
+            return sb.ToString();
+        }
+
         /// <summary>全部打开，返回实际改了几处（已经是 1 的不计）。</summary>
         public static int EnableAll()
         {

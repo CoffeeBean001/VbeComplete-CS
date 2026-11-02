@@ -87,6 +87,7 @@ namespace VbeComplete
                     case "--paretest":    return ParenTest();
                     case "--enginetest":  return EngineTest();
                     case "--startuptest": return StartupTest();
+                    case "--trusttest":   return TrustTest();
                 }
             }
 
@@ -113,7 +114,8 @@ namespace VbeComplete
                     "  --writetest   真机验证写入链路（改完即还原）\r\n" +
                     "  --hktest      真机验证行操作快捷键（改完即还原）\r\n" +
                     "  --enterprobe  真机验证「回车自动补结构」（走真键盘钩子，改完即还原）\r\n" +
-                    "  --startuptest 图标 + 开机自启的登记/回滚（会短暂改注册表，随后还原）\r\n";
+                    "  --startuptest 图标 + 开机自启的登记/回滚（会短暂改注册表，随后还原）\r\n" +
+                    "  --trusttest   AccessVBOM 现状（只读；加 VBECOMPLETE_TRUST_WRITE=1 才真写）\r\n";
                 Console.WriteLine("未知开关：" + args[0]);
                 Console.WriteLine(usage);
                 try
@@ -523,6 +525,42 @@ namespace VbeComplete
             sb.AppendLine(ok ? "RESULT: PASS" : "RESULT: FAIL");
             File.WriteAllText(Path.Combine(Settings.Home, "startuptest.log"), sb.ToString(), Encoding.UTF8);
             return ok ? 0 : 1;
+        }
+
+        /// <summary>
+        /// AccessVBOM（"信任对 VBA 工程对象模型的访问"）现状。
+        /// ★默认只读：这个开关直接决定 WPS / Office 里能不能拿到 VBE，误写等于改用户的
+        ///   安全设置，所以真写必须显式加 VBECOMPLETE_TRUST_WRITE=1。
+        /// ★VBECOMPLETE_TRUST_BOX=1 时把托盘菜单那一项会弹的提示框也弹一遍 —— 用来验证
+        ///   "点了到底有没有反应"（气泡在 Win11 上可能一个像素都不显示）。
+        /// </summary>
+        private static int TrustTest()
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("=== AccessVBOM ===");
+            sb.AppendLine("12 处全为 1 = " + VbaTrust.AllEnabled() +
+                          "；存在显式的 0 = " + VbaTrust.IsBlocked());
+            sb.AppendLine(VbaTrust.Detail());
+
+            if (Environment.GetEnvironmentVariable("VBECOMPLETE_TRUST_WRITE") == "1")
+            {
+                int n = VbaTrust.EnableAll();
+                sb.AppendLine("写入：改动 " + n + " 处；现在全为 1 = " + VbaTrust.AllEnabled());
+            }
+
+            Console.Write(sb.ToString());
+            try
+            {
+                File.WriteAllText(Path.Combine(Settings.Home, "trusttest.log"),
+                    sb.ToString(), Encoding.UTF8);
+            }
+            catch { }
+
+            if (Environment.GetEnvironmentVariable("VBECOMPLETE_TRUST_BOX") == "1")
+                InfoBox.Show("允许访问 VBA 工程",
+                    "这是托盘菜单里那一项会弹的提示框（--trusttest 版）。\r\n\r\n当前状态：\r\n"
+                    + VbaTrust.Detail());
+            return 0;
         }
 
         /// <summary>把 Run 键快照拼成一行，只用于 --startuptest 的失败详情。</summary>
