@@ -459,6 +459,130 @@ namespace VbeComplete
             return false;
         }
 
+        // ------------------------------------------------------------------
+        // 关键字的上下文限制（v174）
+        //
+        // 关键字不像函数名那样"写在哪儿都合法"：`Property` 只在类/窗体/文档模块里有意义，
+        // `Private` / `Public` 只能在模块级写，`ReDim` / `RaiseEvent` 只能在过程体里写。
+        // 以前这些词一律进候选池 —— 用户在标准模块里打 `Prop` 会看到 `Property`、在函数体里
+        // 打 `Pri` 会看到 `Private`，按 Tab 补上去就是一条红着的过程。
+        // ★判据只看两个事实：**模块种类**（ComponentType）与**光标是否在过程体内**。
+        //   两者都拿不准时（类型读不出来 / 解析不到过程）一律放行 —— 宁可多提示，
+        //   也不要因为一次 COM 抖动把用户真正要用的关键字吞掉。
+        // ------------------------------------------------------------------
+
+        /// <summary>当前模块的种类 —— 关键字能不能用，一半取决于它。</summary>
+        public enum ModuleKind
+        {
+            /// <summary>类型读不出来（COM 抖动 / 未知组件）：不过滤。</summary>
+            Unknown = 0,
+            /// <summary>标准模块（ComponentType=1）：`Property` / `Event` / `Implements` / `Me` 不合法。</summary>
+            Standard,
+            /// <summary>对象模块（类 2 / 窗体 3 / 文档 100）：上述关键字才合法。</summary>
+            Object,
+        }
+
+        /// <summary>VBE 的 `Component.Type` → 我们只关心的三种。</summary>
+        public static ModuleKind KindOfComponent(int componentType)
+        {
+            if (componentType == 1) return ModuleKind.Standard;
+            if (componentType <= 0) return ModuleKind.Unknown;
+            return ModuleKind.Object;
+        }
+
+        /// <summary>
+        /// 只能在**模块级**写的关键字。写进过程体里一定是语法错误。
+        /// ★刻意**不**收 Sub / Function / Property / Type / Enum：它们同时是 `End Sub` /
+        ///   `Exit Function` / `Exit Property` 的第二节，在过程体里是**合法**的。
+        ///   那几个位置由 DeclSlotOf（`End Su|` 只给 Sub/Function/…）管，别在这边封掉。
+        /// </summary>
+        private static readonly HashSet<string> ModuleLevelOnly =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "Declare", "PtrSafe", "Alias", "Lib", "Implements", "Event", "Attribute",
+                "Option", "Explicit", "Friend", "Public", "Private", "Global", "WithEvents",
+            };
+
+        /// <summary>只能在**过程体**里写的关键字（模块级写这两条不合法）。</summary>
+        private static readonly HashSet<string> ProcLevelOnly =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "ReDim", "RaiseEvent" };
+
+        /// <summary>只能在**对象模块**（类 / 窗体 / 文档模块）里写的关键字。</summary>
+        private static readonly HashSet<string> ObjectModuleOnly =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "Property", "Event", "Implements", "Friend", "WithEvents", "RaiseEvent", "Me",
+            };
+
+        /// <summary>
+        /// 这个关键字能不能出现在当前位置。<paramref name="inProc"/> = 光标在某个过程体内。
+        /// 不是关键字的（函数 / 类型 / 用户名字）一律放行 —— 它们没有这种限制。
+        /// </summary>
+        public static bool KeywordAllowed(string name, ModuleKind kind, bool inProc)
+        {
+            if (string.IsNullOrEmpty(name)) return true;
+            if (!VbaBuiltins.IsKeyword(name)) return true;
+            if (inProc && ModuleLevelOnly.Contains(name)) return false;
+            if (!inProc && ProcLevelOnly.Contains(name)) return false;
+            if (kind == ModuleKind.Standard && ObjectModuleOnly.Contains(name)) return false;
+            return true;
+        }
+
+        // ------------------------------------------------------------------
+        // 宿主重排空白之后的"光标搬家"（v174）
+        // ------------------------------------------------------------------
+
+        /// <summary>两行去掉**全部空白**之后是否相同 —— 相同 = 只差空白，不是打字。</summary>
+        public static bool SameCodeIgnoringSpace(string a, string b)
+        {
+            a = a ?? "";
+            b = b ?? "";
+            int i = 0, j = 0;
+            while (true)
+            {
+                while (i < a.Length && char.IsWhiteSpace(a[i])) i++;
+                while (j < b.Length && char.IsWhiteSpace(b[j])) j++;
+                if (i >= a.Length || j >= b.Length)
+                    return i >= a.Length && j >= b.Length;
+                if (a[i] != b[j]) return false;
+                i++; j++;
+            }
+        }
+
+        /// <summary>空白字符个数（只用来判"重排是加了空格还是删了空格"）。</summary>
+        public static int SpaceCount(string s)
+        {
+            int n = 0;
+            if (s != null) foreach (char c in s) if (char.IsWhiteSpace(c)) n++;
+            return n;
+        }
+
+        /// <summary>
+        /// 把光标从"旧文本的第 <paramref name="oldCharCol"/> 个字符之前"搬到新文本里的等价位置。
+        /// 锚是**非空白字符的序号**：重排只动空白，非空白序列不变，所以这个序号是稳的。
+        /// ★真机现象（用户报）：敲完 `n=n+1` 按 Ctrl+S，VBE 会把这一行格式化一遍
+        ///   （`    n = n + 1`），可光标只按**原来的列号**保留 —— 于是从行尾跑到第二个
+        ///   `n` 后面，接着打字就插错地方，还会对着那个假词弹候选。
+        /// 返回 1-based 字符列；返回 0 表示"别搬"（光标前面一个非空白字符都没有，
+        /// 搬过去只会把它推到行首）。
+        /// </summary>
+        public static int RemapCaretOverSpaces(string oldText, int oldCharCol, string newText)
+        {
+            oldText = oldText ?? "";
+            newText = newText ?? "";
+            int cut = Math.Max(0, Math.Min(oldCharCol - 1, oldText.Length));
+            int k = 0;
+            for (int i = 0; i < cut; i++) if (!char.IsWhiteSpace(oldText[i])) k++;
+            if (k == 0) return 0;
+            int seen = 0;
+            for (int i = 0; i < newText.Length; i++)
+            {
+                if (char.IsWhiteSpace(newText[i])) continue;
+                if (++seen == k) return i + 2;   // 落在第 k 个非空白字符**后面**
+            }
+            return newText.Length + 1;           // 新文本更短：落到行尾
+        }
+
         /// <summary>
         /// 光标所在**语句段**的起点（0-based）。VBA 用 `:` 分隔同一行里的多条语句，
         /// 只认「引号外、注释外」的冒号 —— `s = "a:b"` 里的那个不算分隔符。

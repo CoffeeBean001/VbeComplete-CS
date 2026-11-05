@@ -78,6 +78,7 @@ namespace VbeComplete
                     case "--hktest":      return HkTest();
                     case "--enterprobe":  return EnterProbe();
                     case "--declprobe":   return DeclProbe(args.Length > 1 ? args[1] : null);
+                    case "--fmtprobe":    return FmtProbe();
                     case "--snipetest":   return SnippetTest();
                     case "--dbtest":      return DbTest();
                     case "--dump":        return DumpModule();
@@ -116,6 +117,7 @@ namespace VbeComplete
                     "  --hktest      真机验证行操作快捷键（改完即还原）\r\n" +
                     "  --enterprobe  真机验证「回车自动补结构」（走真键盘钩子，改完即还原）\r\n" +
                     "  --declprobe   真机逐字符敲声明位置（Private Fu / ReDim Preserve res），看弹不弹\r\n" +
+                    "  --fmtprobe    真机验证「宿主重排空白后光标落在哪儿」（模拟 Ctrl+S 保存的格式化）\r\n" +
                     "  --startuptest 图标 + 开机自启的登记/回滚（会短暂改注册表，随后还原）\r\n" +
                     "  --trusttest   AccessVBOM 现状（只读；VBECOMPLETE_TRUST_WRITE=1/0 才真写）\r\n";
                 Console.WriteLine("未知开关：" + args[0]);
@@ -1493,7 +1495,10 @@ namespace VbeComplete
                 ("Private 后补 Function", "    Private F", "un", true, new[] { "Function" }, null),
                 ("Private 后敲变量名", "    Private", " gCount", false, null, null),
                 ("Property 后补 Get", "    Property G", "e", true, new[] { "Get" }, null),
-                ("Declare 后补 PtrSafe", "    Declare P", "tr", true, new[] { "PtrSafe" }, null),
+                // ★v174：`Declare` / `Option` 只能写在**模块级** —— 过程体里本来就不该提示
+                //   （模块级的那两条见下面的 modCases，那才是用户真正写这两句的位置）。
+                ("过程体里不给 Declare PtrSafe", "    Declare P", "tr", false, null,
+                    new[] { "PtrSafe" }),
                 ("Property Get 后敲过程名", "    Public Property Get", " getT", false, null, null),
                 ("Private Sub 后敲过程名", "    Private Sub", " DoIt", false, null, null),
                 ("Declare PtrSafe Function 后敲过程名", "    Private Declare PtrSafe Function", " getT", false, null, null),
@@ -1511,7 +1516,8 @@ namespace VbeComplete
                 ("End 后补 Sub", "    End S", "u", true, new[] { "Sub" }, null),
                 ("Exit 后补 For", "    Exit F", "o", true, new[] { "For" }, null),
                 ("On Error 后补 GoTo", "    On Error G", "o", true, new[] { "GoTo" }, null),
-                ("Option 后补 Explicit", "    Option E", "x", true, new[] { "Explicit" }, null),
+                ("过程体里不给 Option Explicit", "    Option E", "x", false, null,
+                    new[] { "Explicit" }),
                 ("Do 后补 While", "    Do W", "h", true, new[] { "While" }, null),
                 ("Loop 后补 Until", "    Loop U", "n", true, new[] { "Until" }, null),
                 ("For 后补 Each", "    For E", "a", true, new[] { "Each" }, null),
@@ -1529,6 +1535,19 @@ namespace VbeComplete
                 // `Declare PtrSafe Fu|` 是第三个关键字位置
                 ("PtrSafe 后补 Function", "    Private Declare PtrSafe F", "u", true,
                     new[] { "Function" }, null),
+                // ★v174：用户报的原话 —— "在函数里打 private，会提示"。过程体里 `Private`
+                //   一定是语法错误；同前缀的 `Print` 是内建函数，照样要给（别修过头）。
+                ("函数体里不给 Private、但给 Print", "    Pri", "n", true,
+                    new[] { "Print" }, new[] { "Private" }),
+            };
+
+            // ★v174：只能写在**模块级**的关键字，用例必须摆在模块级（见 RebuildScaffoldTopLevel）。
+            var modCases = new (string name, string line, string typed, bool want, string[] must, string[] bad)[]
+            {
+                // 用户报的第二格：标准模块里打 `Prop` 不该冒出 `Property`
+                ("标准模块里没有 Property", "    Prop", "e", false, null, new[] { "Property" }),
+                ("模块级 Declare 后补 PtrSafe", "    Declare P", "tr", true, new[] { "PtrSafe" }, null),
+                ("模块级 Option 后补 Explicit", "    Option E", "x", true, new[] { "Explicit" }, null),
             };
 
             int imeModeAtStart = -1;
@@ -1564,6 +1583,46 @@ namespace VbeComplete
                             "（conv=0x" + imeMode0.ToString("X2") + "，跑完恢复）" +
                             (alnum ? "" : "   ⚠️ 切不过去：逐字符打字会被输入法吃掉"));
 
+                    // 采样 + 断言（脚手架里的用例和模块级那批共用这一段）
+                    Action<string, bool, string[], string[], bool, string> eval =
+                        (name, want, must, bad, typed, how) =>
+                        {
+                            // ★v172：不能"固定睡 400ms 再看一眼"。宿主的轮询是 80~300ms 一跳
+                            //   （Excel 打字时快、空闲时慢），打最后一个字符到"那一轮 Trigger
+                            //   跑完并画出来"可能差好几百毫秒 —— 第 12 条（Declare PtrSafe）
+                            //   和第 21 条（冒号后 ReDim Preserve）都因此偶发假红过：单跑
+                            //   五次全绿、全量一跑随机红一条。改成"弹到即停、超时才判不弹"。
+                            bool shown = false;
+                            string names = "";
+                            int waited = 0;
+                            while (waited < 1500)
+                            {
+                                Thread.Sleep(60);
+                                waited += 60;
+                                if (app.PopupVisible) { shown = true; names = app.PopupNames; break; }
+                                // 期望不弹的用例（打全即收 / 名字位）：收窗是立即的，等
+                                // 600ms 还没有动静就结案，别把整套拖成一分多钟。
+                                if (!want && waited >= 600) break;
+                            }
+                            string[] got = ReadLines(app, be, at, 2);
+                            string line = got.Length > 1 ? got[1] : "";
+
+                            bool pass = typed && shown == want;
+                            foreach (var wantName in must ?? Array.Empty<string>())
+                                if (!names.Split(',').Any(x => string.Equals(x, wantName,
+                                    StringComparison.OrdinalIgnoreCase)))
+                                    pass = false;
+                            // ★v173：`bad` 之前只是写在用例表里，**从来没被断言过** ——
+                            //   于是"不该出现的候选"一直没人管（`Preserve re|` 冒出
+                            //   Reset/Resume 也只能靠人眼看截图发现）。
+                            foreach (var banned in bad ?? Array.Empty<string>())
+                                if (names.Split(',').Any(x => string.Equals(x, banned,
+                                    StringComparison.OrdinalIgnoreCase)))
+                                    pass = false;
+                            check(name, pass,
+                                "弹=" + shown + " 候选=[" + names + "] 行=[" + line + "] via=" + how);
+                        };
+
                     for (int k = 0; k < cases.Length; k++)
                     {
                         var c = cases[k];
@@ -1574,41 +1633,18 @@ namespace VbeComplete
                             "    Dim resProbe() As Long, nProbe&");
                         Thread.Sleep(350);
                         bool typed = TypeTyping(app, c.typed, 55, out string how);
+                        eval((k + 1) + " " + c.name, c.want, c.must, c.bad, typed, how);
+                    }
 
-                        // ★v172：不能"固定睡 400ms 再看一眼"。宿主的轮询是 80~300ms 一跳
-                        //   （Excel 打字时快、空闲时慢），打最后一个字符到"那一轮 Trigger
-                        //   跑完并画出来"可能差好几百毫秒 —— 第 12 条（Declare PtrSafe）
-                        //   和第 21 条（冒号后 ReDim Preserve）都因此偶发假红过：单跑
-                        //   五次全绿、全量一跑随机红一条。改成"弹到即停、超时才判不弹"。
-                        bool shown = false;
-                        string names = "";
-                        int waited = 0;
-                        while (waited < 1500)
-                        {
-                            Thread.Sleep(60);
-                            waited += 60;
-                            if (app.PopupVisible) { shown = true; names = app.PopupNames; break; }
-                            // 期望不弹的用例（打全即收 / 名字位）：收窗是立即的，等
-                            // 600ms 还没有动静就结案，别把整套拖成一分多钟。
-                            if (!c.want && waited >= 600) break;
-                        }
-                        string[] got = ReadLines(app, be, at, 2);
-                        string line = got.Length > 1 ? got[1] : "";
-
-                        bool pass = typed && shown == c.want;
-                        foreach (var want in c.must ?? Array.Empty<string>())
-                            if (!names.Split(',').Any(x => string.Equals(x, want,
-                                StringComparison.OrdinalIgnoreCase)))
-                                pass = false;
-                        // ★v173：`bad` 之前只是写在用例表里，**从来没被断言过** ——
-                        //   于是"不该出现的候选"一直没人管（`Preserve re|` 冒出
-                        //   Reset/Resume 也只能靠人眼看截图发现）。
-                        foreach (var banned in c.bad ?? Array.Empty<string>())
-                            if (names.Split(',').Any(x => string.Equals(x, banned,
-                                StringComparison.OrdinalIgnoreCase)))
-                                pass = false;
-                        check((k + 1) + " " + c.name, pass,
-                            "弹=" + shown + " 候选=[" + names + "] 行=[" + line + "] via=" + how);
+                    // ★v174：**模块级**那批 —— `Declare PtrSafe` / `Option Explicit` /
+                    //   `Property` 这些"只能写在模块级"的位置，包进 `Sub` 就变成"过程体内"，
+                    //   会被"关键字只能在模块级"那条判据正确过滤掉，测的就不是这件事了。
+                    foreach (var c in modCases)
+                    {
+                        RebuildScaffoldTopLevel(app, be, at, c.line);
+                        Thread.Sleep(350);
+                        bool typed = TypeTyping(app, c.typed, 55, out string how);
+                        eval("M " + c.name, c.want, c.must, c.bad, typed, how);
                     }
                 }
                 catch (Exception e)
@@ -1636,6 +1672,11 @@ namespace VbeComplete
                 {
                     joined = driver.Join(4000);
                     be.ForceReloadModule();
+                    // ★v174：先把 `at` 之后的尾巴清干净 —— 模块级用例写在 `Sub` 外面，
+                    //   CleanupScratch 只认 `Sub VbcEnter() … End Sub`，清不掉它。
+                    int tailCnt = be.LineCount();
+                    if (tailCnt >= at) be.DeleteLines(at, tailCnt - at + 1);
+                    be.ForceReloadModule();
                     int removed = CleanupScratch(be);
                     be.ForceReloadModule();
                     string now = be.ModuleText();
@@ -1660,6 +1701,210 @@ namespace VbeComplete
                         try
                         {
                             File.WriteAllText(Path.Combine(Settings.Home, "declprobe.log"),
+                                sb.ToString(), new UTF8Encoding(false));
+                        }
+                        catch { }
+                    }
+                    allOk = false;
+                }
+            }
+            return allOk ? 0 : 1;
+        }
+
+        /// <summary>
+        /// 真机探针（v174）：**宿主把一行重排了空白之后，光标该落在哪儿**。
+        /// 用户报的那一格：敲完 `n=n+1` 按 Ctrl+S，VBE 会顺手把这一行格式化
+        /// （`    n = n + 1`），而光标只按**原来的列号**保留 —— 于是从行尾跑到第二个
+        /// `n` 后面，接着打字就插错地方，还会对着那个假词弹一屏候选。
+        /// ★这里**不真的按 Ctrl+S**（那会把测试行写进用户的工作簿）。改成"直接把这一行
+        ///   换成 VBE 格式化后的样子，再把光标摆回原列号" —— 保存之后 App 看到的就是
+        ///   这个状态。判据在 PollOnce 里（spacingOnly / hostRespaced），所以必须让 App
+        ///   自己跑轮询、自己读快照，这才是真机链路。
+        /// </summary>
+        private static int FmtProbe()
+        {
+            var sb = new StringBuilder();
+            var gate = new object();
+            bool allOk = true;
+            Action<string, bool, string> check = (name, ok, detail) =>
+            {
+                if (!ok) allOk = false;
+                lock (gate) sb.AppendLine((ok ? "  PASS  " : "  FAIL  ") + name + "   " + detail);
+            };
+
+            sb.AppendLine("=== fmt probe（真机 / 宿主重排空白后的光标落点） ===");
+
+            var app = new App();
+            var be = new VbeBackend();
+            int leftover = CleanupScratch(be);
+            string orig = be.ModuleText();
+            int baseCount = be.LineCount();
+            sb.AppendLine("module lines = " + baseCount + "  len = " + (orig == null ? -1 : orig.Length) +
+                          "  上次残留块清理 = " + leftover);
+            if (baseCount < 0 || orig == null)
+            {
+                sb.AppendLine("no code module, skip");
+                File.WriteAllText(Path.Combine(Settings.Home, "fmtprobe.log"),
+                    sb.ToString(), new UTF8Encoding(false));
+                return 1;
+            }
+
+            int at = baseCount + 1;
+            RebuildScaffold(app, be, at, "    n = n");
+            be.FocusVbe();
+            app.Start();
+
+            // 用例（就是用户截图那一格）：手写 `    n=n+1`，Ctrl+S 之后 VBE 把它格式化成
+            //   `    n = n + 1`，而光标按原列号留在了第 10 列 —— 正好是第二个 `n` 后面。
+            //   期望：不弹候选（那是假词），光标搬回行尾（= `1` 后面，第 14 列）。
+            //   ★`=` 两侧也必须没有空格：只差 `+1` 那一段的话，光标落在 `+` 后面、取词
+            //     是空的，老代码本来就不会弹 —— 那样测不到"假词弹窗"这一半。
+            const string header = "    n";
+            const string typed = "=n+1";
+            const string formatted = "    n = n + 1";
+
+            var driver = new Thread(() =>
+            {
+                int imeModeAtStart = -1;
+                try
+                {
+                    bool focused = false;
+                    for (int i = 0; i < 40 && !focused; i++)
+                    {
+                        app.RunOnUi(() =>
+                        {
+                            Native.ForceForeground(Native.FindWindow("wndclass_desked_gsk", null));
+                            be.SetCaret(at + 1, header.Length + 1);
+                            be.InvalidateSnapshot();
+                        });
+                        Thread.Sleep(250);
+                        focused = app.CodePaneFocused;
+                    }
+                    check("焦点在代码窗", focused, "CodePaneFocused=" + focused);
+                    if (!focused) return;
+
+                    int imeMode0 = Native.ImeConversionMode(Native.FocusedVbeWindow());
+                    imeModeAtStart = imeMode0;
+                    if (!Native.ImeAlphanumeric(Native.FocusedVbeWindow()))
+                    {
+                        Native.ImeSetAlphanumeric(Native.FocusedVbeWindow());
+                        Thread.Sleep(200);
+                    }
+                    bool alnum = Native.ImeAlphanumeric(Native.FocusedVbeWindow());
+                    lock (gate)
+                        sb.AppendLine("IME 英数模式 = " + alnum +
+                            "（conv=0x" + imeMode0.ToString("X2") + "，跑完恢复）" +
+                            (alnum ? "" : "   ⚠️ 切不过去：逐字符打字会被输入法吃掉"));
+
+                    RebuildScaffold(app, be, at, header, "    Dim n As Long");
+                    Thread.Sleep(350);
+                    bool ok1 = TypeTyping(app, typed, 55, out string how);
+
+                    // ★500ms 是算出来的，不是随手写的：
+                    //   >400ms —— 让钩子那边"最近按过的编辑键"过期，否则会被当成"用户在敲空格"；
+                    //   <1200ms —— 仍在 KeyTriggerWindowMs 里，也就是**旧代码在这个位置一定会弹**
+                    //   （用户截图里那屏 `n / Next / New / Not …` 就是这么来的）。
+                    Thread.Sleep(500);
+
+                    var s0 = app.HookSnap;
+                    string rawText = s0?.Text ?? "";
+                    int rawCol = s0?.CaretCol ?? 0;
+                    int rawCharCol = Rules.CharColFromDisp(rawText, rawCol);
+                    lock (gate)
+                        sb.AppendLine("  敲完 -> 行=[" + rawText + "] 显示列=" + rawCol +
+                                      " 字符列=" + rawCharCol + " via=" + how);
+                    bool typOk = ok1 && string.Equals(Rules.Rstrip(rawText),
+                        Rules.Rstrip(header + typed), StringComparison.Ordinal);
+
+                    // 摆成"保存之后"的样子：文本 = 格式化后的，光标 = 原来的列号
+                    // （真机上 Ctrl+S 干的就是这两件事：重排 + 光标按原列号留着）
+                    app.RunOnUi(() =>
+                    {
+                        be.ForceReloadModule();
+                        be.ReplaceLineRaw(at + 1, formatted);
+                        be.SetCaret(at + 1, Math.Max(1, rawCharCol));
+                        be.InvalidateSnapshot();
+                    });
+                    // 再"按一下无关的键" —— 真机上这一下就是 Ctrl+S 本身。
+                    // ★为什么非按不可：App 的快照有 800ms 保鲜期，而保存之后**光标列没变**
+                    //   （正是这个 bug），缓存整条命中 ⇒ 要等它过期才看得见新文本。这期间
+                    //   "最近 1.2 秒按过键"早就过期了，弹窗那一半根本测不出来（试过一次，
+                    //   A/B 关掉修复也只看到光标错位、看不到弹窗）。
+                    SendKeys(app, Native.VK_SHIFT);
+                    Thread.Sleep(900);
+
+                    Snapshot s1 = null;
+                    app.RunOnUi(() =>
+                    {
+                        be.ForceReloadModule();
+                        s1 = be.Snapshot();
+                    });
+                    string text = s1?.Text ?? "";
+                    int caret = s1 == null ? -1 : Rules.CharColFromDisp(text, s1.CaretCol);
+                    bool shown = app.PopupVisible;
+                    string names = app.PopupNames;
+                    int want = text.Length + 1;      // `1` 后面 = 行尾
+                    bool pass = typOk && !shown && s1 != null && caret == want &&
+                                string.Equals(Rules.Rstrip(text), Rules.Rstrip(formatted),
+                                    StringComparison.Ordinal);
+                    check("保存重排后：不弹窗 + 光标回到行尾", pass,
+                        "弹=" + shown + (names.Length > 0 ? "[" + names + "]" : "") +
+                        " 行=[" + text + "] 光标字符列=" + caret + "（期望 " + want + "）" +
+                        " 敲入=" + typOk);
+
+                    if (!string.Equals(Rules.Rstrip(text), Rules.Rstrip(formatted),
+                            StringComparison.Ordinal))
+                        lock (gate) sb.AppendLine("  ⚠️ 行文本与期望不符，本条的结论仅供参考");
+                }
+                catch (Exception e)
+                {
+                    lock (gate) sb.AppendLine("EXCEPTION " + e);
+                    allOk = false;
+                }
+                finally
+                {
+                    Native.ImeRestore(Native.FocusedVbeWindow(), imeModeAtStart);
+                    app.RequestExit();
+                }
+            })
+            { IsBackground = true, Name = "fmtprobe" };
+
+            driver.Start();
+            bool joined = false;
+            try
+            {
+                Application.Run(app);
+            }
+            finally
+            {
+                try
+                {
+                    joined = driver.Join(4000);
+                    be.ForceReloadModule();
+                    int removed = CleanupScratch(be);
+                    be.ForceReloadModule();
+                    string now = be.ModuleText();
+                    bool restored = string.Equals(now, orig, StringComparison.Ordinal);
+                    if (!restored) allOk = false;
+                    lock (gate)
+                    {
+                        sb.AppendLine("cleanup 块 = " + removed + "   restored = " + restored +
+                                      "   lines " + be.LineCount() + "/" + baseCount +
+                                      (joined ? "" : "   ⚠️ driver 线程超时未结束"));
+                        sb.AppendLine(allOk ? "RESULT: PASS" : "RESULT: FAIL");
+                        File.WriteAllText(Path.Combine(Settings.Home, "fmtprobe.log"),
+                            sb.ToString(), new UTF8Encoding(false));
+                    }
+                }
+                catch (Exception e)
+                {
+                    lock (gate)
+                    {
+                        sb.AppendLine("cleanup 异常：" + e.Message);
+                        sb.AppendLine("RESULT: FAIL");
+                        try
+                        {
+                            File.WriteAllText(Path.Combine(Settings.Home, "fmtprobe.log"),
                                 sb.ToString(), new UTF8Encoding(false));
                         }
                         catch { }
@@ -1722,6 +1967,33 @@ namespace VbeComplete
                 for (int i = body.Count - 1; i >= 0; i--) be.InsertLines(at, body[i]);
 
                 be.SetCaret(at + 1, header.Length + 1);
+                be.InvalidateSnapshot();
+            });
+        }
+
+        /// <summary>
+        /// 把用例摆在**模块级**：`用例行` + 一个空的 `Sub VbcEnter()`/`End Sub`。
+        /// ★为什么不包进过程里：`Declare PtrSafe` / `Option Explicit` / `Property` 这些
+        ///   "只能写在模块级"的关键字，包进 `Sub` 就变成"过程体内"，会被
+        ///   Rules.KeywordAllowed 正确过滤掉 —— 那样测的是另一件事。
+        /// ★后面那个空过程只是给 CleanupScratch 认的标记，跟用例本身无关。
+        /// </summary>
+        private static void RebuildScaffoldTopLevel(App app, VbeBackend be, int at, string line)
+        {
+            app.RunOnUi(() =>
+            {
+                be.ForceReloadModule();
+                int cnt = be.LineCount();
+                if (cnt >= at) be.DeleteLines(at, cnt - at + 1);
+
+                // ★第一行留空：下面 `eval` 读的是 `at+1`（与 RebuildScaffold 同一口径，
+                //   那套脚手架的 at+1 就是用例行）。用例行必须也落在 at+1，否则断言
+                //   读的是别人那一行 —— 第一版没留这个空行，结果 "tr" 敲进了
+                //   `Sub VbcEnter()` 里面（日志里写着 `Sub VbcEnter(tr)`）。
+                var body = new List<string> { "", line, "Sub VbcEnter()", "End Sub" };
+                for (int i = body.Count - 1; i >= 0; i--) be.InsertLines(at, body[i]);
+
+                be.SetCaret(at + 1, line.Length + 1);
                 be.InvalidateSnapshot();
             });
         }
@@ -2268,12 +2540,14 @@ namespace VbeComplete
             // ---- 1d. v171：位置判据不许外溢到"同一句话里的普通表达式" ----
             //   ★用户报：行首打 `Preserve re` 只剩一个 `result`，`ReDim` 自己被滤掉了
             //     —— `Preserve` 只在 `ReDim` 后面才是"只能跟数组名"的位置。
-            sprobe("行首 Preserve 后仍给 ReDim（Preserve re|）", "模块1", 5,
+            //   ★v174：这两条的行号从 5 挪到 11 —— 第 5 行是**模块级**，而 `ReDim` 只能
+            //     写在过程体里（Rules.KeywordAllowed 会把它剔掉，见下面 1d 那组）。
+            sprobe("行首 Preserve 后仍给 ReDim（Preserve re|）", "模块1", 11,
                 "    Preserve re", 16, true, new[] { "ReDim" }, null);
             //   ★v173：用户接着报"应该只提示 redim 才对吧" —— 对，位置对了一半不算对。
             //     这个位置是纯语法位，除了 ReDim 什么都不合法：名字（resVar）和同前缀的
             //     内建/关键字（Replace/Rem/Reset/Resume/Return/RaiseEvent）全得剔。
-            sprobe("行首 Preserve 只给 ReDim（名字内建全剔）", "模块1", 5,
+            sprobe("行首 Preserve 只给 ReDim（名字内建全剔）", "模块1", 11,
                 "    Preserve re", 16, true, new[] { "ReDim" },
                 new[] { "resVar", "Replace", "Rem", "Reset", "Resume", "Return", "RaiseEvent" });
             //   `End Su|` 同理：`End` 后面只可能是关键字，名字一律不合法
@@ -2294,6 +2568,22 @@ namespace VbeComplete
                 new[] { "Reset", "Resume" });
             sprobe("冒号后面 ReDim 照弹名字（x = 1: ReDim okk|）", "模块1", 11,
                 "    x = 1: ReDim okk", 21, true, new[] { "okkk2" }, null);
+
+            // ---- 1d. v174：关键字的使用场合（用户报：标准模块里冒出 Property、
+            //   函数体里冒出 Private）。模块1 是标准模块（Type=1），第 5 行是模块级空行，
+            //   第 11 行在 `Sub test()` 里面；cls1 是类模块（Type=2）。
+            sprobe("标准模块的模块级不给 Property（Prop|）", "模块1", 5,
+                "    Prop", 9, false, null, new[] { "Property" });
+            sprobe("类模块的模块级有 Property（cls1 里 Prop|）", "cls1", 3,
+                "    Prop", 9, true, new[] { "Property" }, null);
+            sprobe("函数体里不给 Private（Pri|）", "模块1", 11,
+                "    Pri", 8, null, null, new[] { "Private" });
+            sprobe("模块级有 Private（Pri|）", "模块1", 5,
+                "    Pri", 8, true, new[] { "Private" }, null);
+            sprobe("模块级不给 ReDim（ReDi|）", "模块1", 5,
+                "    ReDi", 9, false, null, new[] { "ReDim" });
+            sprobe("过程体里有 ReDim（ReDi|）", "模块1", 11,
+                "    ReDi", 9, true, new[] { "ReDim" }, null);
 
             // ---- 2. Option Explicit：未声明的名字不进候选 ----
             // 光标所在行会被"挖掉半截词"，所以搜索词要和模块里的名字错开：

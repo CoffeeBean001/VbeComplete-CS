@@ -142,6 +142,17 @@ namespace VbeComplete
                     ? Rules.BlankToken(moduleText, blankLine, blankStart, blankToken)
                     : moduleText;
                 cur = Scope.Analyze(moduleName ?? "", parsed);
+                // ★v174：Analyze 出来的新对象没有组件类型（默认 0 = 未知），而"这个模块是
+                //   标准模块还是类模块"决定了 Property / Me 该不该提示。缓存里同名的那个
+                //   是 ProjectScopes 给的，类型已经填好 —— 抄过来。抄不到就保持未知（不过滤）。
+                if (others != null)
+                    foreach (var ms in others)
+                        if (string.Equals(ms.Module, moduleName ?? "",
+                                          StringComparison.OrdinalIgnoreCase))
+                        {
+                            cur.ComponentType = ms.ComponentType;
+                            break;
+                        }
                 scopes.Add(cur);
                 seen.Add(moduleName ?? "");
             }
@@ -365,7 +376,13 @@ namespace VbeComplete
                 declNamesBlocked = slot == Rules.DeclSlot.KeywordsOnly;
             }
 
-            var ranks = BuildRankMap(snap.Module, ProcOf(snap));
+            // ★v174：关键字的"使用场合"限制（用户报：标准模块里冒出 Property、
+            //   函数体里冒出 Private）。两个事实就够：这个模块是什么种类、
+            //   光标在不在某个过程体内。拿不准时（类型未知 / 解析不到过程）一律放行。
+            string curProc = ProcOf(snap);
+            var ranks = BuildRankMap(snap.Module, curProc);
+            var modKind = Rules.KindOfComponent(ComponentTypeOf(snap.Module));
+            bool inProc = curProc != null;
 
             var hits = new List<Candidate>(64);
             foreach (var name in memberPool ?? _poolNames)
@@ -378,6 +395,12 @@ namespace VbeComplete
                 if (word.Length == 1 && fh.Kind < 3) continue;
 
                 bool isBuiltin = VbaBuiltins.IsBuiltin(name);
+
+                // ★v174：关键字只在它合法的场合出现。`Property` 进不了标准模块，
+                //   `Private` / `Public` 进不了过程体，`ReDim` 出不了过程体 —— 这些位置
+                //   按 Tab 补进去就是一行红的代码，不如一条都不给。手动 Ctrl+Space 同样拦
+                //   （同 v152 的口径：位置根本不合法，多给一条只是多一次踩坑机会）。
+                if (isBuiltin && !Rules.KeywordAllowed(name, modKind, inProc)) continue;
 
                 // 声明关键字后面的位置：把"这个位置根本不可能出现的东西"剔掉。
                 // ★v170：判据从 IsKeyword 放宽到 IsBuiltin —— `Reset` / `Unload` / `Round`
@@ -478,6 +501,15 @@ namespace VbeComplete
                 return p == null ? null : p.ScopeKey;
             }
             return null;
+        }
+
+        /// <summary>这个模块的 VBE 组件类型（0 = 不知道）。见 Rules.KindOfComponent。</summary>
+        private int ComponentTypeOf(string module)
+        {
+            foreach (var ms in _scopes)
+                if (string.Equals(ms.Module, module ?? "", StringComparison.OrdinalIgnoreCase))
+                    return ms.ComponentType;
+            return 0;
         }
 
         /// <summary>

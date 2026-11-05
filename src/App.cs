@@ -52,6 +52,10 @@ namespace VbeComplete
         // 触发一次【在钩子线程上创建窗口句柄】，那是跨线程建窗，必炸。
         private volatile IntPtr _snippetHwnd;
         private long _lastKeyTs;
+        // ★v174：最近一次"会改文本"的按键（文字键 + 空格 / Tab / 退格 / Delete）的时刻。
+        //   宿主重排空白后的"光标搬家"要看它 —— 用户自己在敲空格/退格时绝不能去动光标，
+        //   否则等于把他刚敲的那个空格吞回去。
+        private long _lastEditTs;
 
         // ---- 探针专用：0 = 注入键一律不理（= 生产行为），-1 = 全放行，其它 = 只放行这一个 vk ----
         // 钩子必须跳过 LLKHF_INJECTED（否则自己补的空格/括号会自己触发自己），而
@@ -118,7 +122,18 @@ namespace VbeComplete
         // 自动弹窗只认按键：鼠标右键粘贴 / 拖拽 / 别的程序改代码造成的文本变化
         // 只收起、不弹（Python 版 REQUIRE_KEY_TRIGGER，默认开）。
         private readonly bool RequireKeyTrigger = Settings.Flag("REQUIRE_KEY_TRIGGER", true);
+        /// <summary>
+        /// v174 的口子：关掉"宿主重排空白"的处理。只为 --fmtprobe 的 A/B 对照存在 ——
+        /// 探针得能证明"把这段关掉就复现了用户报的现象"，否则绿了也不知道绿的是什么。
+        /// </summary>
+        private readonly bool NoRespacedFix = Settings.Flag("NO_RESPACED_FIX", false);
         private const long KeyTriggerWindowMs = 1200;
+        /// <summary>
+        /// "最近这么久没按过编辑键"才算宿主自己重排了空白（见 PollOnce 里的 hostRespaced）。
+        /// 打字时轮询是 50ms 一跳，正常敲一个空格不会超过这个窗口；反过来说，人敲完最后
+        /// 一个字再去按 Ctrl+S，间隔基本上都大于它。
+        /// </summary>
+        private const long NoEditKeyMs = 400;
 
         public App()
         {
@@ -502,6 +517,15 @@ namespace VbeComplete
             }
 
             if (win) return Native.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
+
+            // ★v174：记"会改文本"的键。文字键之外还要算上空格 / Tab / 退格 / Delete ——
+            //   它们改的是空白，轮询那边正是靠"刚有没有按过编辑键"来区分
+            //   "用户在敲空白"和"宿主自己把这一行重排了"（见 PollOnce 里的 spacingOnly）。
+            if (Editing.IsTextKey(vk) || vk == Native.VK_BACK || vk == Native.VK_DELETE ||
+                vk == Native.VK_TAB)
+            {
+                _lastEditTs = Environment.TickCount64;
+            }
 
             // ---- 数"按了可能写字的键、文档却没变"的次数 ----
             // 那就是输入法正在组字的信号（拼音被吃掉、还没上屏）。组字状态下
@@ -1039,6 +1063,8 @@ namespace VbeComplete
                 {
                     // 文档变了 ⇒ "按了键却没落进文档"的计数清零（见 _pendingKeys 的说明）
                     _pendingKeys = 0;
+                    // 上一轮的快照（下面要拿它的文本/光标列算"这一行被重排了没有"）
+                    Snapshot prev = _lastSnap;
 
                     // 换模块 = 不是打字，只是切了代码窗，不该弹
                     bool modSwitched = !string.Equals(snap.Module, _lastModName, StringComparison.OrdinalIgnoreCase)
@@ -1053,6 +1079,43 @@ namespace VbeComplete
 
                     _lastSnap = snap;
                     _lastModName = snap.Module;
+
+                    // ★v174：**宿主把这一行重排了空白** —— Ctrl+S 保存的固定副作用：VBE
+                    //   会顺手把当前行格式化一遍（`n=n+1` 存完是 `    n = n + 1`），而光标
+                    //   只按**原来的列号**保留，于是从行尾跑到第二个 `n` 后面（用户报的截图
+                    //   就是这一格）。两件事都要收：
+                    //     ①这不是打字，别弹 —— 那一屏 `n / Next / New / Not / Now …` 全是
+                    //       对着一个根本不存在的"正在输入的词"算出来的；
+                    //     ②光标得按"非空白字符序号"搬回等价位置，否则接着打字就插错地方。
+                    //   ★怎么和"用户自己在敲空格"区分：重排会**一次加好几个**空格（`=` 前后
+                    //     各一个），而且刚按过的编辑键（空格/Tab/退格/Delete，见 _lastEditTs）
+                    //     说明是人在动。只加一个空格的一律不当重排 —— 那是人手敲的。
+                    if (!NoRespacedFix && prev != null && !modSwitched && !lineJumped &&
+                        Rules.SameCodeIgnoringSpace(snap.Text, prev.Text))
+                    {
+                        if (_popupVisible) _eng.Hide();
+                        bool hostRespaced =
+                            Rules.SpaceCount(snap.Text) - Rules.SpaceCount(prev.Text) >= 2 &&
+                            Environment.TickCount64 - _lastEditTs > NoEditKeyMs;
+                        if (hostRespaced)
+                        {
+                            int oldCaret = Rules.CharColFromDisp(prev.Text ?? "", prev.CaretCol);
+                            int want = Rules.RemapCaretOverSpaces(prev.Text ?? "", oldCaret, snap.Text ?? "");
+                            int now = Rules.CharColFromDisp(snap.Text ?? "", snap.CaretCol);
+                            if (want > 0 && want != now && _be.SetCaret(snap.Line, want))
+                            {
+                                Log.Write("宿主重排：L{0} 光标 {1}->{2}（行内空白被重排，不弹）",
+                                    snap.Line, now, want);
+                                var fixedSnap = _be.Snapshot();
+                                if (fixedSnap != null)
+                                {
+                                    _lastSnap = fixedSnap;
+                                    _hookSnap = fixedSnap;
+                                }
+                            }
+                        }
+                        return;
+                    }
 
                     if (!modSwitched)
                     {

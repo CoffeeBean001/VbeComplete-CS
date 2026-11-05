@@ -284,6 +284,48 @@ namespace VbeComplete
             Ok("decl-position/Preserve 行首不算声明位置",
                 !Rules.InDeclarationPosition("    Preserve re", 14));
 
+            // ★v174：关键字的"使用场合"限制（用户报：标准模块里冒出 Property、
+            //   函数体里冒出 Private）。判据只有两个输入：模块种类 + 在不在过程体内。
+            const Rules.ModuleKind std = Rules.ModuleKind.Standard;
+            const Rules.ModuleKind obj = Rules.ModuleKind.Object;
+            const Rules.ModuleKind unk = Rules.ModuleKind.Unknown;
+            Ok("kw-context/标准模块里没有 Property", !Rules.KeywordAllowed("Property", std, false));
+            Ok("kw-context/类模块里有 Property", Rules.KeywordAllowed("Property", obj, false));
+            // 类型读不出来时不许乱删（COM 抖一次就会把用户要用的关键字吞掉）
+            Ok("kw-context/类型未知时放行 Property", Rules.KeywordAllowed("Property", unk, false));
+            Ok("kw-context/函数体里没有 Private", !Rules.KeywordAllowed("Private", std, true));
+            Ok("kw-context/模块级有 Private", Rules.KeywordAllowed("Private", std, false));
+            Ok("kw-context/类模块里模块级也有 Private", Rules.KeywordAllowed("Private", obj, false));
+            Ok("kw-context/标准模块里没有 Me", !Rules.KeywordAllowed("Me", std, false));
+            Ok("kw-context/类模块里有 Me", Rules.KeywordAllowed("Me", obj, false));
+            // ReDim / RaiseEvent 是反过来的：只能写在过程体里
+            Ok("kw-context/模块级没有 ReDim", !Rules.KeywordAllowed("ReDim", std, false));
+            Ok("kw-context/过程体里有 ReDim", Rules.KeywordAllowed("ReDim", std, true));
+            // 函数 / 类型 / 用户自己的名字不受这套限制
+            Ok("kw-context/内建函数不受限", Rules.KeywordAllowed("Chr", std, true));
+            Ok("kw-context/用户名字不受限", Rules.KeywordAllowed("gCount", std, true));
+            Ok("kw-context/ComponentType 1 = 标准模块",
+                Rules.KindOfComponent(1) == std);
+            Ok("kw-context/ComponentType 2/3/100 = 对象模块",
+                Rules.KindOfComponent(2) == obj && Rules.KindOfComponent(3) == obj &&
+                Rules.KindOfComponent(100) == obj);
+
+            // ★v174：宿主重排空白之后的光标搬家。用户报的那一格：
+            //   敲完 `n=n+1` 按 Ctrl+S，VBE 格式化成 `    n = n + 1`，光标却按原列号
+            //   留在了第二个 n 后面（第 10 列），得搬回行尾（第 14 列）。
+            Ok("respace/只差空白算重排",
+                Rules.SameCodeIgnoringSpace("    n=n+1", "    n = n + 1"));
+            Ok("respace/非空白变了就不是重排",
+                !Rules.SameCodeIgnoringSpace("    n=n+1", "    n = n + 2"));
+            Ok("respace/行尾空白不算差别",
+                Rules.SameCodeIgnoringSpace("x = 1", "x = 1   "));
+            Eq("respace/光标搬回行尾", Rules.RemapCaretOverSpaces("    n=n+1", 10, "    n = n + 1"), 14);
+            Eq("respace/行首那格（没有缩进）", Rules.RemapCaretOverSpaces("n=n+1", 6, "n = n + 1"), 10);
+            Eq("respace/行中间插空格后原地不动", Rules.RemapCaretOverSpaces("a+b", 2, "a + b"), 2);
+            Eq("respace/光标前全是空白就不搬", Rules.RemapCaretOverSpaces("   x", 2, "    x"), 0);
+            // 这里就是"人在敲空格"和"宿主重排"的区分依据：重排一次会加好几个空格
+            Eq("respace/重排加的空格数", Rules.SpaceCount("    n = n + 1") - Rules.SpaceCount("    n=n+1"), 4);
+
             // ★v169：`Then` / `Else` 也是语句边界（单行 If）—— 声明起点是 Then 之后，不是行首。
             //   ★v170 之后这个位置（ReDim）本来就不再拦了，所以边界这条改用 `Dim` 钉住。
             Ok("decl-position/单行 If 里 ReDim Preserve 后照弹（v170）",
