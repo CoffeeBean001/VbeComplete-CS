@@ -162,6 +162,9 @@ namespace VbeComplete
         /// ★v133 口径：`As` 后面不弹（那里只可能是类型名，VBE 自己的处理更准，弹上去只会挡住
         ///   它）；裸声明的名字位置不弹。
         /// 例外：`Const PI = 3.14` 的等号右边是表达式，照常提示。
+        /// ★v168 例外：`Private Fu|` / `ReDim Pre|` 这种"关键字后面还该跟关键字"的位置照弹
+        ///   （见 DeclKeywordFollow）。以前整条声明都算造名字的位置，于是这两个位置一个候选
+        ///   都不出 —— 用户对着 `Private Function` 和 `ReDim Preserve` 各框了一处。
         /// </summary>
         public static bool InDeclarationPosition(string line, int caretCol)
         {
@@ -184,7 +187,74 @@ namespace VbeComplete
 
             // `Const PI = 3.14` 的值位置不是名字位置，也不是类型位置
             if (Regex.IsMatch(seg, @"\bConst\b.*=", RegexOptions.IgnoreCase)) return false;
+
+            // 正在打的那个词如果是"这个位置允许出现的关键字"的前缀（`Private Fu|` 的
+            // `Fu` → Function、`ReDim Pre|` 的 `Pre` → Preserve），就不是造名字。
+            int ws = segEnd;
+            while (ws > segStart && IsIdentChar(line[ws - 1])) ws--;
+            string typed = line.Substring(ws, segEnd - ws);
+            string[] follow = DeclKeywordFollow(line, ws + 1);
+            if (follow != null && typed.Length > 0 && PrefixOfAny(typed, follow)) return false;
+
             return true;
+        }
+
+        /// <summary>`Private ` / `Public ` 后面允许出现的关键字（其余就是裸变量名）。</summary>
+        private static readonly string[] AfterAccess =
+            { "Sub", "Function", "Property", "Declare", "Event", "Enum", "Type", "Const", "WithEvents" };
+
+        private static readonly string[] AfterReDim = { "Preserve" };
+        private static readonly string[] AfterProperty = { "Get", "Let", "Set" };
+        private static readonly string[] AfterDeclare = { "PtrSafe", "Sub", "Function" };
+
+        /// <summary>
+        /// 光标前那个词是"后面还该跟一个关键字"的声明关键字时，返回该位置允许的关键字集合；
+        /// 不是这种位置返回 null。
+        /// ★用户 v168 的原始描述："private function、redim preserve，这俩都是连续两处 vba
+        ///   关键字……跟 dim 定义变量、变量名不提示的约束冲突了" —— 说得很准：声明位置
+        ///   **不提示变量名**是对的，但不该连关键字一起封掉。
+        /// ★不认识的组合一律返回 null（照旧按声明位置处理），宁可少弹不要乱弹。
+        /// </summary>
+        public static string[] DeclKeywordFollow(string line, int wordStartCol)
+        {
+            if (string.IsNullOrEmpty(line)) return null;
+            int start = Math.Max(0, Math.Min(wordStartCol - 1, line.Length));
+            string before = line.Substring(0, start);
+            string trimmed = before.TrimEnd();
+            // 和上一个词粘着（`Private.Fu`、没有空格）就不是"关键字 + 空格"那种位置
+            if (trimmed.Length == before.Length) return null;
+            int i = trimmed.Length;
+            while (i > 0 && IsIdentChar(trimmed[i - 1])) i--;
+            string prev = trimmed.Substring(i);
+            if (prev.Length == 0) return null;
+            switch (prev.ToLowerInvariant())
+            {
+                case "private": case "public": case "friend": case "global": case "static":
+                    return AfterAccess;
+                case "redim": return AfterReDim;
+                case "property": return AfterProperty;
+                case "declare": return AfterDeclare;
+                default: return null;
+            }
+        }
+
+        /// <summary>word 是不是 list 里某个关键字的前缀（大小写不敏感）。</summary>
+        public static bool PrefixOfAny(string word, string[] list)
+        {
+            if (string.IsNullOrEmpty(word) || list == null) return false;
+            foreach (var k in list)
+                if (k.Length > word.Length && k.StartsWith(word, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            return false;
+        }
+
+        /// <summary>名字是不是 list 里的（大小写不敏感），给候选过滤用。</summary>
+        public static bool InList(string[] list, string name)
+        {
+            if (list == null || string.IsNullOrEmpty(name)) return false;
+            foreach (var k in list)
+                if (string.Equals(k, name, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
         }
 
         /// <summary>

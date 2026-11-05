@@ -350,6 +350,11 @@ namespace VbeComplete
             // 刚确认过的词不再提示自己（按 Tab 之后光标处那个词）
             if (!manual && QuietFromAccepted(word, snap)) { Hide(); return false; }
 
+            // ★v168：`Private Fu|` / `ReDim Pre|` 这种"关键字后面还该跟关键字"的位置，
+            //   只留这个位置合法的关键字。不然 `Private P|` 会把同前缀的 Public / Print /
+            //   Preserve 一并塞进来（那是另一种噪音：位置不对的候选）。
+            string[] declFollow = word.Length > 0 ? Rules.DeclKeywordFollow(line, wordStart) : null;
+
             var ranks = BuildRankMap(snap.Module, ProcOf(snap));
 
             var hits = new List<Candidate>(64);
@@ -363,6 +368,12 @@ namespace VbeComplete
                 if (word.Length == 1 && fh.Kind < 3) continue;
 
                 bool isBuiltin = VbaBuiltins.IsBuiltin(name);
+
+                // 声明关键字后面的位置：把"这个位置根本不可能出现的关键字"剔掉。
+                // 只剔关键字，名字照留（`Private gCount` 的裸声明也是合法写法）。
+                if (declFollow != null && !manual && VbaBuiltins.IsKeyword(name) &&
+                    !Rules.InList(declFollow, name))
+                    continue;
 
                 // 2~3 个字符的短输入，内建词汇只接受"首字母相同"的跳步命中：
                 //   ve -> VarType 可以；xl -> Explicit 不行（纯噪音）

@@ -1963,6 +1963,19 @@ namespace VbeComplete
             sprobe("裸声明名字位不弹（Public 我|）", "模块1", 3,
                 "Public 我们 As String", 10, false, null, null);
 
+            // ---- 1b. v168：声明位置里的**第二个关键字**照弹 ----
+            //   用户对着 `Private Function` 和 `ReDim Preserve` 各框了一处："这两处
+            //   一个提示都没有"。声明位置不提示变量名是对的，但不该连关键字一起封掉。
+            sprobe("Private 后补关键字（Private Fu|）", "模块1", 4,
+                "Private Fu", 11, true, new[] { "Function" },
+                new[] { "Public", "Property", "Preserve" });
+            sprobe("ReDim 后补 Preserve（ReDim Pre|）", "模块1", 4,
+                "    ReDim Pre", 14, true, new[] { "Preserve" },
+                new[] { "Private", "Public" });
+            // 同一个位置的名字照旧不弹（`Private m_arr` 那条已在上面）
+            sprobe("Private 后的变量名不弹（Private ok|）", "模块1", 4,
+                "Private ok", 11, false, null, null);
+
             // ---- 2. Option Explicit：未声明的名字不进候选 ----
             // 光标所在行会被"挖掉半截词"，所以搜索词要和模块里的名字错开：
             // 池子里若混进了第 10 行的 `student`，它就会在 stud 这次冒出来。

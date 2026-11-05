@@ -187,6 +187,35 @@ namespace VbeComplete
             // 反过来：拼完整了就该拦，别修过头
             Ok("decl-position/完整 Sub 仍算声明", Rules.InDeclarationPosition("    Sub", 8));
 
+            // ★v168：连续两个关键字的位置（`Private Function` / `ReDim Preserve`）——
+            //   用户实测这两处一个候选都不弹。声明位置不该提示**变量名**，但不该连
+            //   关键字一起封掉：词是"该位置合法关键字"的前缀时照弹。
+            Ok("decl-position/Private 后打字不拦",
+                !Rules.InDeclarationPosition("Private Fu", 11));
+            Ok("decl-position/ReDim 后打字不拦",
+                !Rules.InDeclarationPosition("        ReDim Pre", 18));
+            Ok("decl-position/Public 后打字不拦",
+                !Rules.InDeclarationPosition("Public Su", 10));
+            Ok("decl-position/Property 后打字不拦",
+                !Rules.InDeclarationPosition("Property Le", 12));
+            // 但同一个位置的**名字**照旧不弹（`Private m_arr` 已在上面钉住），
+            // 以及关键字打完之后的那个名字位置也不弹
+            Ok("decl-position/Private 后的名字仍不弹",
+                Rules.InDeclarationPosition("Private m_arr", 13));
+            Ok("decl-position/Function 名字位置不弹",
+                Rules.InDeclarationPosition("Private Function getCols", 24));
+            Ok("decl-position/ReDim Preserve 后的名字不弹",
+                Rules.InDeclarationPosition("        ReDim Preserve res", 26));
+            // 列表：该位置允许哪些关键字
+            Eq("decl-follow/Private", string.Join(",", Rules.DeclKeywordFollow("Private Fu", 9)),
+                "Sub,Function,Property,Declare,Event,Enum,Type,Const,WithEvents");
+            Eq("decl-follow/ReDim", string.Join(",", Rules.DeclKeywordFollow("ReDim Pre", 7)),
+                "Preserve");
+            Eq("decl-follow/Property", string.Join(",", Rules.DeclKeywordFollow("Property Le", 10)),
+                "Get,Let,Set");
+            Ok("decl-follow/普通语句没有", Rules.DeclKeywordFollow("x = foo", 7) == null);
+            Ok("decl-follow/粘着不算", Rules.DeclKeywordFollow("Private.Fu", 9) == null);
+
 
             // ★v137：`As` / `New` 之后一律不弹 —— 与 decl-position 互补：
             //   那条认"声明语句的行首"，这条认 `Set c = New |` / `For i As |` /
