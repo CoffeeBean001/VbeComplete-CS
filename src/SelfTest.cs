@@ -204,30 +204,48 @@ namespace VbeComplete
                 Rules.InDeclarationPosition("Private m_arr", 13));
             Ok("decl-position/Function 名字位置不弹",
                 Rules.InDeclarationPosition("Private Function getCols", 24));
-            Ok("decl-position/ReDim Preserve 后的名字不弹",
-                Rules.InDeclarationPosition("        ReDim Preserve res", 26));
+            // ★v170：`ReDim` 命名的是**已经存在**的数组，括号里是上界表达式 ——
+            //   整条都不该按"造新名字"拦（用户报："ReDim Preserve 后面再打变量名不会提示了"）
+            Ok("decl-position/ReDim Preserve 后照弹（名字是既有数组）",
+                !Rules.InDeclarationPosition("        ReDim Preserve res", 27));
+            Ok("decl-position/ReDim 后照弹",
+                !Rules.InDeclarationPosition("    ReDim arr", 14));
+            Ok("decl-position/ReDim 括号里照弹（上界表达式）",
+                !Rules.InDeclarationPosition("    ReDim Preserve result(0 To n", 33));
+            Ok("decl-position/ReDim 第二个数组也照弹",
+                !Rules.InDeclarationPosition("    ReDim Preserve res(0 To m)", 30));
+            // 同一类过度抑制：`Dim arr(0 To n|` 的括号里也是表达式
+            Ok("decl-position/Dim 括号里照弹（上界表达式）",
+                !Rules.InDeclarationPosition("Dim arr(0 To n", 15));
+            // 但过程/API 声明的括号里是**新参数名**，照旧拦
+            Ok("decl-position/过程参数名仍拦", Rules.InDeclarationPosition("Sub f(a", 8));
+            Ok("decl-position/API 参数名仍拦",
+                Rules.InDeclarationPosition("Private Declare PtrSafe Function X Lib \"k\" (ByVal a", 52));
             // 列表：该位置允许哪些关键字
             Eq("decl-follow/Private", string.Join(",", Rules.DeclKeywordFollow("Private Fu", 9)),
                 "Sub,Function,Property,Declare,Event,Enum,Type,Const,WithEvents");
             Eq("decl-follow/ReDim", string.Join(",", Rules.DeclKeywordFollow("ReDim Pre", 7)),
                 "Preserve");
+            // ★v170：`ReDim Preserve arr|` 后面只能写名字 —— 关键字候选一个都不许留
+            //   （以前打 `res` 会带出 Resume / Reset 之类的噪音）
+            Eq("decl-follow/Preserve 后没有关键字",
+                string.Join(",", Rules.DeclKeywordFollow("ReDim Preserve res", 16)
+                                 ?? Array.Empty<string>()), "");
             Eq("decl-follow/Property", string.Join(",", Rules.DeclKeywordFollow("Property Le", 10)),
                 "Get,Let,Set");
             Ok("decl-follow/普通语句没有", Rules.DeclKeywordFollow("x = foo", 7) == null);
             Ok("decl-follow/粘着不算", Rules.DeclKeywordFollow("Private.Fu", 9) == null);
 
-            // ★v169：`Then` / `Else` 也是语句边界（单行 If）。
-            //   `If n > 0 Then ReDim Preserve res` 的声明起点是 Then 之后；不切这一刀
-            //   ReDeclHead 永远不成立，"声明位置不弹"在紧凑写法下整条失效
-            //   （真机 declprobe 第 16/17 条就是拿旧实现抓到的）。
-            Ok("decl-position/单行 If 里 ReDim Preserve 后的名字不弹",
-                Rules.InDeclarationPosition("    If n > 0 Then ReDim Preserve res", 37));
-            Ok("decl-position/单行 If 里 ReDim 后的名字不弹",
-                Rules.InDeclarationPosition("    If n > 0 Then ReDim arr", 28));
+            // ★v169：`Then` / `Else` 也是语句边界（单行 If）—— 声明起点是 Then 之后，不是行首。
+            //   ★v170 之后这个位置（ReDim）本来就不再拦了，所以边界这条改用 `Dim` 钉住。
+            Ok("decl-position/单行 If 里 ReDim Preserve 后照弹（v170）",
+                !Rules.InDeclarationPosition("    If n > 0 Then ReDim Preserve res", 37));
+            Ok("decl-position/单行 If 里 ReDim 后照弹（v170）",
+                !Rules.InDeclarationPosition("    If n > 0 Then ReDim arr", 28));
             Ok("decl-position/单行 If 里 Then 后仍能给关键字",
                 !Rules.InDeclarationPosition("    If n > 0 Then ReDim Pre", 28));
             Ok("decl-position/Else 后面也算新语句",
-                Rules.InDeclarationPosition("    If n Then x = 1 Else ReDim Preserve res", 44));
+                Rules.InDeclarationPosition("    If n Then x = 1 Else Dim z", 31));
             Ok("statement-start/冒号仍是边界", Rules.StatementStart("x = 1: ReDim y", 13) == 6);
             Ok("statement-start/Then 是边界",
                 Rules.StatementStart("    If n > 0 Then ReDim y", 27) == 17);

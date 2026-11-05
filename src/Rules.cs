@@ -158,6 +158,23 @@ namespace VbeComplete
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         /// <summary>
+        /// `ReDim` 语句的头。★它不是"造新名字"：`ReDim Preserve result(0 To n)` 里的
+        /// `result` 是**已经声明过**的数组、`n` 是既有变量，两处都该照常提示。
+        /// </summary>
+        private static readonly Regex ReReDim = new Regex(
+            @"^[ \t]*(?:(?:Public|Private|Friend|Global|Static)[ \t]+)?ReDim\b",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        /// <summary>
+        /// 括号里是**新参数名**的声明头（`Sub f(a` / `Declare ... Function X Lib "" (ByVal a`）。
+        /// 其余声明（Dim / Static / 裸声明）的括号里是数组上界表达式，不是造名字。
+        /// </summary>
+        private static readonly Regex ReParamHead = new Regex(
+            @"^[ \t]*(?:(?:Public|Private|Friend|Global|Static)[ \t]+)*" +
+            @"(?:Sub|Function|Property|Declare|Event)\b",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        /// <summary>
         /// 光标是不是停在"造新名字 / 写类型"的位置 —— 这类位置一律不弹。
         /// ★v133 口径：`As` 后面不弹（那里只可能是类型名，VBE 自己的处理更准，弹上去只会挡住
         ///   它）；裸声明的名字位置不弹。
@@ -165,6 +182,10 @@ namespace VbeComplete
         /// ★v168 例外：`Private Fu|` / `ReDim Pre|` 这种"关键字后面还该跟关键字"的位置照弹
         ///   （见 DeclKeywordFollow）。以前整条声明都算造名字的位置，于是这两个位置一个候选
         ///   都不出 —— 用户对着 `Private Function` 和 `ReDim Preserve` 各框了一处。
+        /// ★v170：这条判据只该拦"**正在起一个新名字**"的位置。两类位置被它误伤了：
+        ///   ① `ReDim [Preserve] arr|` —— 命名的是**已经存在**的数组（用户报："ReDim
+        ///      Preserve 后面再打变量名不会提示了"），那正是最需要提示的地方；
+        ///   ② `Dim arr(0 To n|` —— 括号里是上界表达式，`n` 是既有变量。
         /// </summary>
         public static bool InDeclarationPosition(string line, int caretCol)
         {
@@ -188,6 +209,11 @@ namespace VbeComplete
             // `Const PI = 3.14` 的值位置不是名字位置，也不是类型位置
             if (Regex.IsMatch(seg, @"\bConst\b.*=", RegexOptions.IgnoreCase)) return false;
 
+            // ★v170：`ReDim` 整条都不是"造新名字"—— 名字是既有数组（`ReDim Preserve arr`），
+            //   括号里是上界表达式（`ReDim arr(0 To n)`），后面还可能跟 `, brr(0 To m)`。
+            //   以前整条按 Dim 处理 ⇒ 这三处一个候选都不出。
+            if (ReReDim.IsMatch(seg)) return false;
+
             // 正在打的那个词如果是"这个位置允许出现的关键字"的前缀（`Private Fu|` 的
             // `Fu` → Function、`ReDim Pre|` 的 `Pre` → Preserve），就不是造名字。
             int ws = segEnd;
@@ -196,7 +222,33 @@ namespace VbeComplete
             string[] follow = DeclKeywordFollow(line, ws + 1);
             if (follow != null && typed.Length > 0 && PrefixOfAny(typed, follow)) return false;
 
+            // ★v170：`Dim arr(0 To n|` —— 括号里是表达式，不是新名字（同一类过度抑制）。
+            //   但过程/API 声明的括号里是**新参数名**，那里照旧拦。
+            if (!ReParamHead.IsMatch(seg) && InParens(line, segStart, end)) return false;
+
             return true;
+        }
+
+        /// <summary>光标之前有没有**没闭合**的圆括号（引号里、注释里的括号不算）。</summary>
+        private static bool InParens(string line, int from, int end)
+        {
+            int depth = 0;
+            bool inStr = false;
+            for (int i = Math.Max(0, from); i < end && i < line.Length; i++)
+            {
+                char c = line[i];
+                if (c == '"')
+                {
+                    if (inStr && i + 1 < end && line[i + 1] == '"') { i++; continue; }
+                    inStr = !inStr;
+                    continue;
+                }
+                if (inStr) continue;
+                if (c == '\'') break;                 // 注释之后没有语句了
+                if (c == '(') depth++;
+                else if (c == ')') depth--;
+            }
+            return depth > 0;
         }
 
         /// <summary>`Private ` / `Public ` 后面允许出现的关键字（其余就是裸变量名）。</summary>
@@ -204,6 +256,8 @@ namespace VbeComplete
             { "Sub", "Function", "Property", "Declare", "Event", "Enum", "Type", "Const", "WithEvents" };
 
         private static readonly string[] AfterReDim = { "Preserve" };
+        /// <summary>该位置**一个关键字都不该出现**（`ReDim Preserve arr|` 那里只能写名字）。</summary>
+        private static readonly string[] NoKeywords = Array.Empty<string>();
         private static readonly string[] AfterProperty = { "Get", "Let", "Set" };
         private static readonly string[] AfterDeclare = { "PtrSafe", "Sub", "Function" };
 
@@ -246,6 +300,9 @@ namespace VbeComplete
                 case "private": case "public": case "friend": case "global": case "static":
                     return AfterAccess;
                 case "redim": return AfterReDim;
+                // ★v170：`ReDim Preserve arr|` 后面只能跟**名字**。这里返回空集合 =
+                //   同一位置的关键字候选全剔掉（以前 `res` 会带出 Resume / Reset）。
+                case "preserve": return NoKeywords;
                 case "property": return AfterProperty;
                 case "declare": return AfterDeclare;
                 case "end": return AfterEnd;

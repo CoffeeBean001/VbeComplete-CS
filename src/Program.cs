@@ -1473,10 +1473,21 @@ namespace VbeComplete
             var cases = new (string name, string header, string typed, bool want, string[] must, string[] bad)[]
             {
                 ("ReDim 后补 Preserve", "    ReDim P", "re", true, new[] { "Preserve" }, null),
-                ("Preserve 后敲变量名（res）", "    ReDim Preserve", " res", false, null, null),
-                ("Preserve 后敲完整名（result）", "    ReDim Preserve", " result", false, null, null),
-                ("Preserve 后括号里敲变量（0 To n）", "    ReDim Preserve result(0 To", " n", false, null, null),
-                ("ReDim 后敲变量名（不带 Preserve）", "    ReDim", " arr", false, null, null),
+                // ★v170：`ReDim` 后面命名的是**已经存在**的数组 ⇒ 该弹名字（用户报的就是这里）。
+                //   `bad` 里的 Resume / Reset 是旧口径的噪音：那里本该只有名字。
+                ("Preserve 后敲变量名（res）", "    ReDim Preserve", " res", true,
+                    new[] { "resProbe" }, new[] { "Resume", "Reset" }),
+                // 打全了整个名字就收窗（"打全即收"，本来就这么设计的），不是不弹
+                ("Preserve 后打全即收（resProbe）", "    ReDim Preserve", " resProbe", false, null, null),
+                ("Preserve 后括号里敲变量（0 To n）", "    ReDim Preserve resProbe(0 To", " nP", true,
+                    new[] { "nProbe" }, null),
+                ("ReDim 后敲变量名（不带 Preserve）", "    ReDim", " res", true, new[] { "resProbe" }, null),
+                // 同一类过度抑制：`Dim arr(0 To n|` 的括号里是表达式
+                ("Dim 括号里敲上界（0 To n）", "    Dim arrProbe2(0 To", " nP", true,
+                    new[] { "nProbe" }, null),
+                // 但 `Dim` 自己的名字位照旧不弹（别修过头）
+                ("Dim 名字位不弹", "    Dim", " newName", false, null, null),
+                ("Dim 名字位带 As 不弹", "    Dim newName As Str", "ing", false, null, null),
                 ("Private 后补 Function", "    Private F", "un", true, new[] { "Function" }, null),
                 ("Private 后敲变量名", "    Private", " gCount", false, null, null),
                 ("Property 后补 Get", "    Property G", "e", true, new[] { "Get" }, null),
@@ -1488,9 +1499,11 @@ namespace VbeComplete
                 ("Private Enum 后敲枚举名", "    Private Enum", " MyEnum", false, null, null),
                 ("Private Type 后敲类型名", "    Private Type", " tRec", false, null, null),
                 // 声明关键字不在语句开头（单行 If / 冒号后面）—— 用户实际写紧凑代码就这么写
-                ("单行 If 里的 ReDim Preserve", "    If n > 0 Then ReDim Preserve", " res", false, null, null),
-                ("单行 If 里的 ReDim", "    If n > 0 Then ReDim", " arr", false, null, null),
-                ("冒号后面的 ReDim Preserve", "    x = 1: ReDim Preserve", " res", false, null, null),
+                ("单行 If 里的 ReDim Preserve", "    If n > 0 Then ReDim Preserve", " res", true,
+                    new[] { "resProbe" }, null),
+                ("单行 If 里的 ReDim", "    If n > 0 Then ReDim", " res", true, new[] { "resProbe" }, null),
+                ("冒号后面的 ReDim Preserve", "    x = 1: ReDim Preserve", " res", true,
+                    new[] { "resProbe" }, null),
                 ("单行 If 里 Then 后补 Preserve", "    If n > 0 Then ReDim P", "re", true, new[] { "Preserve" }, null),
                 // v169：同一类"关键字后面只可能跟关键字"的位置
                 ("End 后补 Sub", "    End S", "u", true, new[] { "Sub" }, null),
@@ -1539,7 +1552,10 @@ namespace VbeComplete
                     for (int k = 0; k < cases.Length; k++)
                     {
                         var c = cases[k];
-                        RebuildScaffold(app, be, at, c.header);
+                        // 额外塞一行 `Dim`：`ReDim Preserve resProbe` 的 resProbe 必须是
+                        // **已经在作用域里**的变量，否则池子里没有它，弹不弹都验不出来。
+                        RebuildScaffold(app, be, at, c.header,
+                            "    Dim resProbe() As Long, nProbe&");
                         Thread.Sleep(350);
                         bool typed = TypeTyping(app, c.typed, 55, out string how);
                         Thread.Sleep(400);
@@ -2178,8 +2194,21 @@ namespace VbeComplete
             //   ★这一组的前两条是**真机探针 declprobe 抓到的**：旧实现只认"行的第一个词"，
             //     `If n > 0 Then ReDim Preserve res` 里 ReDim 不在行首，ReDeclHead 不成立，
             //     "声明位置不弹"整条失效 —— 用户报的就是这个位置。
-            sprobe("单行 If 里 Preserve 后的变量名不弹", "模块1", 5,
-                "    If n > 0 Then ReDim Preserve res", 37, false, null, null);
+            //   ★v170 改口径：`ReDim` 命名的是**既有**数组，这里该照弹名字
+            //     （用户报的就是"ReDim Preserve 后面再打变量名不会提示了"）。
+            sprobe("单行 If 里 Preserve 后照弹名字（okk|）", "模块1", 4,
+                "    If n > 0 Then ReDim Preserve okk", 37, true, new[] { "okkk2" }, null);
+            sprobe("ReDim Preserve 后照弹名字（okk|）", "模块1", 4,
+                "    ReDim Preserve okk", 23, true, new[] { "okkk2" },
+                // ★v170：`Reset` 不在关键字库里（在语句表里），光判 IsKeyword 会漏掉它
+                new[] { "Reset", "Resume" });
+            sprobe("ReDim 后照弹名字（okk|）", "模块1", 4,
+                "    ReDim okk", 14, true, new[] { "okkk2" }, null);
+            sprobe("Dim 括号里照弹（0 To okk|）", "模块1", 4,
+                "    Dim arr2(0 To okk", 22, true, new[] { "okkk2" }, null);
+            // 但 `Dim` 自己的名字位照旧不弹（别修过头）
+            sprobe("Dim 名字位仍不弹（Dim okk|）", "模块1", 4,
+                "    Dim okk", 12, false, null, null);
             sprobe("单行 If 里 Then 后仍给 Preserve", "模块1", 5,
                 "    If n > 0 Then ReDim Pre", 28, true, new[] { "Preserve" }, null);
             sprobe("End 后给 End 的子关键字（End Su|）", "模块1", 5,

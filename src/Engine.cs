@@ -371,7 +371,10 @@ namespace VbeComplete
 
                 // 声明关键字后面的位置：把"这个位置根本不可能出现的关键字"剔掉。
                 // 只剔关键字，名字照留（`Private gCount` 的裸声明也是合法写法）。
-                if (declFollow != null && !manual && VbaBuiltins.IsKeyword(name) &&
+                // ★v170：判据从 IsKeyword 放宽到 IsBuiltin —— `Reset` / `Unload` / `Round`
+                //   这类词不在关键字库里（在语句/函数表里），打 `ReDim Preserve res|`
+                //   会把 `Reset` 塞进来，正是用户说的"这里不该出东西"。
+                if (declFollow != null && !manual && VbaBuiltins.IsBuiltin(name) &&
                     !Rules.InList(declFollow, name))
                     continue;
 
