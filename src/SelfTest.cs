@@ -236,6 +236,45 @@ namespace VbeComplete
             Ok("decl-follow/普通语句没有", Rules.DeclKeywordFollow("x = foo", 7) == null);
             Ok("decl-follow/粘着不算", Rules.DeclKeywordFollow("Private.Fu", 9) == null);
 
+            // ★v171：锚点必须是**这条语句的头**，不能光看"前一个词"。
+            //   行首孤零零一个 `Preserve` 不是 `ReDim` 的续行，以前照样按"这里只能跟
+            //   数组名"过滤，把 `ReDim` 自己也滤掉了（用户报："preserve 后面不会提示
+            //   redim 了"，截图里敲 `re` 只剩一个 result）。
+            Ok("decl-follow/行首 Preserve 不设限（要给 ReDim）",
+                Rules.DeclKeywordFollow("    Preserve re", 14) == null);
+            Ok("decl-follow/语句中间 Preserve 也不设限",
+                Rules.DeclKeywordFollow("x = 1: Preserve re", 19) == null);
+            // 而真是 `ReDim Preserve` 时照旧只给名字（v170 的口径不许回退）
+            Eq("decl-follow/ReDim Preserve 后仍只给名字",
+                string.Join(",", Rules.DeclKeywordFollow("    ReDim Preserve res", 20)
+                                 ?? Array.Empty<string>()), "");
+            // 非语句头的 `Private` 之类同样不该套用（`foo.End ` 不是 `End` 语句）
+            Ok("decl-follow/非语句头的 End 不设限",
+                Rules.DeclKeywordFollow("    foo.End Su", 13) == null);
+            Ok("decl-follow/非语句头的 Private 不设限",
+                Rules.DeclKeywordFollow("x = Private y", 13) == null);
+            // 修饰符不算"头"，`Public Property G|` 照旧给 Get/Let/Set
+            Eq("decl-follow/带修饰符的 Property",
+                string.Join(",", Rules.DeclKeywordFollow("    Public Property G", 21)
+                                 ?? Array.Empty<string>()), "Get,Let,Set");
+            // ★v171：`Declare PtrSafe Fu|` 是第三个关键字位置，和 `Private Fu|` 同形
+            Eq("decl-follow/PtrSafe 后只给 Sub/Function",
+                string.Join(",", Rules.DeclKeywordFollow("    Private Declare PtrSafe Fu", 29)
+                                 ?? Array.Empty<string>()), "Sub,Function");
+            Ok("decl-position/PtrSafe 后打字不拦",
+                !Rules.InDeclarationPosition("    Private Declare PtrSafe Fu", 29));
+            // `Declare Ptr|` 的路径要独立钉住：真机 declprobe 第 12 条偶发过一次假红
+            Eq("decl-follow/Declare 后给 PtrSafe",
+                string.Join(",", Rules.DeclKeywordFollow("    Declare Ptr", 13)
+                                 ?? Array.Empty<string>()), "PtrSafe,Sub,Function");
+            Ok("decl-position/Declare 后打字不拦",
+                !Rules.InDeclarationPosition("    Declare Ptr", 16));
+            // ★v171：`Case` 后面是**表达式**，不是封闭关键字集 —— 不许过滤内建
+            //   （`Case vbYes` / `Case Chr(65)` 以前会被整片滤掉）
+            Ok("decl-follow/Case 后不设限", Rules.DeclKeywordFollow("    Case vbY", 10) == null);
+            Ok("decl-position/Preserve 行首不算声明位置",
+                !Rules.InDeclarationPosition("    Preserve re", 14));
+
             // ★v169：`Then` / `Else` 也是语句边界（单行 If）—— 声明起点是 Then 之后，不是行首。
             //   ★v170 之后这个位置（ReDim）本来就不再拦了，所以边界这条改用 `Dim` 钉住。
             Ok("decl-position/单行 If 里 ReDim Preserve 后照弹（v170）",

@@ -270,9 +270,10 @@ namespace VbeComplete
         private static readonly string[] AfterWhileUntil = { "While", "Until" };
         private static readonly string[] AfterResume = { "Next" };
         private static readonly string[] AfterSelect = { "Case" };
-        private static readonly string[] AfterCase = { "Else", "Is" };
         private static readonly string[] AfterFor = { "Each" };
         private static readonly string[] AfterOnError = { "GoTo", "Resume", "Next" };
+        /// <summary>`Declare PtrSafe` 后面只可能是这两个（`Sub` / `Function`）。</summary>
+        private static readonly string[] AfterPtrSafe = { "Sub", "Function" };
 
         /// <summary>
         /// 光标前那个词是"后面还该跟一个关键字"的声明关键字时，返回该位置允许的关键字集合；
@@ -281,6 +282,11 @@ namespace VbeComplete
         ///   关键字……跟 dim 定义变量、变量名不提示的约束冲突了" —— 说得很准：声明位置
         ///   **不提示变量名**是对的，但不该连关键字一起封掉。
         /// ★不认识的组合一律返回 null（照旧按声明位置处理），宁可少弹不要乱弹。
+        /// ★v171：光看"前一个词"不够，还要求那个词是**这条语句的头**（或头的合法第二节）。
+        ///   否则同一个词出现在别处会被误套：行首孤零零一个 `Preserve`（不是 `ReDim` 的
+        ///   续行）也按"这里只能跟数组名"处理，把 `ReDim` 自己一起过滤掉了 —— 用户报的
+        ///   "preserve 后面不会提示 redim 了"。同类还有 `Case`：后面是**表达式**不是封闭
+        ///   关键字集（`Case vbYes` / `Case Chr(65)` 都被滤掉），所以整条不设限。
         /// </summary>
         public static string[] DeclKeywordFollow(string line, int wordStartCol)
         {
@@ -295,41 +301,65 @@ namespace VbeComplete
             string prev = trimmed.Substring(i);
             if (prev.Length == 0) return null;
 
+            // 锚点在这条语句里的位置：空串 = 它就是语句头，`ReDim`/`Declare`/`On` = 第二节
+            string head = HeadWord(line, i);
+            bool atHead = head.Length == 0;
+
             switch (prev.ToLowerInvariant())
             {
                 case "private": case "public": case "friend": case "global": case "static":
-                    return AfterAccess;
-                case "redim": return AfterReDim;
-                // ★v170：`ReDim Preserve arr|` 后面只能跟**名字**。这里返回空集合 =
-                //   同一位置的关键字候选全剔掉（以前 `res` 会带出 Resume / Reset）。
-                case "preserve": return NoKeywords;
-                case "property": return AfterProperty;
-                case "declare": return AfterDeclare;
-                case "end": return AfterEnd;
-                case "exit": return AfterExit;
-                case "option": return AfterOption;
-                case "do": case "loop": return AfterWhileUntil;
-                case "resume": return AfterResume;
-                case "select": return AfterSelect;
-                case "case": return AfterCase;
-                case "for": return AfterFor;
+                    return atHead ? AfterAccess : null;
+                case "redim": return atHead ? AfterReDim : null;
+                // ★v170：`ReDim Preserve arr|` 后面只能跟**名字**（空集合 = 关键字候选全剔掉）。
+                //   ★v171：只在真是 `ReDim Preserve` 时才算 —— 见上面的说明。
+                case "preserve":
+                    return SameWord(head, "redim") ? NoKeywords : null;
+                // ★v171：`Declare PtrSafe Fu|` 是第三个关键字位置，和 `Private Fu|` 同形。
+                case "ptrsafe":
+                    return SameWord(head, "declare") ? AfterPtrSafe : null;
+                case "property": return atHead ? AfterProperty : null;
+                case "declare": return atHead ? AfterDeclare : null;
+                case "end": return atHead ? AfterEnd : null;
+                case "exit": return atHead ? AfterExit : null;
+                case "option": return atHead ? AfterOption : null;
+                case "do": case "loop": return atHead ? AfterWhileUntil : null;
+                case "resume": return atHead ? AfterResume : null;
+                case "select": return atHead ? AfterSelect : null;
+                case "for": return atHead ? AfterFor : null;
+                // ★v171：`Case` 后面是表达式（`Case vbYes`、`Case Chr(65)`、`Case 1, 2`），
+                //   只有 Else / Is 是关键字 —— 按封闭集合过滤会把 vbYes 这类常量全滤掉。
+                case "case": return null;
                 // 两个词才算数：`On Error Go|`。只看 prev（"Error"）会把 `Err.Raise` 之类
                 // 后面也误判成这个位置。
-                case "error":
-                    return string.Equals(PrevWord(trimmed.Substring(0, i)),
-                        "on", StringComparison.OrdinalIgnoreCase) ? AfterOnError : null;
+                case "error": return SameWord(head, "on") ? AfterOnError : null;
                 default: return null;
             }
         }
 
-        /// <summary>取一段文本里最后一个词（`"On Error "` -> `"On"`）。</summary>
-        private static string PrevWord(string text)
+        /// <summary>
+        /// 语句段开头到 <paramref name="anchorStart"/> 之间还剩什么词（剥掉 Public/Private/
+        /// Friend/Global/Static 这类修饰符）。空串 = 锚点就是这条语句的头。
+        /// </summary>
+        private static string HeadWord(string line, int anchorStart)
         {
-            string t = text.TrimEnd();
-            int j = t.Length;
-            while (j > 0 && IsIdentChar(t[j - 1])) j--;
-            return t.Substring(j);
+            int segStart = StatementStart(line, anchorStart);
+            if (segStart >= anchorStart) return "";
+            string head = "";
+            foreach (var w in line.Substring(segStart, anchorStart - segStart)
+                         .Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (IsModifier(w)) continue;
+                head = head.Length == 0 ? w : head + " " + w;
+            }
+            return head;
         }
+
+        private static bool IsModifier(string w) =>
+            SameWord(w, "public") || SameWord(w, "private") || SameWord(w, "friend") ||
+            SameWord(w, "global") || SameWord(w, "static");
+
+        private static bool SameWord(string a, string b) =>
+            string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 
         /// <summary>word 是不是 list 里某个关键字的前缀（大小写不敏感）。</summary>
         public static bool PrefixOfAny(string word, string[] list)

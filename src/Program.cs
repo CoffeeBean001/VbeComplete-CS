@@ -1514,6 +1514,14 @@ namespace VbeComplete
                 ("Loop 后补 Until", "    Loop U", "n", true, new[] { "Until" }, null),
                 ("For 后补 Each", "    For E", "a", true, new[] { "Each" }, null),
                 ("Case 后补 Else", "    Case El", "s", true, new[] { "Else" }, null),
+                // v171：位置判据不外溢 —— 行首 `Preserve` 不是 `ReDim` 的续行，
+                // 这里的 `re` 该给 `ReDim`（用户报的就是这一格）
+                ("行首 Preserve 后补 ReDim", "    Preserve r", "e", true, new[] { "ReDim" }, null),
+                // `Case` 后面是表达式，内建函数不许被当成"位置不对的关键字"剔掉
+                ("Case 后补内建（Chr）", "    Case C", "h", true, new[] { "Chr" }, null),
+                // `Declare PtrSafe Fu|` 是第三个关键字位置
+                ("PtrSafe 后补 Function", "    Private Declare PtrSafe F", "u", true,
+                    new[] { "Function" }, null),
             };
 
             int imeModeAtStart = -1;
@@ -2222,6 +2230,18 @@ namespace VbeComplete
             // 关键字过滤：`Option Ex|` 只该有 Explicit，不该把同前缀的 Exit 也算进来
             sprobe("Option 后剔掉位置不对的关键字（Option Ex|）", "模块1", 5,
                 "    Option Ex", 14, true, new[] { "Explicit" }, new[] { "Exit" });
+
+            // ---- 1d. v171：位置判据不许外溢到"同一句话里的普通表达式" ----
+            //   ★用户报：行首打 `Preserve re` 只剩一个 `result`，`ReDim` 自己被滤掉了
+            //     —— `Preserve` 只在 `ReDim` 后面才是"只能跟数组名"的位置。
+            sprobe("行首 Preserve 后仍给 ReDim（Preserve re|）", "模块1", 5,
+                "    Preserve re", 16, true, new[] { "ReDim" }, null);
+            //   ★`Case` 后面是表达式，`Chr` 这类内建不许被当成"位置不对的关键字"剔掉
+            sprobe("Case 后给内建函数（Case Ch|）", "模块1", 5,
+                "    Case Ch", 12, true, new[] { "Chr" }, null);
+            //   ★`Declare PtrSafe Fu|` 是第三个关键字位置（和 `Private Fu|` 同形）
+            sprobe("PtrSafe 后给 Function（PtrSafe Fu|）", "模块1", 5,
+                "    Private Declare PtrSafe Fu", 31, true, new[] { "Function" }, null);
 
             // ---- 2. Option Explicit：未声明的名字不进候选 ----
             // 光标所在行会被"挖掉半截词"，所以搜索词要和模块里的名字错开：
