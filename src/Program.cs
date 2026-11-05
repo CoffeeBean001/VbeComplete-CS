@@ -58,7 +58,7 @@ namespace VbeComplete
             // ★v161：`--pooldump <模块名>` 是唯一允许带参数的开关（离线诊断用）。
             // ★`--vbetest <progid>`：直接探某个宿主的 VBE 对象模型（WPS / Word / PPT 兼容性排查）。
             if (args.Length > 1 && !(args.Length == 2 &&
-                (args[0] == "--pooldump" || args[0] == "--vbetest")))
+                (args[0] == "--pooldump" || args[0] == "--vbetest" || args[0] == "--declprobe")))
             {
                 Console.WriteLine("最多只接受一个开关，这次收到 " + args.Length + " 个：" +
                     string.Join(" ", args));
@@ -77,7 +77,7 @@ namespace VbeComplete
                     case "--carettest":   return CaretTest();
                     case "--hktest":      return HkTest();
                     case "--enterprobe":  return EnterProbe();
-                    case "--declprobe":   return DeclProbe();
+                    case "--declprobe":   return DeclProbe(args.Length > 1 ? args[1] : null);
                     case "--snipetest":   return SnippetTest();
                     case "--dbtest":      return DbTest();
                     case "--dump":        return DumpModule();
@@ -1432,8 +1432,10 @@ namespace VbeComplete
         ///   一个环节偏一下结论就不同。
         /// ★脚手架用完必删（`Sub VbcEnter`，见 CleanupScratch）。
         /// </summary>
-        private static int DeclProbe()
+        private static int DeclProbe(string only = null)
         {
+            int onlyNo = 0;
+            if (!string.IsNullOrEmpty(only)) int.TryParse(only, out onlyNo);
             var sb = new StringBuilder();
             var gate = new object();
             bool allOk = true;
@@ -1560,15 +1562,31 @@ namespace VbeComplete
                     for (int k = 0; k < cases.Length; k++)
                     {
                         var c = cases[k];
+                        if (onlyNo > 0 && k + 1 != onlyNo) continue;
                         // 额外塞一行 `Dim`：`ReDim Preserve resProbe` 的 resProbe 必须是
                         // **已经在作用域里**的变量，否则池子里没有它，弹不弹都验不出来。
                         RebuildScaffold(app, be, at, c.header,
                             "    Dim resProbe() As Long, nProbe&");
                         Thread.Sleep(350);
                         bool typed = TypeTyping(app, c.typed, 55, out string how);
-                        Thread.Sleep(400);
-                        bool shown = app.PopupVisible;
-                        string names = app.PopupNames;
+
+                        // ★v172：不能"固定睡 400ms 再看一眼"。宿主的轮询是 80~300ms 一跳
+                        //   （Excel 打字时快、空闲时慢），打最后一个字符到"那一轮 Trigger
+                        //   跑完并画出来"可能差好几百毫秒 —— 第 12 条（Declare PtrSafe）
+                        //   和第 21 条（冒号后 ReDim Preserve）都因此偶发假红过：单跑
+                        //   五次全绿、全量一跑随机红一条。改成"弹到即停、超时才判不弹"。
+                        bool shown = false;
+                        string names = "";
+                        int waited = 0;
+                        while (waited < 1500)
+                        {
+                            Thread.Sleep(60);
+                            waited += 60;
+                            if (app.PopupVisible) { shown = true; names = app.PopupNames; break; }
+                            // 期望不弹的用例（打全即收 / 名字位）：收窗是立即的，等
+                            // 600ms 还没有动静就结案，别把整套拖成一分多钟。
+                            if (!c.want && waited >= 600) break;
+                        }
                         string[] got = ReadLines(app, be, at, 2);
                         string line = got.Length > 1 ? got[1] : "";
 
@@ -2242,6 +2260,15 @@ namespace VbeComplete
             //   ★`Declare PtrSafe Fu|` 是第三个关键字位置（和 `Private Fu|` 同形）
             sprobe("PtrSafe 后给 Function（PtrSafe Fu|）", "模块1", 5,
                 "    Private Declare PtrSafe Fu", 31, true, new[] { "Function" }, null);
+            //   ★v172：这一格是**真机 declprobe 报的红**（`x = 1: ReDim Preserve okk|`
+            //     全哑），但查下来判据本身是对的 —— 离线跑、单跑这一条都绿，红的是
+            //     探针固定 sleep 400ms 采样太早（见用例循环里那段说明）。留着当回归线：
+            //     冒号切出来的语句段必须和单行 If 的 `Then` 之后走同一套口径。
+            sprobe("冒号后面 Preserve 照弹名字（x = 1: …okk|）", "模块1", 11,
+                "    x = 1: ReDim Preserve okk", 30, true, new[] { "okkk2" },
+                new[] { "Reset", "Resume" });
+            sprobe("冒号后面 ReDim 照弹名字（x = 1: ReDim okk|）", "模块1", 11,
+                "    x = 1: ReDim okk", 21, true, new[] { "okkk2" }, null);
 
             // ---- 2. Option Explicit：未声明的名字不进候选 ----
             // 光标所在行会被"挖掉半截词"，所以搜索词要和模块里的名字错开：
