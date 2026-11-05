@@ -216,6 +216,48 @@ namespace VbeComplete
             Ok("decl-follow/普通语句没有", Rules.DeclKeywordFollow("x = foo", 7) == null);
             Ok("decl-follow/粘着不算", Rules.DeclKeywordFollow("Private.Fu", 9) == null);
 
+            // ★v169：`Then` / `Else` 也是语句边界（单行 If）。
+            //   `If n > 0 Then ReDim Preserve res` 的声明起点是 Then 之后；不切这一刀
+            //   ReDeclHead 永远不成立，"声明位置不弹"在紧凑写法下整条失效
+            //   （真机 declprobe 第 16/17 条就是拿旧实现抓到的）。
+            Ok("decl-position/单行 If 里 ReDim Preserve 后的名字不弹",
+                Rules.InDeclarationPosition("    If n > 0 Then ReDim Preserve res", 37));
+            Ok("decl-position/单行 If 里 ReDim 后的名字不弹",
+                Rules.InDeclarationPosition("    If n > 0 Then ReDim arr", 28));
+            Ok("decl-position/单行 If 里 Then 后仍能给关键字",
+                !Rules.InDeclarationPosition("    If n > 0 Then ReDim Pre", 28));
+            Ok("decl-position/Else 后面也算新语句",
+                Rules.InDeclarationPosition("    If n Then x = 1 Else ReDim Preserve res", 44));
+            Ok("statement-start/冒号仍是边界", Rules.StatementStart("x = 1: ReDim y", 13) == 6);
+            Ok("statement-start/Then 是边界",
+                Rules.StatementStart("    If n > 0 Then ReDim y", 27) == 17);
+            // ★`ElseIf` 不能被当成 `Else`：整词判定（右边还连着 `If`）
+            Ok("statement-start/ElseIf 不是 Else 边界",
+                Rules.StatementStart("    ElseIf x = 1", 16) == 0);
+            Ok("statement-start/字符串里的 Then 不算",
+                Rules.StatementStart("s = \"a Then b\"", 12) == 0);
+
+            // 同一类位置的其他组合（用户："其他关键字有没有类似的，也一并改掉"）
+            Eq("decl-follow/End", string.Join(",", Rules.DeclKeywordFollow("    End Su", 9)),
+                "Sub,Function,Property,If,With,Select,Type,Enum");
+            Eq("decl-follow/Exit", string.Join(",", Rules.DeclKeywordFollow("    Exit F", 10)),
+                "Sub,Function,Property,For,Do");
+            Eq("decl-follow/Option", string.Join(",", Rules.DeclKeywordFollow("Option Ex", 8)),
+                "Explicit,Base,Compare");
+            Eq("decl-follow/Do", string.Join(",", Rules.DeclKeywordFollow("Do Wh", 4)),
+                "While,Until");
+            Eq("decl-follow/Loop", string.Join(",", Rules.DeclKeywordFollow("Loop Un", 6)),
+                "While,Until");
+            Eq("decl-follow/For", string.Join(",", Rules.DeclKeywordFollow("For Ea", 5)),
+                "Each");
+            Eq("decl-follow/Select", string.Join(",", Rules.DeclKeywordFollow("Select Ca", 8)),
+                "Case");
+            Eq("decl-follow/On Error", string.Join(",", Rules.DeclKeywordFollow("On Error Go", 10)),
+                "GoTo,Resume,Next");
+            // 两个词才算数：光一个 `Error` 不是这个位置
+            Ok("decl-follow/光一个 Error 不算",
+                Rules.DeclKeywordFollow("Error Go", 7) == null);
+
 
             // ★v137：`As` / `New` 之后一律不弹 —— 与 decl-position 互补：
             //   那条认"声明语句的行首"，这条认 `Set c = New |` / `For i As |` /

@@ -207,6 +207,19 @@ namespace VbeComplete
         private static readonly string[] AfterProperty = { "Get", "Let", "Set" };
         private static readonly string[] AfterDeclare = { "PtrSafe", "Sub", "Function" };
 
+        // ★v169：同一类位置还有一大批（用户："其他关键字有没有类似的，也一并改掉"）。
+        //   这些词后面**只可能**跟下面这几个关键字，别的一律是噪音。
+        private static readonly string[] AfterEnd =
+            { "Sub", "Function", "Property", "If", "With", "Select", "Type", "Enum" };
+        private static readonly string[] AfterExit = { "Sub", "Function", "Property", "For", "Do" };
+        private static readonly string[] AfterOption = { "Explicit", "Base", "Compare" };
+        private static readonly string[] AfterWhileUntil = { "While", "Until" };
+        private static readonly string[] AfterResume = { "Next" };
+        private static readonly string[] AfterSelect = { "Case" };
+        private static readonly string[] AfterCase = { "Else", "Is" };
+        private static readonly string[] AfterFor = { "Each" };
+        private static readonly string[] AfterOnError = { "GoTo", "Resume", "Next" };
+
         /// <summary>
         /// 光标前那个词是"后面还该跟一个关键字"的声明关键字时，返回该位置允许的关键字集合；
         /// 不是这种位置返回 null。
@@ -227,6 +240,7 @@ namespace VbeComplete
             while (i > 0 && IsIdentChar(trimmed[i - 1])) i--;
             string prev = trimmed.Substring(i);
             if (prev.Length == 0) return null;
+
             switch (prev.ToLowerInvariant())
             {
                 case "private": case "public": case "friend": case "global": case "static":
@@ -234,8 +248,30 @@ namespace VbeComplete
                 case "redim": return AfterReDim;
                 case "property": return AfterProperty;
                 case "declare": return AfterDeclare;
+                case "end": return AfterEnd;
+                case "exit": return AfterExit;
+                case "option": return AfterOption;
+                case "do": case "loop": return AfterWhileUntil;
+                case "resume": return AfterResume;
+                case "select": return AfterSelect;
+                case "case": return AfterCase;
+                case "for": return AfterFor;
+                // 两个词才算数：`On Error Go|`。只看 prev（"Error"）会把 `Err.Raise` 之类
+                // 后面也误判成这个位置。
+                case "error":
+                    return string.Equals(PrevWord(trimmed.Substring(0, i)),
+                        "on", StringComparison.OrdinalIgnoreCase) ? AfterOnError : null;
                 default: return null;
             }
+        }
+
+        /// <summary>取一段文本里最后一个词（`"On Error "` -> `"On"`）。</summary>
+        private static string PrevWord(string text)
+        {
+            string t = text.TrimEnd();
+            int j = t.Length;
+            while (j > 0 && IsIdentChar(t[j - 1])) j--;
+            return t.Substring(j);
         }
 
         /// <summary>word 是不是 list 里某个关键字的前缀（大小写不敏感）。</summary>
@@ -260,6 +296,10 @@ namespace VbeComplete
         /// <summary>
         /// 光标所在**语句段**的起点（0-based）。VBA 用 `:` 分隔同一行里的多条语句，
         /// 只认「引号外、注释外」的冒号 —— `s = "a:b"` 里的那个不算分隔符。
+        /// ★v169：`Then` / `Else` 也是语句边界（单行 If）——
+        ///   `If n > 0 Then ReDim Preserve res` 里声明起点是 Then 之后，不是行首。
+        ///   不切这一刀，ReDeclHead（要求 `^` 之后就是声明关键字）永远不成立，
+        ///   "声明位置不弹候选"在紧凑写法下整条失效（真机 declprobe 16/17 条）。
         /// </summary>
         public static int StatementStart(string line, int endCol)
         {
@@ -279,9 +319,23 @@ namespace VbeComplete
                 }
                 if (inStr) continue;
                 if (c == '\'') break;        // 注释从这里开始，后面没有语句了
-                if (c == ':') start = i + 1;
+                if (c == ':') { start = i + 1; continue; }
+                // `ElseIf` 不算（IsWordAt 会看到右边还连着 `If`，整词对不上）
+                if (IsWordAt(line, i, end, "Then")) { start = i + 4; i += 3; continue; }
+                if (IsWordAt(line, i, end, "Else")) { start = i + 4; i += 3; continue; }
             }
             return start;
+        }
+
+        /// <summary>line 的 i 处是不是完整的一个词 kw（左右都不再连标识符字符）。</summary>
+        private static bool IsWordAt(string line, int i, int end, string kw)
+        {
+            if (i < 0 || i + kw.Length > end) return false;
+            if (string.Compare(line, i, kw, 0, kw.Length, StringComparison.OrdinalIgnoreCase) != 0)
+                return false;
+            if (i > 0 && IsIdentChar(line[i - 1])) return false;
+            int after = i + kw.Length;
+            return after >= end || !IsIdentChar(line[after]);
         }
 
         /// <summary>

@@ -61,6 +61,18 @@ namespace VbeComplete
         // ---- 探针用的只读视图（生产路径一个都不读） ----
         internal bool CodePaneFocused => _codePaneFocused;
         internal bool PopupVisible => _popupVisible;
+        /// <summary>候选窗里此刻排在最前面的几个名字（没弹就是空串），只给探针看。</summary>
+        internal string PopupNames
+        {
+            get
+            {
+                if (!_popupVisible) return "";
+                var names = new List<string>();
+                var items = _eng.Items;
+                for (int i = 0; i < items.Count && i < 8; i++) names.Add(items[i].Name);
+                return string.Join(",", names);
+            }
+        }
         internal int PendingKeys => _pendingKeys;
         internal Snapshot HookSnap => _hookSnap;
         internal long HookSnapAgeMs => Environment.TickCount64 - _hookSnapTicks;

@@ -77,6 +77,7 @@ namespace VbeComplete
                     case "--carettest":   return CaretTest();
                     case "--hktest":      return HkTest();
                     case "--enterprobe":  return EnterProbe();
+                    case "--declprobe":   return DeclProbe();
                     case "--snipetest":   return SnippetTest();
                     case "--dbtest":      return DbTest();
                     case "--dump":        return DumpModule();
@@ -114,6 +115,7 @@ namespace VbeComplete
                     "  --writetest   真机验证写入链路（改完即还原）\r\n" +
                     "  --hktest      真机验证行操作快捷键（改完即还原）\r\n" +
                     "  --enterprobe  真机验证「回车自动补结构」（走真键盘钩子，改完即还原）\r\n" +
+                    "  --declprobe   真机逐字符敲声明位置（Private Fu / ReDim Preserve res），看弹不弹\r\n" +
                     "  --startuptest 图标 + 开机自启的登记/回滚（会短暂改注册表，随后还原）\r\n" +
                     "  --trusttest   AccessVBOM 现状（只读；VBECOMPLETE_TRUST_WRITE=1/0 才真写）\r\n";
                 Console.WriteLine("未知开关：" + args[0]);
@@ -937,9 +939,13 @@ namespace VbeComplete
                     bool r = be.DeletePairHere();
                     string now = be.LineAt(at + 1) ?? "";
                     var snap = be.Snapshot();
-                    bool ok = r && Rules.Rstrip(now) == "    x = f" && snap != null && snap.CaretCol == 10;
+                    bool ok = r && string.Equals(Rules.Rstrip(now), "    x = f",
+                        StringComparison.OrdinalIgnoreCase) && snap != null && snap.CaretCol == 10;
                     check("退格删一对空括号", ok,
                         "ret=" + r + " 行=[" + now + "] caretCol=" + (snap?.CaretCol ?? -1) + " want=10");
+                    // ★大小写不敏感：VBE 会把单字母标识符按工程里同名符号改大小写
+                    //   （这份工作簿里 `f` 落盘成 `F`），按 Ordinal 比就是一条假红
+                    //   —— 和 --enterprobe 里 WPS 那条 `x = 1` / `X = 1` 同一个坑。
                     dropFrom();
                 }
 
@@ -1408,6 +1414,198 @@ namespace VbeComplete
                         try
                         {
                             File.WriteAllText(Path.Combine(Settings.Home, "enterprobe.log"),
+                                sb.ToString(), new UTF8Encoding(false));
+                        }
+                        catch { }
+                    }
+                    allOk = false;
+                }
+            }
+            return allOk ? 0 : 1;
+        }
+
+        /// <summary>
+        /// 真机探针：在 VBE 里**逐字符敲**"声明位置 + 第二个关键字"的各种组合，看候选窗
+        /// 到底弹不弹。
+        /// ★为什么非得上真机：判据那两层（selftest / enginetest）只看文本，而用户看到的
+        ///   是 钩子 → 快照 → Trigger 这条路 —— 快照落后一格、自动空格、输入法组字，任何
+        ///   一个环节偏一下结论就不同。
+        /// ★脚手架用完必删（`Sub VbcEnter`，见 CleanupScratch）。
+        /// </summary>
+        private static int DeclProbe()
+        {
+            var sb = new StringBuilder();
+            var gate = new object();
+            bool allOk = true;
+            Action<string, bool, string> check = (name, ok, detail) =>
+            {
+                if (!ok) allOk = false;
+                lock (gate) sb.AppendLine((ok ? "  PASS  " : "  FAIL  ") + name + "   " + detail);
+            };
+
+            sb.AppendLine("=== decl probe（真机 / 逐字符敲声明位置） ===");
+            sb.AppendLine("（每个用例：摆好半截行 -> 逐字符敲剩下的 -> 看候选窗弹没弹）");
+
+            var app = new App();
+            var be = new VbeBackend();
+            int leftover = CleanupScratch(be);
+            string orig = be.ModuleText();
+            int baseCount = be.LineCount();
+            sb.AppendLine("module lines = " + baseCount + "  len = " + (orig == null ? -1 : orig.Length) +
+                          "  上次残留块清理 = " + leftover);
+            if (baseCount < 0 || orig == null)
+            {
+                sb.AppendLine("no code module, skip");
+                File.WriteAllText(Path.Combine(Settings.Home, "declprobe.log"),
+                    sb.ToString(), new UTF8Encoding(false));
+                return 1;
+            }
+
+            int at = baseCount + 1;
+            RebuildScaffold(app, be, at, "    x = 1");
+            be.FocusVbe();
+            app.Start();
+
+            // 说明, 半截行（光标停在行尾）, 接着敲的字, 期望弹?, 必须有, 不许有
+            // ★空格必须算在"接着敲的字"里：VBE 把行尾空格抹掉（`    ReDim Preserve ` 存回去
+            //   就是 `    ReDim Preserve`），跟着敲的字会**粘**在关键字后面 ——
+            //   那测的是"一个长标识符"，不是"关键字 + 变量名"。
+            var cases = new (string name, string header, string typed, bool want, string[] must, string[] bad)[]
+            {
+                ("ReDim 后补 Preserve", "    ReDim P", "re", true, new[] { "Preserve" }, null),
+                ("Preserve 后敲变量名（res）", "    ReDim Preserve", " res", false, null, null),
+                ("Preserve 后敲完整名（result）", "    ReDim Preserve", " result", false, null, null),
+                ("Preserve 后括号里敲变量（0 To n）", "    ReDim Preserve result(0 To", " n", false, null, null),
+                ("ReDim 后敲变量名（不带 Preserve）", "    ReDim", " arr", false, null, null),
+                ("Private 后补 Function", "    Private F", "un", true, new[] { "Function" }, null),
+                ("Private 后敲变量名", "    Private", " gCount", false, null, null),
+                ("Property 后补 Get", "    Property G", "e", true, new[] { "Get" }, null),
+                ("Declare 后补 PtrSafe", "    Declare P", "tr", true, new[] { "PtrSafe" }, null),
+                ("Property Get 后敲过程名", "    Public Property Get", " getT", false, null, null),
+                ("Private Sub 后敲过程名", "    Private Sub", " DoIt", false, null, null),
+                ("Declare PtrSafe Function 后敲过程名", "    Private Declare PtrSafe Function", " getT", false, null, null),
+                ("Private WithEvents 后敲变量名", "    Private WithEvents", " clsX", false, null, null),
+                ("Private Enum 后敲枚举名", "    Private Enum", " MyEnum", false, null, null),
+                ("Private Type 后敲类型名", "    Private Type", " tRec", false, null, null),
+                // 声明关键字不在语句开头（单行 If / 冒号后面）—— 用户实际写紧凑代码就这么写
+                ("单行 If 里的 ReDim Preserve", "    If n > 0 Then ReDim Preserve", " res", false, null, null),
+                ("单行 If 里的 ReDim", "    If n > 0 Then ReDim", " arr", false, null, null),
+                ("冒号后面的 ReDim Preserve", "    x = 1: ReDim Preserve", " res", false, null, null),
+                ("单行 If 里 Then 后补 Preserve", "    If n > 0 Then ReDim P", "re", true, new[] { "Preserve" }, null),
+                // v169：同一类"关键字后面只可能跟关键字"的位置
+                ("End 后补 Sub", "    End S", "u", true, new[] { "Sub" }, null),
+                ("Exit 后补 For", "    Exit F", "o", true, new[] { "For" }, null),
+                ("On Error 后补 GoTo", "    On Error G", "o", true, new[] { "GoTo" }, null),
+                ("Option 后补 Explicit", "    Option E", "x", true, new[] { "Explicit" }, null),
+                ("Do 后补 While", "    Do W", "h", true, new[] { "While" }, null),
+                ("Loop 后补 Until", "    Loop U", "n", true, new[] { "Until" }, null),
+                ("For 后补 Each", "    For E", "a", true, new[] { "Each" }, null),
+                ("Case 后补 Else", "    Case El", "s", true, new[] { "Else" }, null),
+            };
+
+            int imeModeAtStart = -1;
+            var driver = new Thread(() =>
+            {
+                try
+                {
+                    bool focused = false;
+                    for (int i = 0; i < 40 && !focused; i++)
+                    {
+                        app.RunOnUi(() =>
+                        {
+                            Native.ForceForeground(Native.FindWindow("wndclass_desked_gsk", null));
+                            be.SetCaret(at + 1, 9);
+                            be.InvalidateSnapshot();
+                        });
+                        Thread.Sleep(250);
+                        focused = app.CodePaneFocused;
+                    }
+                    check("焦点在代码窗", focused, "CodePaneFocused=" + focused);
+                    if (!focused) return;
+
+                    int imeMode0 = Native.ImeConversionMode(Native.FocusedVbeWindow());
+                    imeModeAtStart = imeMode0;
+                    if (!Native.ImeAlphanumeric(Native.FocusedVbeWindow()))
+                    {
+                        Native.ImeSetAlphanumeric(Native.FocusedVbeWindow());
+                        Thread.Sleep(200);
+                    }
+                    bool alnum = Native.ImeAlphanumeric(Native.FocusedVbeWindow());
+                    lock (gate)
+                        sb.AppendLine("IME 英数模式 = " + alnum +
+                            "（conv=0x" + imeMode0.ToString("X2") + "，跑完恢复）" +
+                            (alnum ? "" : "   ⚠️ 切不过去：逐字符打字会被输入法吃掉"));
+
+                    for (int k = 0; k < cases.Length; k++)
+                    {
+                        var c = cases[k];
+                        RebuildScaffold(app, be, at, c.header);
+                        Thread.Sleep(350);
+                        bool typed = TypeTyping(app, c.typed, 55, out string how);
+                        Thread.Sleep(400);
+                        bool shown = app.PopupVisible;
+                        string names = app.PopupNames;
+                        string[] got = ReadLines(app, be, at, 2);
+                        string line = got.Length > 1 ? got[1] : "";
+
+                        bool pass = typed && shown == c.want;
+                        foreach (var want in c.must ?? Array.Empty<string>())
+                            if (!names.Split(',').Any(x => string.Equals(x, want,
+                                StringComparison.OrdinalIgnoreCase)))
+                                pass = false;
+                        check((k + 1) + " " + c.name, pass,
+                            "弹=" + shown + " 候选=[" + names + "] 行=[" + line + "] via=" + how);
+                    }
+                }
+                catch (Exception e)
+                {
+                    lock (gate) sb.AppendLine("EXCEPTION " + e);
+                    allOk = false;
+                }
+                finally
+                {
+                    Native.ImeRestore(Native.FocusedVbeWindow(), imeModeAtStart);
+                    app.RequestExit();
+                }
+            })
+            { IsBackground = true, Name = "declprobe" };
+
+            driver.Start();
+            bool joined = false;
+            try
+            {
+                Application.Run(app);
+            }
+            finally
+            {
+                try
+                {
+                    joined = driver.Join(4000);
+                    be.ForceReloadModule();
+                    int removed = CleanupScratch(be);
+                    be.ForceReloadModule();
+                    string now = be.ModuleText();
+                    bool restored = string.Equals(now, orig, StringComparison.Ordinal);
+                    if (!restored) allOk = false;
+                    lock (gate)
+                    {
+                        sb.AppendLine("cleanup 块 = " + removed + "   restored = " + restored +
+                                      "   lines " + be.LineCount() + "/" + baseCount +
+                                      (joined ? "" : "   ⚠️ driver 线程超时未结束"));
+                        sb.AppendLine(allOk ? "RESULT: PASS" : "RESULT: FAIL");
+                        File.WriteAllText(Path.Combine(Settings.Home, "declprobe.log"),
+                            sb.ToString(), new UTF8Encoding(false));
+                    }
+                }
+                catch (Exception e)
+                {
+                    lock (gate)
+                    {
+                        sb.AppendLine("cleanup 异常：" + e.Message);
+                        sb.AppendLine("RESULT: FAIL");
+                        try
+                        {
+                            File.WriteAllText(Path.Combine(Settings.Home, "declprobe.log"),
                                 sb.ToString(), new UTF8Encoding(false));
                         }
                         catch { }
@@ -1975,6 +2173,26 @@ namespace VbeComplete
             // 同一个位置的名字照旧不弹（`Private m_arr` 那条已在上面）
             sprobe("Private 后的变量名不弹（Private ok|）", "模块1", 4,
                 "Private ok", 11, false, null, null);
+
+            // ---- 1c. v169：Then/Else 也是语句边界 + 同一类"关键字后跟关键字" ----
+            //   ★这一组的前两条是**真机探针 declprobe 抓到的**：旧实现只认"行的第一个词"，
+            //     `If n > 0 Then ReDim Preserve res` 里 ReDim 不在行首，ReDeclHead 不成立，
+            //     "声明位置不弹"整条失效 —— 用户报的就是这个位置。
+            sprobe("单行 If 里 Preserve 后的变量名不弹", "模块1", 5,
+                "    If n > 0 Then ReDim Preserve res", 37, false, null, null);
+            sprobe("单行 If 里 Then 后仍给 Preserve", "模块1", 5,
+                "    If n > 0 Then ReDim Pre", 28, true, new[] { "Preserve" }, null);
+            sprobe("End 后给 End 的子关键字（End Su|）", "模块1", 5,
+                "    End Su", 11, true, new[] { "Sub" }, null);
+            sprobe("On Error 后给 GoTo（On Error Go|）", "模块1", 5,
+                "    On Error Go", 15, true, new[] { "GoTo" }, null);
+            sprobe("For 后给 Each（For Ea|）", "模块1", 5,
+                "    For Ea", 11, true, new[] { "Each" }, null);
+            sprobe("Case 后给 Else（Case Els|）", "模块1", 5,
+                "    Case Els", 13, true, new[] { "Else" }, null);
+            // 关键字过滤：`Option Ex|` 只该有 Explicit，不该把同前缀的 Exit 也算进来
+            sprobe("Option 后剔掉位置不对的关键字（Option Ex|）", "模块1", 5,
+                "    Option Ex", 14, true, new[] { "Explicit" }, new[] { "Exit" });
 
             // ---- 2. Option Explicit：未声明的名字不进候选 ----
             // 光标所在行会被"挖掉半截词"，所以搜索词要和模块里的名字错开：
