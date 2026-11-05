@@ -1518,7 +1518,12 @@ namespace VbeComplete
                 ("Case 后补 Else", "    Case El", "s", true, new[] { "Else" }, null),
                 // v171：位置判据不外溢 —— 行首 `Preserve` 不是 `ReDim` 的续行，
                 // 这里的 `re` 该给 `ReDim`（用户报的就是这一格）
-                ("行首 Preserve 后补 ReDim", "    Preserve r", "e", true, new[] { "ReDim" }, null),
+                // ★v173：用户第二张截图 —— 给了 ReDim 之后，同前缀的 `Replace` / `Reset`
+                //   / `Resume` 和变量 `result` 还挂在那儿。这个位置是纯语法位，
+                //   除了 `ReDim` 什么都不合法，所以 `resProbe` 一起剔。
+                ("行首 Preserve 后只给 ReDim", "    Preserve r", "e", true,
+                    new[] { "ReDim" },
+                    new[] { "resProbe", "Replace", "Rem", "Reset", "Resume", "Return" }),
                 // `Case` 后面是表达式，内建函数不许被当成"位置不对的关键字"剔掉
                 ("Case 后补内建（Chr）", "    Case C", "h", true, new[] { "Chr" }, null),
                 // `Declare PtrSafe Fu|` 是第三个关键字位置
@@ -1593,6 +1598,13 @@ namespace VbeComplete
                         bool pass = typed && shown == c.want;
                         foreach (var want in c.must ?? Array.Empty<string>())
                             if (!names.Split(',').Any(x => string.Equals(x, want,
+                                StringComparison.OrdinalIgnoreCase)))
+                                pass = false;
+                        // ★v173：`bad` 之前只是写在用例表里，**从来没被断言过** ——
+                        //   于是"不该出现的候选"一直没人管（`Preserve re|` 冒出
+                        //   Reset/Resume 也只能靠人眼看截图发现）。
+                        foreach (var banned in c.bad ?? Array.Empty<string>())
+                            if (names.Split(',').Any(x => string.Equals(x, banned,
                                 StringComparison.OrdinalIgnoreCase)))
                                 pass = false;
                         check((k + 1) + " " + c.name, pass,
@@ -2052,7 +2064,11 @@ namespace VbeComplete
                 "\n" +
                 "Sub test()\n" +
                 "    Dim student2 As String\n" +
-                "    Dim 他们 As String\n" +
+                // ★v173：`resVar` 只用来看"纯语法位置会不会把名字也漏出来"（用户截图里
+                //   那条 `result` 是同一类）。**必须并进这一行、不能新起一行** —— 下面
+                //   "去掉 Option Explicit 的 A/B 对照"写死了 Line = 11，加行会把它顶偏，
+                //   那条就变成假红（v173 踩过一次）。
+                "    Dim 他们 As String, resVar As String\n" +
                 "    Dim dic As Object, c As cls1\n" +
                 "    student = getOne()\n" +
                 "    \n" +
@@ -2254,6 +2270,15 @@ namespace VbeComplete
             //     —— `Preserve` 只在 `ReDim` 后面才是"只能跟数组名"的位置。
             sprobe("行首 Preserve 后仍给 ReDim（Preserve re|）", "模块1", 5,
                 "    Preserve re", 16, true, new[] { "ReDim" }, null);
+            //   ★v173：用户接着报"应该只提示 redim 才对吧" —— 对，位置对了一半不算对。
+            //     这个位置是纯语法位，除了 ReDim 什么都不合法：名字（resVar）和同前缀的
+            //     内建/关键字（Replace/Rem/Reset/Resume/Return/RaiseEvent）全得剔。
+            sprobe("行首 Preserve 只给 ReDim（名字内建全剔）", "模块1", 5,
+                "    Preserve re", 16, true, new[] { "ReDim" },
+                new[] { "resVar", "Replace", "Rem", "Reset", "Resume", "Return", "RaiseEvent" });
+            //   `End Su|` 同理：`End` 后面只可能是关键字，名字一律不合法
+            sprobe("End 后不给名字（End Su|）", "模块1", 5,
+                "    End Su", 11, true, new[] { "Sub" }, new[] { "resVar" });
             //   ★`Case` 后面是表达式，`Chr` 这类内建不许被当成"位置不对的关键字"剔掉
             sprobe("Case 后给内建函数（Case Ch|）", "模块1", 5,
                 "    Case Ch", 12, true, new[] { "Chr" }, null);

@@ -274,6 +274,21 @@ namespace VbeComplete
         private static readonly string[] AfterOnError = { "GoTo", "Resume", "Next" };
         /// <summary>`Declare PtrSafe` 后面只可能是这两个（`Sub` / `Function`）。</summary>
         private static readonly string[] AfterPtrSafe = { "Sub", "Function" };
+        /// <summary>语句头孤零零一个 `Preserve` —— 它只可能是 `ReDim Preserve` 的残缺态。</summary>
+        private static readonly string[] AfterPreserveHead = { "ReDim" };
+
+        /// <summary>光标前那个词后面这个位置**允许出现什么**（三态，见 DeclSlotOf）。</summary>
+        public enum DeclSlot
+        {
+            /// <summary>不是"关键字 + 空一格"的位置 —— 什么都不用收窄。</summary>
+            None = 0,
+            /// <summary>封闭的关键字集，**而且名字也不该出现**：`End Su|` 只可能是 Sub/Function，
+            /// `Preserve re|` 只可能是 ReDim，`On Error Go|` 后面不可能是变量。</summary>
+            KeywordsOnly,
+            /// <summary>关键字集（可以是空集 = 一个关键字都不许），但名字**照留**：
+            /// `Private g|` 可以是裸声明，`ReDim arr|` 可以是既有数组名。</summary>
+            KeywordsAndNames,
+        }
 
         /// <summary>
         /// 光标前那个词是"后面还该跟一个关键字"的声明关键字时，返回该位置允许的关键字集合；
@@ -288,18 +303,39 @@ namespace VbeComplete
         ///   "preserve 后面不会提示 redim 了"。同类还有 `Case`：后面是**表达式**不是封闭
         ///   关键字集（`Case vbYes` / `Case Chr(65)` 都被滤掉），所以整条不设限。
         /// </summary>
-        public static string[] DeclKeywordFollow(string line, int wordStartCol)
+        public static string[] DeclKeywordFollow(string line, int wordStartCol) =>
+            DeclSlotOf(line, wordStartCol, out string[] kw) == DeclSlot.None ? null : kw;
+
+        /// <summary>
+        /// 光标前那个词后面允许出现什么。keywords 与返回值配套：None → null；
+        /// KeywordsOnly / KeywordsAndNames → 白名单（可能是空数组 = 一个关键字都不许）。
+        /// </summary>
+        /// <remarks>
+        /// ★v173：用户盯着 `Preserve re|` 报的 —— "应该只提示 redim 才对吧"。对：
+        ///   `Preserve` 在语句头只能是 `ReDim Preserve` 的残缺态，这个位置除了 `ReDim`
+        ///   什么都不合法。可 v171 只做到"把 ReDim 放回来"，其余 Replace / Rem / Reset /
+        ///   Resume / Return / RaiseEvent / CreateObject / result 照样满屏 —— 位置对了一半。
+        ///   于是把返回值从"关键字白名单"扩成三态：这些位置**连名字也不该出现**。
+        ///   ★哪些位置名字合法，是逐个对 VBA 语法核过的，别凭手感改：
+        ///     名字合法：`Private gCount`（裸声明）、`ReDim arr`（既有数组）、
+        ///               `ReDim Preserve arr`（只能跟名字）、`For i = 1 To`（循环变量）
+        ///     名字不合法：End / Exit / Option / Do / Loop / Resume / Select / Property /
+        ///               Declare / PtrSafe / On Error / 语句头的 Preserve
+        ///   `Case` 后面是表达式，整条不设限（`Case vbYes` / `Case Chr(65)`）。
+        /// </remarks>
+        public static DeclSlot DeclSlotOf(string line, int wordStartCol, out string[] keywords)
         {
-            if (string.IsNullOrEmpty(line)) return null;
+            keywords = null;
+            if (string.IsNullOrEmpty(line)) return DeclSlot.None;
             int start = Math.Max(0, Math.Min(wordStartCol - 1, line.Length));
             string before = line.Substring(0, start);
             string trimmed = before.TrimEnd();
             // 和上一个词粘着（`Private.Fu`、没有空格）就不是"关键字 + 空格"那种位置
-            if (trimmed.Length == before.Length) return null;
+            if (trimmed.Length == before.Length) return DeclSlot.None;
             int i = trimmed.Length;
             while (i > 0 && IsIdentChar(trimmed[i - 1])) i--;
             string prev = trimmed.Substring(i);
-            if (prev.Length == 0) return null;
+            if (prev.Length == 0) return DeclSlot.None;
 
             // 锚点在这条语句里的位置：空串 = 它就是语句头，`ReDim`/`Declare`/`On` = 第二节
             string head = HeadWord(line, i);
@@ -307,32 +343,75 @@ namespace VbeComplete
 
             switch (prev.ToLowerInvariant())
             {
+                // 这几个后面可以接关键字，也可以直接起一个裸声明（`Private gCount`）
                 case "private": case "public": case "friend": case "global": case "static":
-                    return atHead ? AfterAccess : null;
-                case "redim": return atHead ? AfterReDim : null;
-                // ★v170：`ReDim Preserve arr|` 后面只能跟**名字**（空集合 = 关键字候选全剔掉）。
-                //   ★v171：只在真是 `ReDim Preserve` 时才算 —— 见上面的说明。
+                    if (!atHead) return DeclSlot.None;
+                    keywords = AfterAccess;
+                    return DeclSlot.KeywordsAndNames;
+                // `ReDim arr|` / `ReDim arr(0 To n)|`：名字是既有数组
+                case "redim":
+                    if (!atHead) return DeclSlot.None;
+                    keywords = AfterReDim;
+                    return DeclSlot.KeywordsAndNames;
                 case "preserve":
-                    return SameWord(head, "redim") ? NoKeywords : null;
-                // ★v171：`Declare PtrSafe Fu|` 是第三个关键字位置，和 `Private Fu|` 同形。
+                    // `ReDim Preserve arr|`：后面只能跟名字（空白名单 = 关键字全剔）
+                    if (SameWord(head, "redim"))
+                    {
+                        keywords = NoKeywords;
+                        return DeclSlot.KeywordsAndNames;
+                    }
+                    // ★v173：语句头孤零零一个 `Preserve` —— 唯一出路是补 `ReDim`，
+                    //   名字也不合法（`Preserve result` 不是语句）。
+                    if (atHead)
+                    {
+                        keywords = AfterPreserveHead;
+                        return DeclSlot.KeywordsOnly;
+                    }
+                    return DeclSlot.None;
+                // `Declare PtrSafe Fu|` 是第三个关键字位置，和 `Private Fu|` 同形
                 case "ptrsafe":
-                    return SameWord(head, "declare") ? AfterPtrSafe : null;
-                case "property": return atHead ? AfterProperty : null;
-                case "declare": return atHead ? AfterDeclare : null;
-                case "end": return atHead ? AfterEnd : null;
-                case "exit": return atHead ? AfterExit : null;
-                case "option": return atHead ? AfterOption : null;
-                case "do": case "loop": return atHead ? AfterWhileUntil : null;
-                case "resume": return atHead ? AfterResume : null;
-                case "select": return atHead ? AfterSelect : null;
-                case "for": return atHead ? AfterFor : null;
-                // ★v171：`Case` 后面是表达式（`Case vbYes`、`Case Chr(65)`、`Case 1, 2`），
-                //   只有 Else / Is 是关键字 —— 按封闭集合过滤会把 vbYes 这类常量全滤掉。
-                case "case": return null;
+                    if (!SameWord(head, "declare")) return DeclSlot.None;
+                    keywords = AfterPtrSafe;
+                    return DeclSlot.KeywordsOnly;
+                // `For i = 1 To 10` 的 `i` 是循环变量 —— 名字照留
+                case "for":
+                    if (!atHead) return DeclSlot.None;
+                    keywords = AfterFor;
+                    return DeclSlot.KeywordsAndNames;
+                // `Case` 后面是表达式（`Case vbYes`、`Case Chr(65)`、`Case 1, 2`），
+                // 只有 Else / Is 是关键字 —— 按封闭集合过滤会把 vbYes 这类常量全滤掉。
+                case "case": return DeclSlot.None;
+                // 以下都是"后面只可能是关键字"的纯语法位置，名字一律不合法
+                case "property":
+                    if (!atHead) return DeclSlot.None;
+                    keywords = AfterProperty; return DeclSlot.KeywordsOnly;
+                case "declare":
+                    if (!atHead) return DeclSlot.None;
+                    keywords = AfterDeclare; return DeclSlot.KeywordsOnly;
+                case "end":
+                    if (!atHead) return DeclSlot.None;
+                    keywords = AfterEnd; return DeclSlot.KeywordsOnly;
+                case "exit":
+                    if (!atHead) return DeclSlot.None;
+                    keywords = AfterExit; return DeclSlot.KeywordsOnly;
+                case "option":
+                    if (!atHead) return DeclSlot.None;
+                    keywords = AfterOption; return DeclSlot.KeywordsOnly;
+                case "do": case "loop":
+                    if (!atHead) return DeclSlot.None;
+                    keywords = AfterWhileUntil; return DeclSlot.KeywordsOnly;
+                case "resume":
+                    if (!atHead) return DeclSlot.None;
+                    keywords = AfterResume; return DeclSlot.KeywordsOnly;
+                case "select":
+                    if (!atHead) return DeclSlot.None;
+                    keywords = AfterSelect; return DeclSlot.KeywordsOnly;
                 // 两个词才算数：`On Error Go|`。只看 prev（"Error"）会把 `Err.Raise` 之类
                 // 后面也误判成这个位置。
-                case "error": return SameWord(head, "on") ? AfterOnError : null;
-                default: return null;
+                case "error":
+                    if (!SameWord(head, "on")) return DeclSlot.None;
+                    keywords = AfterOnError; return DeclSlot.KeywordsOnly;
+                default: return DeclSlot.None;
             }
         }
 

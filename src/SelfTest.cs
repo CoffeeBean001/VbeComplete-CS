@@ -240,10 +240,19 @@ namespace VbeComplete
             //   行首孤零零一个 `Preserve` 不是 `ReDim` 的续行，以前照样按"这里只能跟
             //   数组名"过滤，把 `ReDim` 自己也滤掉了（用户报："preserve 后面不会提示
             //   redim 了"，截图里敲 `re` 只剩一个 result）。
-            Ok("decl-follow/行首 Preserve 不设限（要给 ReDim）",
-                Rules.DeclKeywordFollow("    Preserve re", 14) == null);
-            Ok("decl-follow/语句中间 Preserve 也不设限",
-                Rules.DeclKeywordFollow("x = 1: Preserve re", 19) == null);
+            // ★v173：用户接着报"应该只提示 redim 才对吧" —— 对，这个位置除了 `ReDim`
+            //   什么都不合法，所以是 KeywordsOnly（连名字一起剔），不是 KeywordsAndNames。
+            Eq("decl-follow/行首 Preserve 只给 ReDim",
+                string.Join(",", Rules.DeclKeywordFollow("    Preserve re", 14)
+                                 ?? Array.Empty<string>()), "ReDim");
+            Ok("decl-follow/行首 Preserve 是纯关键字位",
+                Rules.DeclSlotOf("    Preserve re", 14, out _) == Rules.DeclSlot.KeywordsOnly);
+            // 冒号后面同样是一个新的语句头 —— 同口径
+            Eq("decl-follow/冒号后的 Preserve 也只给 ReDim",
+                string.Join(",", Rules.DeclKeywordFollow("x = 1: Preserve re", 17)
+                                 ?? Array.Empty<string>()), "ReDim");
+            Ok("decl-slot/冒号后的 Preserve 也是纯关键字位",
+                Rules.DeclSlotOf("x = 1: Preserve re", 17, out _) == Rules.DeclSlot.KeywordsOnly);
             // 而真是 `ReDim Preserve` 时照旧只给名字（v170 的口径不许回退）
             Eq("decl-follow/ReDim Preserve 后仍只给名字",
                 string.Join(",", Rules.DeclKeywordFollow("    ReDim Preserve res", 20)
@@ -314,6 +323,32 @@ namespace VbeComplete
             // 两个词才算数：光一个 `Error` 不是这个位置
             Ok("decl-follow/光一个 Error 不算",
                 Rules.DeclKeywordFollow("Error Go", 7) == null);
+
+            // ★v173：位置收窄分三态 —— "只有关键字"（名字也不合法）vs "关键字 + 名字"。
+            //   哪些位置名字合法是逐个对 VBA 语法核过的，别凭手感改：
+            //   `Private gCount` 是裸声明、`ReDim arr` 是既有数组、`For i = 1 To` 的 i 是
+            //   循环变量 —— 这三处名字必须留；其余（End/Exit/Option/Do/Loop/Resume/
+            //   Select/Property/Declare/PtrSafe/On Error/语句头的 Preserve）一律不留。
+            Ok("decl-slot/End 后只有关键字",
+                Rules.DeclSlotOf("    End Su", 9, out _) == Rules.DeclSlot.KeywordsOnly);
+            Ok("decl-slot/On Error 后只有关键字",
+                Rules.DeclSlotOf("    On Error Go", 14, out _) == Rules.DeclSlot.KeywordsOnly);
+            Ok("decl-slot/Property 后只有关键字",
+                Rules.DeclSlotOf("    Property Le", 14, out _) == Rules.DeclSlot.KeywordsOnly);
+            Ok("decl-slot/PtrSafe 后只有关键字",
+                Rules.DeclSlotOf("    Declare PtrSafe Fu", 21, out _) == Rules.DeclSlot.KeywordsOnly);
+            Ok("decl-slot/Option 后只有关键字",
+                Rules.DeclSlotOf("Option Ex", 8, out _) == Rules.DeclSlot.KeywordsOnly);
+            Ok("decl-slot/Private 后名字照留",
+                Rules.DeclSlotOf("Private Fu", 9, out _) == Rules.DeclSlot.KeywordsAndNames);
+            Ok("decl-slot/ReDim 后名字照留",
+                Rules.DeclSlotOf("ReDim Pre", 7, out _) == Rules.DeclSlot.KeywordsAndNames);
+            Ok("decl-slot/ReDim Preserve 后名字照留",
+                Rules.DeclSlotOf("ReDim Preserve res", 16, out _) == Rules.DeclSlot.KeywordsAndNames);
+            Ok("decl-slot/For 后名字照留",
+                Rules.DeclSlotOf("For Ea", 5, out _) == Rules.DeclSlot.KeywordsAndNames);
+            Ok("decl-slot/Case 后不设限",
+                Rules.DeclSlotOf("    Case vbY", 10, out _) == Rules.DeclSlot.None);
 
 
             // ★v137：`As` / `New` 之后一律不弹 —— 与 decl-position 互补：
