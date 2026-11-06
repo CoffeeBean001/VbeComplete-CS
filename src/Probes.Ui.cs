@@ -20,6 +20,7 @@ namespace VbeComplete
         private static int UiTest()
         {
             var sb = new StringBuilder();
+            bool bankOk = true;
             try
             {
                 var f = new PopupForm();
@@ -117,8 +118,15 @@ namespace VbeComplete
                     sf.StartPosition = FormStartPosition.Manual;
                     sf.Location = new System.Drawing.Point(-4000, -4000);
                     sf.Show();
+                    // 词库文件的时间戳：进词库页只该**读**库，一个字节都不该写。
+                    // ★v182：程序性重建列表曾把勾选通知延后投递 ⇒ 被当成用户勾选 ⇒
+                    //   刷新一次就把 functions-cs.db 重写一遍（内容可能没变，但这是脏写）。
+                    string kwP = WordLibrary.KeywordPath(), fnP = WordLibrary.FunctionPath();
+                    DateTime kwT0 = File.Exists(kwP) ? File.GetLastWriteTimeUtc(kwP) : DateTime.MinValue;
+                    DateTime fnT0 = File.Exists(fnP) ? File.GetLastWriteTimeUtc(fnP) : DateTime.MinValue;
                     for (int i = 0; i < 5; i++)
                     {
+                        DateTime fnBefore = File.Exists(fnP) ? File.GetLastWriteTimeUtc(fnP) : DateTime.MinValue;
                         sf.GoPage(i);
                         Application.DoEvents();
                         Thread.Sleep(150);
@@ -131,7 +139,61 @@ namespace VbeComplete
                             bmp3.Save(p3, System.Drawing.Imaging.ImageFormat.Png);
                             sb.AppendLine("saved " + p3 + "  " + pw + "x" + ph);
                         }
+                        // 词库页再切到「函数与类型」出一张（v182：这个页签以前永远是空的，
+                        // 光看第 5 页的默认截图看不出来）。
+                        if (i == 4)
+                        {
+                            sf.BankTabForTest(1);
+                            Application.DoEvents();
+                            Thread.Sleep(150);
+                            int fw = sf.Width, fh = sf.Height;
+                            using (var bmp5 = new System.Drawing.Bitmap(fw, fh))
+                            {
+                                sf.DrawToBitmap(bmp5, new System.Drawing.Rectangle(0, 0, fw, fh));
+                                string p5 = Path.Combine(Settings.Home,
+                                    "settings-preview-4-fn.png");
+                                bmp5.Save(p5, System.Drawing.Imaging.ImageFormat.Png);
+                                sb.AppendLine("saved " + p5 + "  " + fw + "x" + fh);
+                            }
+                        }
+                        DateTime fnAfter = File.Exists(fnP) ? File.GetLastWriteTimeUtc(fnP) : DateTime.MinValue;
+                        if (fnBefore != fnAfter)
+                            sb.AppendLine("  ⚠️ 第 " + i + " 页把 functions-cs.db 写了");
                     }
+                    // ★v182：词库页的两个页签都必须真的把库填进列表。
+                    //   判据 = "列表行数 == 库行数"（库里本来就是 0 条时也算通过）。
+                    //   用户报的现象是"关键字能显示、函数与类型一片空白"，根因是
+                    //   SelectPage 只刷了 _banks[0] —— 这条断言正是为了钉住它。
+                    bool libQuiet =
+                        kwT0 == (File.Exists(kwP) ? File.GetLastWriteTimeUtc(kwP) : DateTime.MinValue) &&
+                        fnT0 == (File.Exists(fnP) ? File.GetLastWriteTimeUtc(fnP) : DateTime.MinValue);
+                    if (!libQuiet) bankOk = false;
+                    sb.AppendLine("进词库页只读不写: " + libQuiet);
+                    for (int b = 0; b < 2; b++)
+                    {
+                        string be;
+                        int want = WordBank.All(b == 0 ? WordBank.Keywords : WordBank.Functions,
+                                                out be).Count;
+                        int shown = sf.BankItemsForTest(b);
+                        if (shown != want) bankOk = false;
+                        sb.AppendLine("bank[" + b + "] list=" + shown + " db=" + want +
+                                      (shown == want ? "" : "   ❌ 列表没填满") +
+                                      (be.Length > 0 ? " err=" + be : ""));
+                    }
+
+                    // 反向验证：用户**真的点了**勾选框时必须能写库。
+                    // 否则上面那条"只读不写"就成了把功能关死的假绿。
+                    bool tOff = sf.BankToggleForTest(1, "Abs", false);
+                    bool offInDb = WordBank.All(WordBank.Functions, out _)
+                        .FirstOrDefault(x => x.Word == "Abs")?.Enabled == false;
+                    bool tOn = sf.BankToggleForTest(1, "Abs", true);
+                    bool onInDb = WordBank.All(WordBank.Functions, out _)
+                        .FirstOrDefault(x => x.Word == "Abs")?.Enabled == true;
+                    bool toggleOk = tOff && offInDb && tOn && onInDb;
+                    if (!toggleOk) bankOk = false;
+                    sb.AppendLine("用户勾选能写库: 停用=" + (tOff && offInDb) +
+                                  " 再启用=" + (tOn && onInDb));
+
                     // 接线自检：勾选框 -> ini 键这一层是不是接对了（走真 SaveAll）。
                     // ★必须换到临时 ini：绝不能把用户的 settings.ini 改掉。
                     try
@@ -209,9 +271,9 @@ namespace VbeComplete
                     sb.AppendLine("settings preview FAILED: " + e3);
                 }
 
-                sb.AppendLine("RESULT: PASS");
+                sb.AppendLine(bankOk ? "RESULT: PASS" : "RESULT: FAIL");
                 File.WriteAllText(Path.Combine(Settings.Home, "uitest.log"), sb.ToString(), Encoding.UTF8);
-                return 0;
+                return bankOk ? 0 : 1;
             }
             catch (Exception e)
             {

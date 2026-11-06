@@ -36,9 +36,17 @@ namespace VbeComplete
             public List<WordEntry> All = new List<WordEntry>();
             public Label Count;                // "共 N 条，启用 M 条"
             public bool Building;              // 程序性重建列表，别把 Checked 事件当成用户操作
+            public ItemCheckedEventHandler OnChecked;   // 勾选处理器（重建时要能退订）
+            public long UserActTs;             // 最近一次"用户真的在列表上按了鼠标/键"的时刻
         }
 
         private static readonly string[] PageNames = { "常用", "快捷键", "候选", "外观", "词库" };
+
+        /// <summary>
+        /// "用户刚在词库列表上按过鼠标/键"的认账窗口。勾选只可能紧跟在一次真实点击/按键之后，
+        /// 而程序性重建列表发的 ItemChecked 前后不会有这种动作 —— 靠它把两者分开。
+        /// </summary>
+        private const long UserActWindowMs = 800;
 
         private readonly Action _onSaved;              // 设置保存后（App 重读 + 重画候选窗）
         private readonly Action _onWordBankChanged;    // 词库改动后（清候选池）
@@ -210,7 +218,10 @@ namespace VbeComplete
             for (int k = 0; k < _pages.Length; k++)
                 if (_pages[k] != null) _pages[k].Visible = k == i;
             if (_nav.SelectedIndex != i) _nav.SelectedIndex = i;
-            if (i == 4) ReloadBank(_banks[0]);       // 进词库页时刷一次（外面可能改过库）
+            // 进词库页时把**每个**页签都刷一遍（外面可能改过库）。
+            // ★v182：以前只刷 _banks[0]，于是「函数与类型」那个页签从建出来到关窗
+            //   一次都没填过，永远空白（用户报"关键字能显示，函数页不显示"）。
+            if (i == 4) foreach (var v in _banks) ReloadBank(v);
         }
 
         // ==================================================================
@@ -641,6 +652,12 @@ namespace VbeComplete
             var tabs = new TabControl { Dock = DockStyle.Fill, Font = _uiFont };
             tabs.TabPages.Add(BuildBankTab(WordBank.Keywords, "关键字", "keywords-cs.db"));
             tabs.TabPages.Add(BuildBankTab(WordBank.Functions, "函数与类型", "functions-cs.db"));
+            // 切页签就刷那一个（_banks 与 TabPages 同序，都是上面这两行的顺序）。
+            tabs.SelectedIndexChanged += (s, e) =>
+            {
+                int i = tabs.SelectedIndex;
+                if (i >= 0 && i < _banks.Count) ReloadBank(_banks[i]);
+            };
             page.Controls.Add(tabs, 0, 1);
 
             var paths = UiTheme.Label("", UiTheme.Muted, _descFont, true);
@@ -751,39 +768,53 @@ namespace VbeComplete
             del.Click += (s, e) => DeleteWords(view);
             open.Click += (s, e) => RevealFile(WordBank.PathOf(bank));
             list.DoubleClick += (s, e) => EditWord(view);
-            list.ItemChecked += (s, e) =>
+            // "用户真的动过这个列表"的凭证：重建列表（Clear + 重新 Add）也会发
+            // ItemChecked，但**不会有鼠标/键盘事件**，靠这个把两者分开。
+            list.MouseDown += (s, e) => view.UserActTs = Environment.TickCount64;
+            list.KeyDown += (s, e) => view.UserActTs = Environment.TickCount64;
+            list.ItemChecked += view.OnChecked = (s, e) =>
             {
                 if (view.Building) return;
-                // 只写"和内存里那一份不一样"的：否则一次刷新会把整库重写一遍
-                var want = new List<string>();
-                foreach (ListViewItem it in list.Items)
-                {
-                    var w = ItemWord(it);
-                    var mem = view.All.FirstOrDefault(x => string.Equals(x.Word, w,
-                        StringComparison.OrdinalIgnoreCase));
-                    if (mem == null) continue;
-                    bool now = it.Checked;
-                    if (mem.Enabled != now) want.Add(w + (now ? "\u0001" : "\u0000"));
-                }
-                if (want.Count == 0) return;
-                var on = want.Where(x => x.EndsWith("\u0001")).Select(x => x.Substring(0, x.Length - 1)).ToList();
-                var off = want.Where(x => x.EndsWith("\u0000")).Select(x => x.Substring(0, x.Length - 1)).ToList();
+                // ★v182：`Items.Clear()` 会为每个被清掉的项发一条通知，而这些通知可能在
+                //   EndUpdate 之后才投递 —— 那时 Building 已经是 false，`e.Item` 要么是
+                //   null（空引用，实测往 crash.log 写了 1805 条），要么是**已经移出列表的
+                //   旧项**，要么索引复用后指向新项但 `Checked` 还读不到真值（读成 false）。
+                //   最后那种最阴：会把整库"停用"再"启用"各写一遍（实测每个词写两次）。
+                if (e == null || e.Item == null) return;
+                if (!list.Items.Contains(e.Item)) return;    // Clear 的残响，不是用户点的
+                if (Environment.TickCount64 - view.UserActTs > UserActWindowMs) return;
+                string w = ItemWord(e.Item);
+                if (w.Length == 0) return;
+                var mem = view.All.FirstOrDefault(x => string.Equals(x.Word, w,
+                    StringComparison.OrdinalIgnoreCase));
+                if (mem == null) return;
+                // 只处理"这一项真的被改了"：用户勾一项就写一项，不再遍历全表比对
+                // （全表比对一旦有个 item 状态没同步上，就会连带把别的条目写错）。
+                bool now = e.Item.Checked;
+                if (mem.Enabled == now) return;
                 string err = "";
-                bool ok = true;
-                if (on.Count > 0) ok &= WordBank.SetEnabled(bank, on, true, out err);
-                if (off.Count > 0) ok &= WordBank.SetEnabled(bank, off, false, out err);
-                if (!ok) { SetStatus("改启用状态失败：" + err, true); return; }
-                foreach (var x in on) { var m = view.All.FirstOrDefault(y => y.Word == x); if (m != null) m.Enabled = true; }
-                foreach (var x in off) { var m = view.All.FirstOrDefault(y => y.Word == x); if (m != null) m.Enabled = false; }
-                AfterBankChange("已" + (on.Count > 0 ? "启用 " + on.Count + " 条" : "") +
-                                (off.Count > 0 ? "停用 " + off.Count + " 条" : ""));
+                if (!WordBank.SetEnabled(bank, new[] { w }, now, out err))
+                {
+                    SetStatus("改启用状态失败：" + err, true);
+                    // 回滚显示，别让界面和库不一致。★改 Checked 会再触发本事件，
+                    //   不退订就会递归（mem.Enabled 还是旧值 ⇒ 又判定"变了"⇒ 又写一次）。
+                    if (view.OnChecked != null) list.ItemChecked -= view.OnChecked;
+                    e.Item.Checked = !now;
+                    if (view.OnChecked != null) list.ItemChecked += view.OnChecked;
+                    return;
+                }
+                mem.Enabled = now;
+                if (e.Item.SubItems.Count > 0)
+                    e.Item.SubItems[e.Item.SubItems.Count - 1].Text = now ? "启用" : "已停用";
+                e.Item.ForeColor = now ? UiTheme.Text : UiTheme.Muted;
+                AfterBankChange("已" + (now ? "启用" : "停用") + "「" + w + "」");
             };
 
             return tab;
         }
 
         private static string ItemWord(ListViewItem it)
-            => it.Tag as string ?? (it.Text ?? "").Trim();
+            => it == null ? "" : (it.Tag as string ?? (it.Text ?? "").Trim());
 
         private void ReloadBank(BankView v)
         {
@@ -801,6 +832,12 @@ namespace VbeComplete
                 ? v.All
                 : v.All.Where(x => x.Word.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0).ToList();
 
+            // ★v182：重建列表期间必须把勾选处理器**退订**，不能只靠 Building 标志。
+            //   实测（uitest 复现）：页签还没显示时，ListView 把 Checked 的变更通知
+            //   延到 EndUpdate 之后才投递，那时 Building 已经是 false ⇒ 被当成用户勾选 ⇒
+            //   程序性刷新把 functions-cs.db 重写了一遍（状态栏还冒出"已启用 1 条"）。
+            var onChecked = v.OnChecked;
+            if (onChecked != null) v.List.ItemChecked -= onChecked;
             v.Building = true;
             v.List.BeginUpdate();
             try
@@ -824,7 +861,35 @@ namespace VbeComplete
             finally
             {
                 v.List.EndUpdate();
-                v.Building = false;
+                if (onChecked == null) v.Building = false;
+                else if (!v.List.IsHandleCreated)
+                {
+                    // 还没有句柄（构造期/离屏），没有消息队列可排，直接挂回
+                    v.Building = false;
+                    v.List.ItemChecked += onChecked;
+                }
+                else
+                {
+                    // ★v182：把"挂回"排到消息队列末尾 —— `Items.Clear()` 的残留通知
+                    //   会先被处理，那时处理器还没挂上，一律丢弃。光靠 Building 标志
+                    //   挡不住：那些通知（以及 e.Item 已失效/索引复用的通知）会拖到
+                    //   EndUpdate 之后才到，Building 早已是 false。
+                    try
+                    {
+                        v.List.BeginInvoke((Action)(() =>
+                        {
+                            v.Building = false;
+                            if (v.List.IsDisposed) return;
+                            v.List.ItemChecked -= onChecked;   // 连刷几次也只挂一份
+                            v.List.ItemChecked += onChecked;
+                        }));
+                    }
+                    catch
+                    {
+                        v.Building = false;
+                        v.List.ItemChecked += onChecked;
+                    }
+                }
             }
 
             int on = v.All.Count(x => x.Enabled);
@@ -996,6 +1061,40 @@ namespace VbeComplete
         {
             var r = _rows.FirstOrDefault(x => x.Key == key);
             return r != null && r.Checked != null && r.Checked();
+        }
+
+        /// <summary>
+        /// 某个词库页签的列表里现在有几行（0 = 关键字，1 = 函数与类型）。
+        /// 给 uitest 用 —— v182 那个"函数页从没填过"就是靠"列表行数 vs 库行数"抓出来的。
+        /// </summary>
+        internal int BankItemsForTest(int index)
+            => index >= 0 && index < _banks.Count ? _banks[index].List.Items.Count : -1;
+
+        /// <summary>切到某个词库页签（0 = 关键字，1 = 函数与类型）。给 uitest 出截图用。</summary>
+        internal void BankTabForTest(int index)
+        {
+            if (_banks.Count == 0) return;
+            var tabs = _banks[0].Page.Parent as TabControl;
+            if (tabs != null && index >= 0 && index < tabs.TabPages.Count)
+                tabs.SelectedIndex = index;
+        }
+
+        /// <summary>
+        /// 模拟"用户点了某一项的勾选框"（先记一次用户动作，再改 Checked）。
+        /// 用来反向验证：上面的"程序性重建不写库"没有把真实勾选一起关死。
+        /// </summary>
+        internal bool BankToggleForTest(int index, string word, bool on)
+        {
+            if (index < 0 || index >= _banks.Count) return false;
+            var v = _banks[index];
+            foreach (ListViewItem it in v.List.Items)
+            {
+                if (!string.Equals(ItemWord(it), word, StringComparison.OrdinalIgnoreCase)) continue;
+                v.UserActTs = Environment.TickCount64;
+                it.Checked = on;
+                return true;
+            }
+            return false;
         }
 
         private void ResetDefaults()
