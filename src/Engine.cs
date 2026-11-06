@@ -38,6 +38,9 @@ namespace VbeComplete
         //   确实是这条判据在起作用），运行期只读一次 settings.ini。
         public bool MemberPopup = Settings.Flag("MEMBER_POPUP", false);
         public bool DeclPopup => Settings.Flag("DECL_POPUP", false);
+        // ★v186 A/B：置 1 就回到"过程头行也算过程体内"的旧判据，用来确定性复现
+        //   "函数头前打 pri / pub 不提示 Private / Public"。
+        private bool NoProcHeaderFix => Settings.Flag("NO_PROC_HEADER_FIX", false);
 
         // UI 回调
         public Action<IReadOnlyList<Candidate>, int, int> OnShow;   // items, selected, top
@@ -402,7 +405,16 @@ namespace VbeComplete
             string curProc = ProcOf(snap);
             var ranks = BuildRankMap(snap.Module, curProc);
             var modKind = Rules.KindOfComponent(ComponentTypeOf(snap.Module));
-            bool inProc = curProc != null;
+            // ★v186：过程声明头那一行是**模块级**位置 —— ProcOfLine 把 StartLine 也算进
+            //   过程体（形参 / 局部变量作用域要用），直接拿它当 inProc 会把 Private /
+            //   Public / Static / Declare 全剔掉。用户"在写好的函数前插入 private 关键字，
+            //   打 pri / pub 都不提示"就是这条。两道闸一起过才算：
+            //     ① 这一行文本长得像过程头（允许半截修饰符 Rules.IsProcHeaderLine）；
+            //     ② 解析确实把它当成某条过程的 StartLine（ProcStartsAtLine）。
+            //   只放宽关键字的场合判定，curProc 本身不变（变量可见性照旧）。
+            bool inProc = curProc != null &&
+                          (NoProcHeaderFix ||
+                           !(Rules.IsProcHeaderLine(line) && ProcStartsAtLine(snap)));
 
             var hits = new List<Candidate>(64);
             foreach (var name in memberPool ?? _poolNames)
@@ -511,6 +523,24 @@ namespace VbeComplete
             Visible = true;
             OnShow?.Invoke(_items, _sel, _top);
             return true;
+        }
+
+        /// <summary>
+        /// 光标这一行是不是**某条过程的声明头行**（解析出来的 StartLine 正好是它）。
+        /// ★v186：光看文本不够 —— 过程体里写 `    Declare Ptr` 也长得像过程头，
+        ///   但那条过程体的外层过程 StartLine 更早，这里必须返回 false，
+        ///   否则"过程体里不给 Declare / PtrSafe"会被一起放宽成假绿。
+        /// </summary>
+        private bool ProcStartsAtLine(Snapshot snap)
+        {
+            if (snap == null) return false;
+            foreach (var ms in _scopes)
+            {
+                if (!string.Equals(ms.Module, snap.Module, StringComparison.OrdinalIgnoreCase)) continue;
+                foreach (var p in ms.Procs)
+                    if (p.StartLine == snap.Line) return true;
+            }
+            return false;
         }
 
         /// <summary>光标所在的过程名（ScopeKey）；不在任何过程里返回 null。</summary>

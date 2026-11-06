@@ -302,6 +302,30 @@ namespace VbeComplete
             // 函数 / 类型 / 用户自己的名字不受这套限制
             Ok("kw-context/内建函数不受限", Rules.KeywordAllowed("Chr", std, true));
             Ok("kw-context/用户名字不受限", Rules.KeywordAllowed("gCount", std, true));
+
+            // ---- v186：过程头行是模块级位置（补 Private / Public / Static）----
+            //   用户现场：`pri Function isInArray(...)` / `pub Function isInArray(...)`。
+            //   EnsurePool 把 `pri` 挖成空格后，这行又变成完整过程头 ⇒ ProcOfLine
+            //   把 StartLine 算进过程体 ⇒ KeywordAllowed 把访问修饰符全剔了。
+            Ok("proc-header/半截 pri + Function", Rules.IsProcHeaderLine(
+                "pri Function isInArray(ByRef arr, ByVal s As String) As Boolean"));
+            Ok("proc-header/半截 pub + Function", Rules.IsProcHeaderLine("pub Function Foo()"));
+            Ok("proc-header/裸 Function", Rules.IsProcHeaderLine("Function Foo()"));
+            Ok("proc-header/带缩进的裸 Sub", Rules.IsProcHeaderLine("    Sub Foo()"));
+            Ok("proc-header/完整修饰符", Rules.IsProcHeaderLine("Private Function Foo()"));
+            Ok("proc-header/多个修饰符", Rules.IsProcHeaderLine("Public Static Function Foo()"));
+            Ok("proc-header/Declare 链", Rules.IsProcHeaderLine(
+                "Private Declare PtrSafe Function X Lib \"k\" (ByVal a As Long)"));
+            Ok("proc-header/Enum 与 Type", Rules.IsProcHeaderLine("Private Type tRec") &&
+                                          Rules.IsProcHeaderLine("Public Enum 颜色"));
+            Ok("proc-header/大小写不敏感", Rules.IsProcHeaderLine("PRI function Foo()"));
+            // 反向：不能把"过程体内 / 注释 / 表达式"也放宽成模块级
+            Ok("proc-header/过程体不算", !Rules.IsProcHeaderLine("    Dim a As Long"));
+            Ok("proc-header/End 行不算", !Rules.IsProcHeaderLine("End Function"));
+            Ok("proc-header/注释不算", !Rules.IsProcHeaderLine("' 补一个 pri Function Foo()"));
+            Ok("proc-header/赋值表达式不算", !Rules.IsProcHeaderLine("    x = pri Function"));
+            Ok("proc-header/半截词单独一行不算", !Rules.IsProcHeaderLine("    pri"));
+            Ok("proc-header/点号成员不算", !Rules.IsProcHeaderLine("    obj.Function"));
             Ok("kw-context/ComponentType 1 = 标准模块",
                 Rules.KindOfComponent(1) == std);
             Ok("kw-context/ComponentType 2/3/100 = 对象模块",

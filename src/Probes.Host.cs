@@ -287,6 +287,123 @@ namespace VbeComplete
         /// "打字 → 钩子 → 轮询 → 弹窗"那一段由 declprobe / fmtprobe 各自覆盖，这里不重复。</para>
         /// <para>返回 0 通过 / 1 失败 / 3 SKIP（工程里没有带控件的窗体，一个字都没验到）。</para>
         /// </summary>
+        /// <summary>行首直接是过程头关键字（不带访问修饰符）—— 用户现场那种写法。</summary>
+        private static bool BareProcHead(string s)
+        {
+            string t = s.TrimStart();
+            foreach (var k in new[] { "Sub", "Function", "Property", "Declare", "Event", "Enum", "Type" })
+                if (t.StartsWith(k + " ", StringComparison.OrdinalIgnoreCase) ||
+                    t.StartsWith(k + "(", StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        /// <summary>
+        /// v186：验"在写好的函数头前补 pri / pub 会不会提示 Private / Public"。
+        /// ★只读：不改模块、不抢前台、不注入按键。文本取**当前模块的真全文**，
+        ///   只在内存副本里把某个过程头行前面插一个半截修饰符；后端仍是真
+        ///   VbeBackend（组件类型 / 工程作用域 / 词库都走产品路径）。
+        /// ★反向对照：过程体里打 Pri 仍不许冒出 Private（v174 的规矩不推翻）。
+        /// </summary>
+        private static int HdrProbe()
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("=== hdrprobe（只读：真 Backend + 内存副本） ===");
+            int rc = 1;
+            try
+            {
+                var be = new VbeBackend();
+                var s0 = be.Snapshot();
+                string mod = s0?.Module;
+                string text = be.ModuleText();
+                if (s0 == null || string.IsNullOrEmpty(mod) || string.IsNullOrEmpty(text))
+                {
+                    sb.AppendLine("SKIP：VBE 里没有打开的代码窗，或读不到模块全文 —— 一个字都没验到。");
+                    rc = 3;
+                }
+                else
+                {
+                    string[] ls = text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+                    int hdr = -1;
+                    for (int i = 0; i < ls.Length; i++)
+                        if (BareProcHead(ls[i])) { hdr = i; break; }
+                    if (hdr < 0)
+                        for (int i = 0; i < ls.Length; i++)
+                            if (Rules.IsProcHeaderLine(ls[i])) { hdr = i; break; }
+                    int body = -1;
+                    for (int i = hdr + 1; i < Math.Min(ls.Length, hdr + 6); i++)
+                    {
+                        string t = ls[i].Trim();
+                        if (t.Length > 0 && !t.StartsWith("'", StringComparison.Ordinal) &&
+                            !t.StartsWith("End ", StringComparison.OrdinalIgnoreCase))
+                        { body = i; break; }
+                    }
+                    if (hdr < 0 || body < 0)
+                    {
+                        sb.AppendLine("SKIP：当前模块里找不到「过程头 + 过程体」—— 没造出用例。");
+                        rc = 3;
+                    }
+                    else
+                    {
+                        sb.AppendLine("模块 = " + mod + "  过程头 L" + (hdr + 1) + " [" + ls[hdr] + "]");
+                        sb.AppendLine("过程体 L" + (body + 1) + " [" + ls[body] + "]");
+                        rc = 0;
+
+                        string Variant(int at, string repl)
+                        {
+                            var a = (string[])ls.Clone();
+                            a[at] = repl;
+                            return string.Join("\n", a);
+                        }
+
+                        string priLine = "pri " + ls[hdr];
+                        string pubLine = "pub " + ls[hdr];
+                        if (!HdrCheck(be, mod, Variant(hdr, priLine), hdr + 1, priLine, 4,
+                                new[] { "Private", "Print" }, null,
+                                "函数头前打 pri → Private / Print", sb)) rc = 1;
+                        if (!HdrCheck(be, mod, Variant(hdr, pubLine), hdr + 1, pubLine, 4,
+                                new[] { "Public" }, null,
+                                "函数头前打 pub → Public", sb)) rc = 1;
+                        string bodyLine = "    Pri";
+                        if (!HdrCheck(be, mod, Variant(body, bodyLine), body + 1, bodyLine, 8,
+                                new[] { "Print" }, new[] { "Private" },
+                                "过程体里打 Pri → 仍无 Private", sb)) rc = 1;
+                    }
+                }
+            }
+            catch (Exception e) { sb.AppendLine("EXCEPTION " + e); rc = 1; }
+            sb.AppendLine(rc == 0 ? "RESULT: PASS" : rc == 3 ? "RESULT: SKIP" : "RESULT: FAIL");
+            File.WriteAllText(Path.Combine(Settings.Home, "hdrprobe.log"), sb.ToString(), Encoding.UTF8);
+            Console.WriteLine(sb.ToString());
+            return rc;
+        }
+
+        /// <summary>hdrprobe 的一格：把内存副本钉住，问真 Engine 该给哪些候选。</summary>
+        private static bool HdrCheck(VbeBackend be, string module, string text,
+            int lineNo, string line, int caretCol, string[] must, string[] bad,
+            string label, StringBuilder sb)
+        {
+            var eng = new Engine { Recent = new Recent(), Backend = new FixedTextBackend(be, module, text) };
+            var sn = new Snapshot
+            {
+                Line = lineNo, Text = line, Module = module, CaretCol = caretCol,
+            };
+            eng.InvalidatePool();
+            bool shown = eng.Trigger(false, sn);
+            var names = eng.Items.Select(x => x.Name).ToList();
+            bool pass = shown;
+            foreach (var w in must ?? Array.Empty<string>())
+                if (!names.Any(x => string.Equals(x, w, StringComparison.OrdinalIgnoreCase))) pass = false;
+            foreach (var w in bad ?? Array.Empty<string>())
+                if (names.Any(x => string.Equals(x, w, StringComparison.OrdinalIgnoreCase))) pass = false;
+            sb.AppendLine((pass ? "  PASS  " : "  FAIL  ") + label);
+            sb.AppendLine("         行=[" + line + "] 列=" + caretCol + " 弹=" + shown +
+                          " 候选=[" + string.Join(",", names.Take(24)) + "]" +
+                          " 必须有=" + string.Join("/", must ?? Array.Empty<string>()) +
+                          " 不许有=" + string.Join("/", bad ?? Array.Empty<string>()));
+            eng.Hide();
+            return pass;
+        }
+
         private static int FormProbe()
         {
             var sb = new StringBuilder();

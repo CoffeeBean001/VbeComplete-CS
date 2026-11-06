@@ -81,6 +81,7 @@ namespace VbeComplete
                     case "--declprobe":   return DeclProbe(args.Length > 1 ? args[1] : null);
                     case "--fmtprobe":    return FmtProbe();
                     case "--formprobe":   return FormProbe();
+                    case "--hdrprobe":    return HdrProbe();
                     case "--snipetest":   return SnippetTest();
                     case "--dbtest":      return DbTest();
                     case "--dump":        return DumpModule();

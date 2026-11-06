@@ -554,6 +554,49 @@ namespace VbeComplete
             return true;
         }
 
+        /// <summary>模块级修饰符（访问级别 + Static）。</summary>
+        private static readonly string[] Modifiers =
+            { "Public", "Private", "Friend", "Global", "Static" };
+
+        /// <summary>过程 / 类型声明头的第一个词。</summary>
+        private static bool IsProcHeadWord(string w) =>
+            SameWord(w, "Sub") || SameWord(w, "Function") || SameWord(w, "Property") ||
+            SameWord(w, "Declare") || SameWord(w, "Event") || SameWord(w, "Enum") ||
+            SameWord(w, "Type");
+
+        /// <summary>
+        /// 这一行是不是"过程 / 类型声明头"：允许前面有完整的、或**正在打的半截**
+        /// 模块级修饰符（`pri Function …` / `pub Sub …` / `Private Declare …`）。
+        /// ★v186：过程头行属于**模块级**语法位置，Private / Public / Static / Declare
+        ///   在这里合法；但 Parser.ProcOfLine 把 StartLine 也算进过程体（形参 / 局部
+        ///   变量的作用域需要），直接拿它当 inProc 会把这些关键字全剔掉。
+        ///   EnsurePool 解析前还会把正在打的半截词挖成空格（BlankToken），于是
+        ///   `pri Function …` 又变成完整的 `     Function …` 过程头 —— 用户报的
+        ///   "在写好的函数前面插入 private，打 pri / pub 都不提示"就是这样被挡住的：
+        ///   候选里只剩不受场合限制的 Print / Partition。
+        /// ★只认行首那几个词，最后必须落到过程头关键字：`x = Function`、注释、
+        ///   `End Function`、过程体里的普通语句都不算。
+        /// </summary>
+        public static bool IsProcHeaderLine(string line)
+        {
+            if (string.IsNullOrEmpty(line)) return false;
+            int i = 0;
+            while (i < line.Length && (line[i] == ' ' || line[i] == '\t')) i++;
+            for (int guard = 0; guard < 6 && i < line.Length; guard++)
+            {
+                int s = i;
+                while (i < line.Length && IsIdentChar(line[i])) i++;
+                if (i == s) return false;                 // 不是词（`=`、`'`、`.`…）
+                string w = line.Substring(s, i - s);
+                if (IsProcHeadWord(w)) return true;
+                // 完整修饰符，或它的半截前缀（`pri` / `pub` / `sta`…）
+                if (!IsModifier(w) && !PrefixOfAny(w, Modifiers)) return false;
+                if (i >= line.Length || (line[i] != ' ' && line[i] != '\t')) return false;
+                while (i < line.Length && (line[i] == ' ' || line[i] == '\t')) i++;
+            }
+            return false;
+        }
+
         // ------------------------------------------------------------------
         // 宿主重排空白之后的"光标搬家"（v174）
         // ------------------------------------------------------------------

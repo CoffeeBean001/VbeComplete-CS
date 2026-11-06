@@ -121,7 +121,7 @@ pane**, and its message loop costs nothing when idle.
   tool; they are fully independent of the Python edition, sharing no file with it.
 - Every shortcut follows one rule: **if the action fails, the original key is replayed**, so keys
   are never silently swallowed.
-- 572 self-checks (fuzzy matching, scopes, `Option Explicit`, Chinese identifiers, member completion,
+- 587 self-checks (fuzzy matching, scopes, `Option Explicit`, Chinese identifiers, member completion,
   highlight splitting, call-site detection, `As`/`New` suppression, line continuations, branch-line
   Enter alignment) plus
   word-DB, snippet-store, icon/autostart and off-screen rendering checks, and seven live probes

@@ -414,6 +414,25 @@ namespace VbeComplete
                 "    gT\n" +
                 "End Sub\n";
 
+            // ★v186：用户报"在写好的函数前想插入 private / public，打 pri / pub 都不提示"。
+            //   现场行的文本就是 `pri Function isInArray(...)`；EnsurePool 解析前会把正在
+            //   打的半截词挖成空格（BlankToken）⇒ 这一行又变成 `     Function isInArray(...)`
+            //   ⇒ Parser 认出过程头，StartLine 正是光标行 ⇒ ProcOfLine 把"过程头行"算进
+            //   过程体内 ⇒ KeywordAllowed 把 Private/Public 当"函数体里不合法"剔掉，
+            //   而 Print / Partition 是内建函数不受限，照样出现 —— 用户截图逐字如此。
+            const string modHdrPri =
+                "Option Explicit\n" +
+                "\n" +
+                "pri Function isInArray(ByRef arr, ByVal s As String) As Boolean\n" +
+                "    Dim a\n" +
+                "End Function\n";
+            const string modHdrPub =
+                "Option Explicit\n" +
+                "\n" +
+                "pub Function isInArray(ByRef arr, ByVal s As String) As Boolean\n" +
+                "    Dim a\n" +
+                "End Function\n";
+
             var synth = new SyntheticBackend()
                 .Add("模块1", 1, modStd)
                 .Add("cls1", 2, modCls)
@@ -427,6 +446,8 @@ namespace VbeComplete
                 .Add("modParam", 1, modParamNoExp)
                 .Add("modParamX", 1, modParamExp)
                 .Add("modDim", 1, modDim)
+                .Add("modHdrPri", 1, modHdrPri)
+                .Add("modHdrPub", 1, modHdrPub)
                 // v183：窗体。控件名只存在于设计器数据里，真机由 Designer 灌进来，
                 //   这里直接摆（验的是"灌进来之后该在哪个模块可见"）。
                 .AddForm("UserForm1",
@@ -573,6 +594,24 @@ namespace VbeComplete
                 "    Pri", 8, null, null, new[] { "Private" });
             sprobe("模块级有 Private（Pri|）", "模块1", 5,
                 "    Pri", 8, true, new[] { "Private" }, null);
+            // ---- 1g. v186：往写好的函数头前面补模块级修饰符 ----
+            //   ★这不是"模块级空行"：过程头行被 ProcOfLine 算进过程体（StartLine 含在内），
+            //     于是同一条 KeywordAllowed 把 Private/Public 剔了。截图里只剩 Print/Partition。
+            sprobe("函数头前补 Private（pri Function…|）", "modHdrPri", 3,
+                "pri Function isInArray(ByRef arr, ByVal s As String) As Boolean", 4,
+                true, new[] { "Private" }, null);
+            sprobe("函数头前补 Public（pub Function…|）", "modHdrPub", 3,
+                "pub Function isInArray(ByRef arr, ByVal s As String) As Boolean", 4,
+                true, new[] { "Public" }, null);
+            // 同位置的普通内建不许被"修过头"一起剔掉（用户截图里它们本来就在）
+            sprobe("函数头前仍给 Print（pri Function…|）", "modHdrPri", 3,
+                "pri Function isInArray(ByRef arr, ByVal s As String) As Boolean", 4,
+                true, new[] { "Print" }, null);
+            // ★回归：过程体里那行 `    Declare Ptr` 文本上也像过程头，但解析出来的
+            //   外层过程 StartLine 更早 ⇒ 仍按"过程体内"处理，不许放宽成给 PtrSafe。
+            //   （真机 declprobe 第 13 条；修 v186 时这条先红过一次。）
+            sprobe("过程体里的 Declare Ptr 不放宽", "模块1", 11,
+                "    Declare Ptr", 16, false, null, new[] { "Declare", "PtrSafe" });
             sprobe("模块级不给 ReDim（ReDi|）", "模块1", 5,
                 "    ReDi", 9, false, null, new[] { "ReDim" });
             sprobe("过程体里有 ReDim（ReDi|）", "模块1", 11,
