@@ -1625,6 +1625,10 @@ End Sub
             Ok("enter/全角行只认行尾",
                 Editing.EnterIndentWanted(wideLine, Rules.DispCol(wideLine, wideLine.Length)) &&
                 !Editing.EnterIndentWanted(wideLine, Rules.DispCol(wideLine, wideLine.Length - 3)));
+            // v184：块内分支行也是"回车该接管的行"（拉齐到 If / 新行缩进一级）
+            string elseIfLine = "        ElseIf x < 0 Then";
+            Ok("enter/ElseIf 行尾接管",
+                Editing.EnterIndentWanted(elseIfLine, Rules.DispCol(elseIfLine, elseIfLine.Length)));
 
             // ---- 退格 ----
             Ok("bs/整行空白接管", Editing.BlankLineDeleteWanted("    ", 5));
@@ -1740,11 +1744,16 @@ End Sub
             // 只靠第一个词判断"像不像块头"，先接管、再让 UI 线程用真数据复核。
             Ok("header-prefix/半截 For", Editing.LooksLikeBlockHeaderPrefix("    For i = 1 To "));
             Ok("header-prefix/半截 Then", Editing.LooksLikeBlockHeaderPrefix("    If x > 0 The"));
+            // v184：快照落后一格时（`Then` 还差最后一个字符）必须靠这一档先接管
+            Ok("header-prefix/半截 ElseIf", Editing.LooksLikeBlockHeaderPrefix("        ElseIf x < 0 The"));
+            Ok("header-prefix/Else", Editing.LooksLikeBlockHeaderPrefix("    Else"));
+            Ok("header-prefix/Case", Editing.LooksLikeBlockHeaderPrefix("    Case 1"));
             Ok("header-prefix/Select Case", Editing.LooksLikeBlockHeaderPrefix("    Select Case x"));
             Ok("header-prefix/#If", Editing.LooksLikeBlockHeaderPrefix("#If VBA7 Then"));
             Ok("header-prefix/Private Sub", Editing.LooksLikeBlockHeaderPrefix("Private Sub Foo("));
             Ok("header-prefix/整行注释", Editing.LooksLikeBlockHeaderPrefix("    ' 说明"));
             Ok("header-prefix/普通语句不算", !Editing.LooksLikeBlockHeaderPrefix("    x = 1"));
+            Ok("header-prefix/End If 不算", !Editing.LooksLikeBlockHeaderPrefix("    End If"));
             Ok("header-prefix/字符串里的 For 不算", !Editing.LooksLikeBlockHeaderPrefix("    MsgBox \"For\""));
             Ok("header-prefix/续行符不算", !Editing.LooksLikeBlockHeaderPrefix("    For i = _"));
             Ok("header-prefix/空行不算", !Editing.LooksLikeBlockHeaderPrefix(""));

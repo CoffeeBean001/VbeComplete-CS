@@ -50,6 +50,29 @@ namespace VbeComplete
                 return 1;
             }
 
+            // ★v184：前置条件 —— 活动模块必须是**标准模块**（ComponentType 0/1）。
+            //   用户把代码窗停在窗体/文档模块时，「标准模块里没有 Property」和
+            //   「打全即收」这两条本来就不成立：对象模块的 Public 是对象成员、
+            //   裸名池/关键字范围都不一样。以前探针不检查，一轮正好报两条假红，
+            //   看着像回归（v183 那轮 40/40 是在 模块1 上验的）。前置条件不满足
+            //   必须自己喊 SKIP，绝不带着假前提跑到底。
+            string curMod = be.Snapshot()?.Module ?? "";
+            int curType = -1;
+            foreach (var ms0 in be.ProjectScopes(out int sig0))
+                if (string.Equals(ms0.Module, curMod, StringComparison.OrdinalIgnoreCase))
+                { curType = ms0.ComponentType; break; }
+            if (curType != 0 && curType != 1)
+            {
+                sb.AppendLine("SKIP：当前代码窗 = " + curMod + "（ComponentType=" + curType +
+                              "），不是标准模块。");
+                sb.AppendLine("  本探针的「打全即收 / 标准模块里没有 Property」等断言只在标准模块成立；");
+                sb.AppendLine("  请把 VBE 代码窗切到标准模块（如 模块1）再跑 --declprobe。这一轮一条都没验。");
+                sb.AppendLine("RESULT: SKIP");
+                File.WriteAllText(Path.Combine(Settings.Home, "declprobe.log"),
+                    sb.ToString(), new UTF8Encoding(false));
+                return 3;
+            }
+
             int at = baseCount + 1;
             RebuildScaffold(app, be, at, "    x = 1");
             be.FocusVbe();
@@ -187,8 +210,12 @@ namespace VbeComplete
                             string names = "";
                             if (want)
                             {
+                                // ★v184：宿主忙的时候整轮轮询会被挤掉 1~2 秒（多次真机复现：
+                                //   第 2 条 `For i` 偶发"弹=False"，同一条单跑 5/5 绿）。
+                                //   1.5s 不够，放宽到 2.2s；仍不弹就把轮询年龄/焦点一起
+                                //   打进日志，一眼分清"判据坏了"和"宿主这一轮根本没跑"。
                                 int waited = 0;
-                                while (waited < 1500)
+                                while (waited < 2200)
                                 {
                                     Thread.Sleep(60);
                                     waited += 60;
@@ -201,7 +228,10 @@ namespace VbeComplete
                                 //   可能还没轮到隐藏（打全即收要等下一轮轮询），上一个用例的窗
                                 //   也可能还挂着。给它 1 秒 —— 探针自己的 COM 调用会把宿主的
                                 //   轮询挤后几百毫秒，600ms 偶尔不够。
-                                for (int i = 0; i < 16 && app.PopupVisible; i++)
+                                //   ★v184：与"该弹"那一档同理 —— 宿主被挤时连"收窗"
+                                //   也要等下一轮轮询，960ms 会偶发假红（第 4 条"打全即收"
+                                //   实测红过）。同样放宽到 2.2s。
+                                for (int waited = 0; waited < 2200 && app.PopupVisible; waited += 60)
                                 {
                                     names = app.PopupNames;
                                     Thread.Sleep(60);
@@ -226,7 +256,10 @@ namespace VbeComplete
                                     StringComparison.OrdinalIgnoreCase)))
                                     pass = false;
                             check(name, pass,
-                                "弹=" + shown + " 候选=[" + names + "] 行=[" + line + "] via=" + how);
+                                "弹=" + shown + " 候选=[" + names + "] 行=[" + line + "] via=" + how
+                                + (shown != want
+                                    ? "  pollAge=" + app.HookSnapAgeMs + "ms focus=" + app.CodePaneFocused
+                                    : ""));
                         };
 
                     for (int k = 0; k < cases.Length; k++)

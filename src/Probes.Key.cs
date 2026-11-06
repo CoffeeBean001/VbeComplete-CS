@@ -592,6 +592,79 @@ namespace VbeComplete
                     check("C 逐字符敲 If … Then -> 补 End If", typedC && c[3] == "    End If",
                         "typed=" + typedC + " via=" + howC + " " + Tail(c) + "  diag{" + diagC + "}");
 
+                    // 5b. 用例 C2 / C3（v184，用户报的）：`If … Then` 之后另起一行写
+                    //     `ElseIf … Then`，再按回车 —— 既要把 ElseIf 拉回 `If` 的层级，
+                    //     也要把新行缩进一级。两条分别验**后端**与**钩子那条真路**：
+                    //       C2 静态摆好（快照肯定完整）—— 红的说明 BranchAlign/后端坏了；
+                    //       C3 逐字符敲完立刻回车（快照常落后一格）—— 红的说明钩子判据
+                    //          没把 `ElseIf` 认成"该接管的行"，回车直接漏给 VBE 原生。
+                    int c2col = 0;
+                    RebuildScaffold(app, be, at, "    If x > 0 Then", "        ElseIf x < 0 Then", "    End If");
+                    app.RunOnUi(() =>
+                    {
+                        be.ForceReloadModule();
+                        be.SetCaret(at + 2, "        ElseIf x < 0 Then".Length + 1);
+                        be.InvalidateSnapshot();
+                    });
+                    Thread.Sleep(300);
+                    string diagC2 = EnterDiag(app);
+                    SendKeys(app, Native.VK_RETURN);
+                    Thread.Sleep(700);
+                    string[] c2 = ReadLines(app, be, at, 5);
+                    app.RunOnUi(() =>
+                    {
+                        be.ForceReloadModule();
+                        be.TryGetSelection(out int _, out int col, out int _, out int _);
+                        c2col = col;
+                    });
+                    check("C2 ElseIf 行回车（静态摆放）：拉回 If 层级 + 新行缩进一级",
+                        string.Equals(c2[2], "    ElseIf x < 0 Then", StringComparison.OrdinalIgnoreCase)
+                        && c2[3].Trim() == "" && c2col == 9 && c2col > 0
+                        && string.Equals(c2[4], "    End If", StringComparison.OrdinalIgnoreCase),
+                        Tail(c2) + " col=" + c2col + "（want 「    ElseIf x < 0 Then」/8空格/col9）  diag{" + diagC2 + "}");
+
+                    // 5c. 用例 C3 续：**必须制造出"快照落后一格"才算验到**。
+                    //     上面 C3 那一轮真机上常常是 want=True（轮询恰好赶上了），那就只是
+                    //     C2 的重复 —— 用户报的那条恰恰发生在"最后一个字符刚落下、100ms 内
+                    //     就回车"的时刻。这里把最后一个 `n` 的延迟设为 0：敲完立刻回车，
+                    //     快照里那一行必然还差一格。三轮都造不出来就判 FAIL 并明说
+                    //     "这条没验到"，绝不拿假前提刷绿。
+                    int c3col = 0;
+                    bool sawLag = false, c3ok = false, typedC3 = false;
+                    string c3diag = "";
+                    for (int attempt = 0; attempt < 3 && !sawLag; attempt++)
+                    {
+                        RebuildScaffold(app, be, at, "    If x > 0 Then", "        ", "    End If");
+                        app.RunOnUi(() =>
+                        {
+                            be.ForceReloadModule();
+                            be.SetCaret(at + 2, 9);
+                            be.InvalidateSnapshot();
+                        });
+                        Thread.Sleep(250);
+                        typedC3 = TypeTyping(app, "ElseIf x < 0 The", 45, out string howC3);
+                        typedC3 &= TypeTyping(app, "n", 0, out _);
+                        string diagC3 = EnterDiag(app);
+                        SendKeys(app, Native.VK_RETURN);
+                        Thread.Sleep(700);
+                        string[] c3 = ReadLines(app, be, at, 5);
+                        app.RunOnUi(() =>
+                        {
+                            be.ForceReloadModule();
+                            be.TryGetSelection(out int _, out int col, out int _, out int _);
+                            c3col = col;
+                        });
+                        c3ok = typedC3
+                            && string.Equals(c3[2], "    ElseIf x < 0 Then", StringComparison.OrdinalIgnoreCase)
+                            && c3[3].Trim() == "" && c3col == 9 && c3col > 0;
+                        c3diag = "try" + (attempt + 1) + " via=" + howC3 + " " + Tail(c3)
+                                 + " col=" + c3col + "  diag{" + diagC3 + "}";
+                        sawLag = diagC3.Contains("want=False");
+                    }
+                    check("C3 快照落后一格时敲 ElseIf + 立刻回车：同样要拉齐 + 缩进一级",
+                        sawLag && c3ok,
+                        (sawLag ? "" : "⚠️ 三轮都没制造出快照落后 -> 这条没验到  ") + c3diag);
+
                     // 6. 用例 D：单选 If（`If x Then y = 1`）—— 不该补 End If，
                     //    但**回车必须照常换行**（这一档走的是"先接管、判不过再还回去"，
                     //    最容易写出"吞了却什么都没发生"的就是这条路）。

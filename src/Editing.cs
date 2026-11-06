@@ -489,6 +489,14 @@ namespace VbeComplete
                 case "select": case "sub": case "function": case "property":
                 case "type": case "enum":
                     return true;
+                // ★v184：块内分支行（`Else` / `ElseIf … Then` / `Case …`）也必须算进来。
+                //   用户敲完 `Then` 立刻回车，快照往往还少最后一格 ⇒ 严格判据
+                //   `EnterIndentWanted` 为 false，只靠这一档"先接管、再拿真数据重判"兜住。
+                //   以前这里没有这三个词，于是 `ElseIf` 行整下漏给 VBE 原生：
+                //   行不拉齐、新行也不缩进 —— 用户报的"写 ElseIf 再回车不格式化"。
+                //   A/B 口子：NO_BRANCH_PREFIX=1 退回 v183 的行为（只为证明这一条判据在起作用）。
+                case "else": case "elseif": case "case":
+                    return !Settings.Flag("NO_BRANCH_PREFIX", false);
             }
             return false;
         }
