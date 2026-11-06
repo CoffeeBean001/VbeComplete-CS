@@ -176,21 +176,68 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 逐字符"打字"，按当前输入法状态挑路：英数档走真 vk（和人手一致）；中文档走
-        /// Unicode 注入（否则字母被拿去组字，敲出来是 `Fori= 1 To3`，失败原因会伪装成
-        /// "程序坏了"）。返回实际用的方式并写进日志。
+        /// 本次探针统一走哪条注入路径：默认 Unicode。
+        /// ★v181：不再按输入法状态挑路 —— 模式位**读回来不可信**：明明在中文档，
+        ///   `IME_CMODE_NATIVE` 却报不置位，照着走真 VK 打进去照样被组字吃掉
+        ///   （实测 `For i` 变成 `    For热水若哦…`）。Unicode 注入与输入法无关，
+        ///   永远能落字；缺的只有"钩子看到按键"，由 NoteInjectedTyping 补记。
+        ///   ★要验真 VK 那条路时置 `VBECOMPLETE_PROBE_VK=1`（前提是自己确认输入法是英文）。
+        /// </summary>
+        private static bool _imeUnicodePath = !Settings.Flag("PROBE_VK", false);
+
+        /// <summary>
+        /// 逐字符"打字"：英数档走真 vk（和人手一致）；中文档走 Unicode 注入
+        /// （否则字母被拿去组字，敲出来是 `Fori= 1 To3`，失败原因会伪装成"程序坏了"）。
+        /// 返回实际用的方式并写进日志。
+        /// ★Unicode 注入没有 VK，钩子按设计看不到注入键 —— 必须靠 NoteInjectedTyping
+        ///   补记"刚敲了一个字"，否则 RequireKeyTrigger 判成"不是打字"，候选窗一个都不弹。
         /// </summary>
         private static bool TypeTyping(App app, string s, int delayMs, out string how)
         {
-            bool alnum = Native.ImeAlphanumeric(Native.FocusedVbeWindow());
+            bool alnum = !_imeUnicodePath;
             how = alnum ? "vk" : "unicode";
             if (alnum) return TypeText(app, s, delayMs);
             foreach (char ch in s)
             {
                 Native.SendUnicodeChar(ch);
+                // ★Unicode 事件没有 VK，钩子看不到 ⇒ 顺手把"刚敲了一个字"补记进去，
+                //   否则 RequireKeyTrigger 判成"不是打字"，候选窗一个都不弹（假红）。
+                app.NoteInjectedTyping(ch == ' ' || ch == '\t');
                 Thread.Sleep(delayMs);
             }
             return true;
+        }
+
+        /// <summary>
+        /// 逐字符用例的前置：定下这一轮走哪条注入路径（默认 Unicode），并把输入法现状写进日志。
+        /// ★v181：以前切不过去只写一句"⚠️ 切不过去"然后照跑 —— 结果 37 条"该弹"全红，
+        ///   看起来像程序坏了，其实一个字都没验到（中文档下注入只能走 Unicode，钩子不理）。
+        /// ★只有真要验 VK 路径（PROBE_VK=1）时才去动输入法：改用户的输入法状态是有代价的，
+        ///   Unicode 这条路根本不需要它。
+        /// </summary>
+        private static bool PrepareImeForTyping(Action<string> log, out int mode0, out bool usedShift)
+        {
+            IntPtr win = Native.FocusedVbeWindow();
+            mode0 = Native.ImeConversionMode(win);
+            usedShift = false;
+            _imeUnicodePath = !Settings.Flag("PROBE_VK", false);
+            bool alnum = Native.ImeAlphanumeric(win);
+            if (!_imeUnicodePath && !alnum) alnum = Native.ImeForceAlnum(win);
+            if (!_imeUnicodePath && !alnum)
+            {
+                // IMM32 两条通道都没动它：发一个真 Shift（微软拼音 / 搜狗默认拿它切中英）
+                Native.SendVk(Native.VK_SHIFT);
+                usedShift = true;
+                for (int i = 0; i < 10 && !alnum; i++)
+                {
+                    Thread.Sleep(60);
+                    alnum = Native.ImeAlphanumeric(win);
+                }
+            }
+            log("IME 英数模式（仅供参考，不决定注入方式）= " + alnum +
+                "（起始 conv=0x" + mode0.ToString("X2") + "，跑完恢复；" +
+                "本轮注入走 " + (_imeUnicodePath ? "Unicode + 补记按键" : "真 VK") + "）");
+            return alnum;
         }
 
         private static bool CharToVk(char c, out int vk, out bool shift)

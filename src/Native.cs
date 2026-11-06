@@ -505,6 +505,10 @@ namespace VbeComplete
         private static extern int ImmGetCompositionStringW(IntPtr hIMC, int dwIndex,
             byte[] lpBuf, int dwBufLen);
 
+        [DllImport("imm32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool ImmSetConversionMode(IntPtr hIMC, int dwMode);
+
         private const int GCS_COMPSTR = 0x0008;
 
         /// <summary>这个窗口此刻有没有输入法组字串？没有/拿不到一律 false。</summary>
@@ -649,15 +653,52 @@ namespace VbeComplete
                 int m = ImeConversionMode(hwnd);
                 if (m < 0) return -1;
                 if ((m & IME_CMODE_NATIVE) == 0) return m;
+                int want = m & ~IME_CMODE_NATIVE;
+                // ① 旧式 IMM32 输入法认 WM_IME_CONTROL
                 IntPtr ime = ImmGetDefaultIMEWnd(hwnd);
-                if (ime == IntPtr.Zero) return m;
-                IntPtr res;
-                SendMessageTimeout(ime, WM_IME_CONTROL,
-                    (IntPtr)IMC_SETCONVERSIONMODE, (IntPtr)(m & ~IME_CMODE_NATIVE),
-                    SMTO_ABORTIFHUNG, 300, out res);
+                if (ime != IntPtr.Zero)
+                {
+                    IntPtr res;
+                    SendMessageTimeout(ime, WM_IME_CONTROL,
+                        (IntPtr)IMC_SETCONVERSIONMODE, (IntPtr)want,
+                        SMTO_ABORTIFHUNG, 300, out res);
+                }
+                int now = ImeConversionMode(hwnd);
+                if (now >= 0 && (now & IME_CMODE_NATIVE) == 0) return now;
+                // ② 新版 TSF 输入法（微软拼音）只认 ImmSetConversionMode
+                IntPtr himc = ImmGetContext(hwnd);
+                if (himc != IntPtr.Zero)
+                {
+                    try { ImmSetConversionMode(himc, want); }
+                    finally { ImmReleaseContext(hwnd, himc); }
+                }
                 return ImeConversionMode(hwnd);
             }
             catch { return -1; }
+        }
+
+        /// <summary>
+        /// 输入法此刻是不是"本地语言"档（<c>IME_CMODE_NATIVE</c> 置位 = 中文态）。
+        /// 探针恢复现场时用它判断"Shift 那一下到底退回去了没有"。
+        /// </summary>
+        public static bool ImeNativeOn(IntPtr hwnd)
+        {
+            int m = ImeConversionMode(hwnd);
+            return m >= 0 && (m & IME_CMODE_NATIVE) != 0;
+        }
+
+        /// <summary>
+        /// 尝试把输入法切到英数档（探针前置条件）：IMM32 两条通道依次试。
+        /// ★切不动就返回 false —— 剩下那条路（发一个真 Shift）由探针侧走：本文件只放
+        ///   纯 Win32、不 Sleep（这些函数会在钩子线程里被调用）。
+        /// ★为什么想切成英数：中文档下逐字符打字会被拿去组字，文本根本落不进文档。
+        ///   实在切不过去也不要紧，探针会改走 Unicode 注入（与输入法无关）。
+        /// </summary>
+        public static bool ImeForceAlnum(IntPtr hwnd)
+        {
+            if (ImeAlphanumeric(hwnd)) return true;
+            ImeSetAlphanumeric(hwnd);
+            return ImeAlphanumeric(hwnd);
         }
 
         /// <summary>把输入法恢复成给定模式（探针跑完要把用户的输入法状态还回去）。</summary>

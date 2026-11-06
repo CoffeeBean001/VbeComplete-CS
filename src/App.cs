@@ -53,6 +53,13 @@ namespace VbeComplete
         //   ★v174 用的是"任何编辑键"，于是"敲完 `1` 立刻按 Ctrl+S"（间隔常 < 400ms）
         //     被当成人手改空白，搬家整条被跳过 = 用户报的"错位又复现"。
         private long _lastBlankTs;
+        /// <summary>
+        /// 最近一次"会往文档里写字"的按键（文字键 / 空格 / Tab / 退格 / Delete）的时刻。
+        /// ★与 `_lastKeyTs` 分家：那个连方向键、Home 都算，用来判"刚动过键盘"；
+        ///   这个只认真的会在光标处留下/抹掉内容的键 —— "文本没变、光标却前进一格"
+        ///   到底是打字竞态还是鼠标移动，靠它区分（见 PollOnce 的 justTyped）。
+        /// </summary>
+        private long _lastTextTs;
         // ★v179：最近一次 Ctrl+S 的时刻。VBE 保存时会顺手把当前行格式化，
         //   这是比"数空格"更硬的前兆 —— 刚按过保存，空白怎么变都是它干的。
         private long _lastSaveTs;
@@ -80,6 +87,21 @@ namespace VbeComplete
         internal int PendingKeys => _pendingKeys;
         internal Snapshot HookSnap => _hookSnap;
         internal long HookSnapAgeMs => Environment.TickCount64 - _hookSnapTicks;
+
+        /// <summary>
+        /// 探针专用：补记"刚敲了一个字"。只给 Unicode 注入用 —— 那种事件没有 VK，
+        /// 钩子按设计看不到（它只认真按键），于是 `RequireKeyTrigger` 判成"不是用户在打字"，
+        /// 候选窗一个都不弹（declprobe 曾因此整批假红）。
+        /// ★只动"打字时刻"那几格（`_lastKeyTs` / `_lastTextTs` / 空白键），候选判定一个字节都不改。
+        /// </summary>
+        internal void NoteInjectedTyping(bool blank = false)
+        {
+            _lastKeyTs = Environment.TickCount64;
+            _lastTextTs = _lastKeyTs;
+            // 空白键要单独记：`SameCodeIgnoringSpace` 那条靠它区分"人手敲了个空格"
+            // 和"宿主把这一行重排了"（Unicode 注入没有 VK，钩子里根本没有这一次按键）。
+            if (blank) _lastBlankTs = _lastKeyTs;
+        }
         internal void RunOnUi(Action a) { try { _disp.Invoke(a); } catch { } }
         internal void RequestExit() { try { _disp.BeginInvoke((Action)ExitThread); } catch { } }
 
@@ -141,6 +163,13 @@ namespace VbeComplete
         private const long NoBlankKeyMs = 300;
         /// <summary>刚按过 Ctrl+S 的认账窗口 —— VBE 保存时格式化当前行就在这几百毫秒内。</summary>
         private const long SaveWindowMs = 1200;
+        /// <summary>
+        /// "刚敲过键"的短窗口：这段时间里"文本没变、光标动了"不算鼠标移动光标。
+        /// ★v181：快照不是原子的（VBE 先落文本、后挪光标），只补一个字母的位置
+        ///   （`For i` / `End Su` / `Property Ge`）常被自己当场收窗，用户看到"一闪"。
+        ///   鼠标 / 方向键 / Home 都不会更新 `_lastTextTs`，所以这个窗口不会误伤 v159 的判据。
+        /// </summary>
+        private const long TypingRaceMs = 250;
 
         public App()
         {
@@ -597,6 +626,7 @@ namespace VbeComplete
                 vk == Native.VK_BACK || vk == Native.VK_DELETE)
             {
                 _lastBlankTs = Environment.TickCount64;
+                _lastTextTs = Environment.TickCount64;
             }
             if (ctrl && vk == Native.VK_S) _lastSaveTs = Environment.TickCount64;
 
@@ -606,6 +636,7 @@ namespace VbeComplete
             // 文档一变（轮询看到）计数就清零，所以正常打字时它总是 0。
             if (Editing.IsTextKey(vk) && !ctrl && !alt)
             {
+                _lastTextTs = Environment.TickCount64;
                 int n = _pendingKeys;
                 if (n < 99) _pendingKeys = n + 1;
                 _pendingAt = Environment.TickCount64;
@@ -1240,7 +1271,19 @@ namespace VbeComplete
                     // 文本没变、光标动了 = 移动光标，不是打字。
                     // ★v159：以前这里无条件 ShowPopupAtCaret()，于是同行里点一下鼠标 /
                     //   按左右键 / 按 Home，候选窗就跟着光标跑、列表一直挂着。一律收起。
-                    if (_lastSnap == null || _lastSnap.CaretCol != snap.CaretCol)
+                    // ★v181：但"刚敲完一个字符"那一刻也会长成这样 —— 快照不是原子的，
+                    //   VBE 先落文本再挪光标，于是上一轮读到"新文本 + 旧光标"（据此弹了窗），
+                    //   这一轮读到"文本没变 + 光标前进一格"，被当成鼠标移动当场收窗。
+                    //   用户看到的是一闪而过（`For i` / `End Su` 这类只补一个字母的位置最明显）。
+                    //   鼠标 / 方向键不会更新 _lastTextTs，所以只认"刚敲过字"这一种。
+                    //   ★判据必须收紧：只有"光标往前挪了几格"才是这个竞态 —— 一次轮询可能落
+                    //     下 1~4 个字符（快打字 / 探针连敲），挪得再多、或者往后，就不像打字了。
+                    //     鼠标点在别处、方向键位移都不长这样，v159 那条判据原样保留。
+                    int step = _lastSnap == null ? 0 : snap.CaretCol - _lastSnap.CaretCol;
+                    bool typingRace = Environment.TickCount64 - _lastTextTs <= TypingRaceMs &&
+                                      step >= 1 && step <= 4;
+                    if (!typingRace &&
+                        (_lastSnap == null || _lastSnap.CaretCol != snap.CaretCol))
                     {
                         if (_popupVisible)
                             Log.Write("收起候选窗：光标在行内移动（列 {0}->{1}），不是打字",

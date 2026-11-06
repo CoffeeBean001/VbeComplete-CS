@@ -141,6 +141,7 @@ namespace VbeComplete
             };
 
             int imeModeAtStart = -1;
+            bool imeUsedShift = false;
             var driver = new Thread(() =>
             {
                 try
@@ -160,18 +161,18 @@ namespace VbeComplete
                     check("焦点在代码窗", focused, "CodePaneFocused=" + focused);
                     if (!focused) return;
 
-                    int imeMode0 = Native.ImeConversionMode(Native.FocusedVbeWindow());
+                    bool alnum = PrepareImeForTyping(
+                        s => { lock (gate) sb.AppendLine(s); }, out int imeMode0, out imeUsedShift);
                     imeModeAtStart = imeMode0;
-                    if (!Native.ImeAlphanumeric(Native.FocusedVbeWindow()))
+                    if (!alnum)
                     {
-                        Native.ImeSetAlphanumeric(Native.FocusedVbeWindow());
-                        Thread.Sleep(200);
+                        // ★v181：切不过去也能验 —— 逐字符注入会退化成 Unicode（无 VK），
+                        //   钩子按设计看不到，所以 TypeTyping 会顺手补记"刚敲了一个字"。
+                        //   候选判定走的仍是真路径（文本 → 解析 → 判位置 → 画窗）。
+                        lock (gate)
+                            sb.AppendLine("      输入法切不到英文档：走 Unicode 注入 + 探针补记按键" +
+                                          "（候选判定仍是真的，只是\"输入法组字\"这一环没覆盖）");
                     }
-                    bool alnum = Native.ImeAlphanumeric(Native.FocusedVbeWindow());
-                    lock (gate)
-                        sb.AppendLine("IME 英数模式 = " + alnum +
-                            "（conv=0x" + imeMode0.ToString("X2") + "，跑完恢复）" +
-                            (alnum ? "" : "   ⚠️ 切不过去：逐字符打字会被输入法吃掉"));
 
                     // 采样 + 断言（脚手架里的用例和模块级那批共用这一段）
                     Action<string, bool, string[], string[], bool, string> eval =
@@ -184,15 +185,30 @@ namespace VbeComplete
                             //   五次全绿、全量一跑随机红一条。改成"弹到即停、超时才判不弹"。
                             bool shown = false;
                             string names = "";
-                            int waited = 0;
-                            while (waited < 1500)
+                            if (want)
                             {
-                                Thread.Sleep(60);
-                                waited += 60;
-                                if (app.PopupVisible) { shown = true; names = app.PopupNames; break; }
-                                // 期望不弹的用例（打全即收 / 名字位）：收窗是立即的，等
-                                // 600ms 还没有动静就结案，别把整套拖成一分多钟。
-                                if (!want && waited >= 600) break;
+                                int waited = 0;
+                                while (waited < 1500)
+                                {
+                                    Thread.Sleep(60);
+                                    waited += 60;
+                                    if (app.PopupVisible) { shown = true; names = app.PopupNames; break; }
+                                }
+                            }
+                            else
+                            {
+                                // ★该收窗的用例不能"第一个采样点还在就判红"：上一个字符弹的窗
+                                //   可能还没轮到隐藏（打全即收要等下一轮轮询），上一个用例的窗
+                                //   也可能还挂着。给它 1 秒 —— 探针自己的 COM 调用会把宿主的
+                                //   轮询挤后几百毫秒，600ms 偶尔不够。
+                                for (int i = 0; i < 16 && app.PopupVisible; i++)
+                                {
+                                    names = app.PopupNames;
+                                    Thread.Sleep(60);
+                                }
+                                shown = app.PopupVisible;
+                                if (shown) names = app.PopupNames;
+                                else names = "";
                             }
                             string[] got = ReadLines(app, be, at, 2);
                             string line = got.Length > 1 ? got[1] : "";
@@ -246,6 +262,9 @@ namespace VbeComplete
                 finally
                 {
                     Native.ImeRestore(Native.FocusedVbeWindow(), imeModeAtStart);
+                    // 靠 Shift 切过去的那种，模式位多半写不回来 —— 再点一次才算真的还给用户
+                    if (imeUsedShift && !Native.ImeNativeOn(Native.FocusedVbeWindow()))
+                        Native.SendVk(Native.VK_SHIFT);
                     app.RequestExit();
                 }
             })
@@ -354,6 +373,7 @@ namespace VbeComplete
             var driver = new Thread(() =>
             {
                 int imeModeAtStart = -1;
+                bool imeUsedShift = false;
                 try
                 {
                     bool focused = false;
@@ -371,18 +391,16 @@ namespace VbeComplete
                     check("焦点在代码窗", focused, "CodePaneFocused=" + focused);
                     if (!focused) return;
 
-                    int imeMode0 = Native.ImeConversionMode(Native.FocusedVbeWindow());
-                    imeModeAtStart = imeMode0;
-                    if (!Native.ImeAlphanumeric(Native.FocusedVbeWindow()))
+                    bool shifted = false;
+                    bool alnum = PrepareImeForTyping(
+                        s => { lock (gate) sb.AppendLine(s); }, out imeModeAtStart, out shifted);
+                    imeUsedShift = shifted;
+                    if (!alnum)
                     {
-                        Native.ImeSetAlphanumeric(Native.FocusedVbeWindow());
-                        Thread.Sleep(200);
+                        lock (gate)
+                            sb.AppendLine("      输入法切不到英文档：走 Unicode 注入 + 探针补记按键" +
+                                          "（快照/重排判据仍是真的）");
                     }
-                    bool alnum = Native.ImeAlphanumeric(Native.FocusedVbeWindow());
-                    lock (gate)
-                        sb.AppendLine("IME 英数模式 = " + alnum +
-                            "（conv=0x" + imeMode0.ToString("X2") + "，跑完恢复）" +
-                            (alnum ? "" : "   ⚠️ 切不过去：逐字符打字会被输入法吃掉"));
 
                     RebuildScaffold(app, be, at, header, "    Dim n As Long");
                     Thread.Sleep(350);
@@ -459,6 +477,8 @@ namespace VbeComplete
                 finally
                 {
                     Native.ImeRestore(Native.FocusedVbeWindow(), imeModeAtStart);
+                    if (imeUsedShift && !Native.ImeNativeOn(Native.FocusedVbeWindow()))
+                        Native.SendVk(Native.VK_SHIFT);
                     app.RequestExit();
                 }
             })
