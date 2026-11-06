@@ -2507,6 +2507,41 @@ namespace VbeComplete
                 "    For i\n" +
                 "End Sub\n";
 
+            // ★v178：形参表跨续行符（用户截图里的原文）。两份：不带 / 带 Option Explicit。
+            //   带 Option Explicit 的那份正是 bug 现场 —— 形参一条都收不到，"用过但没声明"
+            //   那条路又被 Option Explicit 堵死，于是打 di 只剩内建（Dir / Dim / ReDim …）。
+            //   第 10 行 `if di` 与第 11 行 `co` 是两条探针的落点（加了 Option Explicit 各 +1）。
+            const string modParamNoExp =
+                "'获取公式\n" +
+                "Private Function getFormula(ByVal ws As Worksheet, ByVal col As Long, _\n" +
+                "                            ByVal dic1 As Object, ByVal dic2 As Object) As String\n" +
+                "    Dim i&, s1$, s2$, rate\n" +
+                "    For i = 2 To ws.Cells(ws.Rows.Count, \"b\").End(xlUp).Row\n" +
+                "        s1 = ws.Cells(i, \"a\").MergeArea.Cells(1, 1)\n" +
+                "        s2 = ws.Cells(i, \"b\")\n" +
+                "        If s1 = \"门诊\" Then\n" +
+                "            if di\n" +
+                "            co\n" +
+                "        End If\n" +
+                "    Next\n" +
+                "End Function\n";
+            const string modParamExp = "Option Explicit\n" + modParamNoExp;
+
+            // ★v178：`Dim` 也跨续行 —— 续行上的名字同样是声明，不能丢。
+            //   第 2-3 行是模块级、第 6-7 行是过程内，两种作用域各验一条。
+            const string modDim =
+                "Option Explicit\n" +
+                "Dim gOne As Long, _\n" +
+                "    gTwo As String\n" +
+                "\n" +
+                "Sub 取数()\n" +
+                "    Dim aaa As Long, _\n" +
+                "        bbb As String\n" +
+                "    aaa = 1\n" +
+                "    bb\n" +
+                "    gT\n" +
+                "End Sub\n";
+
             var synth = new SyntheticBackend()
                 .Add("模块1", 1, modStd)
                 .Add("cls1", 2, modCls)
@@ -2516,7 +2551,10 @@ namespace VbeComplete
                 .Add("modT", 1, modType)
                 .Add("模块3", 1, modUser)
                 .Add("模块4", 1, modUser2)
-                .Add("模块5", 1, modFor);
+                .Add("模块5", 1, modFor)
+                .Add("modParam", 1, modParamNoExp)
+                .Add("modParamX", 1, modParamExp)
+                .Add("modDim", 1, modDim);
 
             // 说明, 模块, 行, 行文本, 光标显示列, 期望该弹?, 必须有, 不许有
             Action<string, string, int, string, int, bool?, string[], string[]> sprobe =
@@ -2663,6 +2701,23 @@ namespace VbeComplete
             //   用户报"写了 for i，这里的 i 为什么不提示，单个字符的变量应该会提示自身"。
             sprobe("For 后给单字母变量（For i|）", "模块5", 5,
                 "    For i", 10, true, new[] { "i" }, null);
+
+            // ---- 1f. v178：跨续行符的声明（形参表 / Dim）----
+            //   用户报："这个 if 后面也不会提示变量名，不能提示 dic1、dic2，应该跟上面的
+            //   for 那个是同样问题"。**根因不同**：for 那条是"打全即收"，这条是候选池里
+            //   压根没有这个名字 —— `Private Function f(a, b, _` 的形参表跨了续行符，
+            //   `ReProcHead` 只吃一行，第一行的 `(` 配不到 `)`，整条参数表一条都没收下来。
+            sprobe("续行形参：if 后打 di 给 dic1/dic2（Option Explicit）", "modParamX", 10,
+                "            if di", 18, true, new[] { "dic1", "dic2" }, null);
+            sprobe("续行形参：无 Option Explicit 也给", "modParam", 9,
+                "            if di", 18, true, new[] { "dic1", "dic2" }, null);
+            // 第一行的形参同样丢过（ws 只是碰巧因为 `ws.Cells` 像宿主对象才混进来）
+            sprobe("续行形参：第一行的 col 也要有（co|）", "modParamX", 11,
+                "            co", 15, true, new[] { "col" }, null);
+            sprobe("Dim 跨续行：续行上的局部队名要给（bb| -> bbb）", "modDim", 9,
+                "    bb", 7, true, new[] { "bbb" }, null);
+            sprobe("Dim 跨续行：续行上的模块级名要给（gT| -> gTwo）", "modDim", 10,
+                "    gT", 7, true, new[] { "gTwo" }, null);
 
             // ---- 2. Option Explicit：未声明的名字不进候选 ----
             // 光标所在行会被"挖掉半截词"，所以搜索词要和模块里的名字错开：

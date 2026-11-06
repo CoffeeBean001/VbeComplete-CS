@@ -11,6 +11,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace VbeComplete
@@ -173,8 +174,13 @@ namespace VbeComplete
             @"^[ \t]*End[ \t]+(?:Sub|Function|Property)\b",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+        /// <summary>
+        /// 过程内的声明。★v178：`Static` 可以单独当头（`Static st1 As Long` 是合法的
+        /// 过程级静态变量），旧正则把它当成"可选修饰符"，于是这种写法整行匹配不上 ——
+        /// 带 Option Explicit 时这个名字直接不进池（用户报的"这一类"里的第二种）。
+        /// </summary>
         private static readonly Regex ReLocalDecl = new Regex(
-            @"^[ \t]*(?:(?:Static)[ \t]+)?(?:Dim|Const|ReDim|WithEvents)[ \t]+(.*)$",
+            @"^[ \t]*(?:(?:Static[ \t]+)?(?:Dim|Const|ReDim|WithEvents)[ \t]+|Static[ \t]+)(.*)$",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         // 过程外不带 Dim 的声明：`Private x As Long` / `Public g As Long`
@@ -188,8 +194,11 @@ namespace VbeComplete
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         // 过程外的 Dim / Const / WithEvents（修饰符可有可无）
+        // ★v178：`Dim WithEvents w As Worksheet` 以前把 "WithEvents w As Worksheet" 整段
+        //   交给 DeclTypes，第一个词是关键字 WithEvents ⇒ 一个名字都收不到，`w` 丢了。
         private static readonly Regex ReModuleDim = new Regex(
-            @"^[ \t]*(?:(Public|Private|Global|Friend)[ \t]+)?(?:Dim|Const|WithEvents)[ \t]+(.*)$",
+            @"^[ \t]*(?:(Public|Private|Global|Friend)[ \t]+)?" +
+            @"(?:Dim[ \t]+(?:WithEvents[ \t]+)?|Const[ \t]+|WithEvents[ \t]+)(.*)$",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         private static readonly Regex ReTypeHead = new Regex(
@@ -284,9 +293,20 @@ namespace VbeComplete
             bool typePrivate = false;
             bool typeIsEnum = false;
 
+            // ★v178：结构判据必须看**逻辑语句**，不能只看物理行。
+            //   用户报"`if di` 不提示 dic1/dic2"，根因就在这儿：
+            //       Private Function getFormula(ByVal ws As Worksheet, ByVal col As Long, _
+            //                                   ByVal dic1 As Object, ByVal dic2 As Object) As String
+            //   形参跨了续行符 `_`，而 `ReProcHead` 只吃一行 ⇒ 第一行的 `(` 配不到 `)`，
+            //   **整条形参表一个都没收下来**（连第一行的 ws / col 都丢了，ws 只是碰巧
+            //   因为 `ws.Cells` 像宿主对象才从"全量标识符"那条路混进来）。
+            //   有 Option Explicit 时这条路被堵死 ⇒ dic1 / dic2 从此不进池子，打 di 只剩内建。
+            SplitLogical(lines, out _, out string[] logical, out bool[] isContLine);
+
             for (int ln = 1; ln <= n; ln++)
             {
-                string code = Parser.CodeOnly(lines[ln - 1]);
+                if (isContLine[ln]) continue;        // 续行：内容已经并进上一行的逻辑语句
+                string code = logical[ln];
                 if (code.Trim().Length == 0)
                 {
                     // 空行/整行注释：不结束 Type 块（VBE 允许里面有空行）
@@ -387,6 +407,10 @@ namespace VbeComplete
                 }
 
                 // ---- 过程内声明 ----
+                // ⚠️ 已知缺口（v178 查过，故意没动）：冒号隔开的第二条声明
+                //   `Dim a As Long: Dim b As Long` 只认得第一段，`b` 会丢。这种写法在
+                //   真代码里几乎见不到，而"按冒号切段再逐段匹配"要给整条循环加一层
+                //   嵌套（Type/Enum 块、过程头都在同一层），风险大于收益。
                 if (procKey != null)
                 {
                     var lm = ReLocalDecl.Match(code);
@@ -809,5 +833,62 @@ namespace VbeComplete
             if (string.IsNullOrEmpty(name)) return "";
             return name.TrimEnd('%', '&', '!', '#', '@', '$').Trim();
         }
+
+        /// <summary>
+        /// 把物理行拆成"逻辑语句"（VBA 的行尾续行符 `_` 把一条语句摊到多行）。
+        /// 三个数组都是 **1-based**，与 <c>ln</c> 对齐（0 号空着）：
+        ///   physical[i] —— 第 i 行自己的代码（注释/字符串已挖空）；
+        ///   logical[i]  —— 从第 i 行开始的整条语句（续行已接上，`_` 换成空格）；
+        ///   isCont[i]   —— 第 i 行只是上一行的续行（结构判据要跳过它，否则同一条
+        ///                  语句会被当成两条，`ByVal dic1 As Object` 这种半截行还会
+        ///                  被 ReModuleBare 之类误认成模块级声明）。
+        /// ★v178：`ReProcHead` 只吃一行，跨续行的形参表会整条丢光（用户报的
+        ///   "if 后面打 di 不提示 dic1"）。所有"按行首关键字判类型"的地方都得走这里。
+        /// </summary>
+        private static readonly bool NoContFix =
+            Environment.GetEnvironmentVariable("VBECOMPLETE_NO_CONT_FIX") == "1";
+
+        private static void SplitLogical(string[] lines, out string[] physical,
+            out string[] logical, out bool[] isCont)
+        {
+            int n = lines.Length;
+            physical = new string[n + 1];
+            logical = new string[n + 1];
+            isCont = new bool[n + 1];
+            for (int i = 1; i <= n; i++) physical[i] = Parser.CodeOnly(lines[i - 1]);
+            if (NoContFix)
+            {
+                // A/B 口子：退回 v177 的"只看物理行"。用来证明新用例真的复现了用户报的
+                // 现象（关掉就红），而不是恰好蒙对。
+                for (int i = 1; i <= n; i++) logical[i] = physical[i];
+                return;
+            }
+
+            // 续行符在**上一行**行尾，所以 isCont 是"看前一行"得出
+            for (int i = 2; i <= n; i++)
+                isCont[i] = Editing.IsContinuation(physical[i - 1].Trim());
+
+            var sb = new StringBuilder(160);
+            for (int i = 1; i <= n; i++)
+            {
+                if (isCont[i] || !Editing.IsContinuation(physical[i].Trim()))
+                {
+                    logical[i] = physical[i];
+                    continue;
+                }
+                sb.Clear();
+                for (int j = i; j <= n && j > 0; j++)
+                {
+                    string c = physical[j];
+                    bool more = Editing.IsContinuation(c.Trim());
+                    // 去掉行尾那个续行符，剩下的照抄（前后各补一个空格当分隔）
+                    sb.Append(more ? c.TrimEnd().Substring(0, c.TrimEnd().Length - 1) : c);
+                    sb.Append(' ');
+                    if (!more) break;
+                }
+                logical[i] = sb.ToString();
+            }
+        }
+
     }
 }

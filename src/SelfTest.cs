@@ -751,6 +751,31 @@ Friend e As Long
 Global f
 ";
 
+        /// <summary>
+        /// 形参表 / `Dim` 跨续行符 `_`（v178，用户截图里的原文）。
+        /// ★以前结构判据**只看物理行**：`ReProcHead` 在第一行拿到 `(`，却配不到第二行的
+        ///   `)`，整条参数表一条都没收下来。有 Option Explicit 时"用过但没声明"那条路
+        ///   也被堵死 ⇒ 打 `di` 只剩内建（Dir / Dim / ReDim …），用户报的就是这个。
+        /// </summary>
+        private const string ContinuationSample = @"Option Explicit
+Private Function getFormula(ByVal ws As Worksheet, ByVal col As Long, _
+                            ByVal dic1 As Object, ByVal dic2 As Object) As String
+    Dim aaa As Long, _
+        bbb As String
+End Function
+";
+
+        /// <summary>
+        /// `Static` 单独当头的过程级静态变量，以及 `Dim WithEvents`（v178）。
+        /// 两条都是"声明收不进来 ⇒ 带 Option Explicit 时永远不提示"的同一类。
+        /// </summary>
+        private const string StaticSample = @"Option Explicit
+Dim WithEvents gEvt As Worksheet
+Sub S()
+    Static st1 As Long
+End Sub
+";
+
         private static void TestScope()
         {
             var ms = Scope.Analyze("Mod1", ScopedSample);
@@ -807,6 +832,28 @@ Global f
             Ok("scope/裸声明 Friend 不算 Private", pick("e") != null && !pick("e").IsPrivate);
             Ok("scope/裸声明只写名字也收", pick("f") != null);
             Ok("scope/裸声明进了可见集", mb.Visible(null).ContainsKey("a") && mb.Visible(null).ContainsKey("b"));
+
+            // ---- v178：跨续行符的形参表 / Dim ----
+            var mc = Scope.Analyze("Mod3", ContinuationSample);
+            var vc = mc.Visible("getFormula");
+            foreach (var n in new[] { "ws", "col", "dic1", "dic2", "aaa", "bbb" })
+                Ok("scope/续行声明收得下：" + n, vc.ContainsKey(n),
+                    string.Join(",", vc.Keys));
+            Eq("scope/续行形参档位=4（局部）", vc.ContainsKey("dic1") ? vc["dic1"].Value : 0, 4);
+            Eq("scope/续行 Dim 档位=4（局部）", vc.ContainsKey("bbb") ? vc["bbb"].Value : 0, 4);
+            // 类型名 / 修饰符不能被当成参数收进来（`As Object` 的 Object、`ByVal` 本身）
+            Ok("scope/续行形参别收类型名", !vc.ContainsKey("Object") && !vc.ContainsKey("String"),
+                string.Join(",", vc.Keys));
+            Ok("scope/续行形参别收 ByVal", !vc.ContainsKey("ByVal"));
+            // 续行符本身不能变成名字（`_`）
+            Ok("scope/续行符不变成名字", !mc.FreeIdents.Contains("_"));
+
+            // ---- v178：同一类的另外两条 ----
+            var msx = Scope.Analyze("Mod4", StaticSample);
+            Ok("scope/Static 局部变量收得下", msx.Visible("S").ContainsKey("st1"),
+                string.Join(",", msx.Visible("S").Keys));
+            Ok("scope/Dim WithEvents 收得下", msx.Visible(null).ContainsKey("gEvt"),
+                string.Join(",", msx.Visible(null).Keys));
         }
 
         /// <summary>造一个假快照跑 Trigger（不碰 COM），返回候选名。</summary>
