@@ -55,6 +55,7 @@ namespace VbeComplete
                 TestAutoTrigger();
                 TestAutoStart();
                 TestSnippets();
+                TestSettingsIo();
             }
             catch (Exception e)
             {
@@ -1796,6 +1797,65 @@ End Sub
                 Ok("autostart/别处同名且文件还在 -> 不动它", !AutoStart.IsOurCommand(other));
             else
                 Ok("autostart/别处同名但文件已失效 -> 算旧项", AutoStart.IsOurCommand(other));
+        }
+
+        // ------------------------------------------------------------------
+        // settings.ini 的写入（设置界面「保存 / 恢复默认」的底层）
+        // ★用临时 ini 文件跑：绝不能碰用户真实的那一份，写完还要把环境变量还原 ——
+        //   否则后面所有用例都会读到一个被改过的配置。
+        // ------------------------------------------------------------------
+        private static void TestSettingsIo()
+        {
+            string old = Environment.GetEnvironmentVariable(Settings.PREFIX + "SETTINGS");
+            string tmp = Path.Combine(Path.GetTempPath(),
+                "vbecomplete-ini-" + Guid.NewGuid().ToString("N") + ".ini");
+            try
+            {
+                File.WriteAllLines(tmp, new[]
+                {
+                    "[settings]",
+                    "",
+                    "; AUTO_SPACE = 1",
+                    ";   关键字后自动补空格。0 = 关",
+                    "; NO_COMMENT = 0",
+                    ";   批量注释",
+                }, new UTF8Encoding(false));
+
+                Environment.SetEnvironmentVariable(Settings.PREFIX + "SETTINGS", tmp);
+                Settings.Load();
+                Eq("ini/读到模板里的默认值", Settings.Flag("AUTO_SPACE", true), true);
+
+                Ok("ini/写一项", Settings.Set("AUTO_SPACE", "0"), Settings.LastError());
+                Eq("ini/写完立刻生效", Settings.Flag("AUTO_SPACE", true), false);
+                string[] lines = File.ReadAllLines(tmp, Encoding.UTF8);
+                Ok("ini/那一行被改成生效状态",
+                    lines.Any(l => l.Trim() == "AUTO_SPACE = 0"),
+                    string.Join("|", lines));
+                Ok("ini/说明行还在",
+                    lines.Any(l => l.Trim().StartsWith(";   关键字后自动补空格")),
+                    string.Join("|", lines));
+                Eq("ini/没被顺手改掉别的项", Settings.Flag("NO_COMMENT", false), false);
+
+                Ok("ini/恢复默认（写 null）", Settings.Set("AUTO_SPACE", null), Settings.LastError());
+                lines = File.ReadAllLines(tmp, Encoding.UTF8);
+                Ok("ini/恢复默认后那一行变回注释",
+                    lines.Any(l => l.Trim().StartsWith("; AUTO_SPACE")), string.Join("|", lines));
+                Eq("ini/恢复默认后值回到默认", Settings.Flag("AUTO_SPACE", true), true);
+
+                Ok("ini/写一个全新的键", Settings.Set("MY_TEST_KEY", "7"), Settings.LastError());
+                Eq("ini/新键能读回来", Settings.Raw("MY_TEST_KEY"), "7");
+                lines = File.ReadAllLines(tmp, Encoding.UTF8);
+                Ok("ini/新键落在 [settings] 段里（不是文首）",
+                    Array.IndexOf(lines, "[settings]") < Array.FindIndex(lines, l => l.StartsWith("MY_TEST_KEY")),
+                    string.Join("|", lines));
+            }
+            catch (Exception e) { Ok("ini/用例自身没炸", false, e.Message); }
+            finally
+            {
+                Environment.SetEnvironmentVariable(Settings.PREFIX + "SETTINGS", old);
+                Settings.Load();                       // 还原成真实配置
+                try { File.Delete(tmp); } catch { }
+            }
         }
 
         // ------------------------------------------------------------------

@@ -44,10 +44,16 @@ namespace VbeComplete
             }
         }
 
-        public static void Load()
+        /// <summary>settings.ini 的实际路径（环境变量 VBECOMPLETE_SETTINGS 优先）。</summary>
+        public static string IniPath()
         {
             string path = Environment.GetEnvironmentVariable(PREFIX + "SETTINGS");
-            if (string.IsNullOrEmpty(path)) path = Path.Combine(Home, "settings.ini");
+            return string.IsNullOrEmpty(path) ? Path.Combine(Home, "settings.ini") : path;
+        }
+
+        public static void Load()
+        {
+            string path = IniPath();
             _ini.Clear();
             if (!File.Exists(path)) return;
             try
@@ -80,6 +86,86 @@ namespace VbeComplete
         }
 
         public static string LastError() => _lastError;
+
+        /// <summary>
+        /// **只看 settings.ini** 里那一项的值（不吃环境变量、不吃默认值）。
+        /// 设置界面用它判断"这一项用户改过没有" —— 环境变量是我们探针用的，
+        /// 不能让它把界面上的勾选状态带跑。
+        /// </summary>
+        public static string IniValue(string key)
+        {
+            string v;
+            return _ini.TryGetValue(key, out v) ? v : null;
+        }
+
+        /// <summary>
+        /// 把一项写进 settings.ini 的 `[settings]` 段，并立刻重新 Load（本进程马上生效）。
+        /// <para>`value == null` = 恢复默认：把那一行**注释掉**，而不是删掉 ——
+        /// 模板里那一行上面就写着它是什么意思，删掉等于把说明书一起撕了。</para>
+        /// <para>认不出 / 找不到那一行就把新行插在段尾（老用户手写的 ini 也可能压根没这一项）。</para>
+        /// </summary>
+        public static bool Set(string key, string value)
+        {
+            if (string.IsNullOrWhiteSpace(key)) return false;
+            key = key.Trim();
+            string path = IniPath();
+            try
+            {
+                var lines = File.Exists(path)
+                    ? new List<string>(File.ReadAllLines(path, Encoding.UTF8))
+                    : new List<string> { "[settings]" };
+
+                string section = "";
+                int hit = -1, lastInSection = -1, secLine = -1;
+                for (int i = 0; i < lines.Count; i++)
+                {
+                    string t = lines[i].Trim();
+                    if (t.Length == 0) continue;
+                    if (t[0] == '[')
+                    {
+                        section = t.Trim('[', ']').Trim();
+                        if (string.Equals(section, "settings", StringComparison.OrdinalIgnoreCase))
+                            secLine = i;
+                        continue;
+                    }
+                    // 只认 `[settings]` 段（以及还没有任何段头的老式 ini）
+                    if (section.Length != 0 &&
+                        !string.Equals(section, "settings", StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    lastInSection = i;
+
+                    // 行首的注释符剥掉再认键名：模板里每一项都是 `; KEY = 默认值`
+                    string body = t;
+                    int c = 0;
+                    while (c < body.Length && (body[c] == ';' || body[c] == '#')) c++;
+                    body = body.Substring(c).TrimStart();
+                    int eq = body.IndexOf('=');
+                    if (eq <= 0) continue;
+                    if (string.Equals(body.Substring(0, eq).Trim(), key,
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        hit = i;
+                        break;
+                    }
+                }
+
+                string newLine = value == null ? "; " + key + " =" : key + " = " + value;
+                if (hit >= 0) lines[hit] = newLine;
+                else if (lastInSection >= 0) lines.Insert(lastInSection + 1, newLine);
+                else if (secLine >= 0) lines.Insert(secLine + 1, newLine);
+                else { lines.Add("[settings]"); lines.Add(newLine); }
+
+                File.WriteAllLines(path, lines.ToArray(), new UTF8Encoding(false));
+                Load();                    // 立即生效（本进程内所有 Settings.X 都是现读的）
+                return true;
+            }
+            catch (Exception e)
+            {
+                _lastError = "写 settings.ini 失败：" + e.Message;
+                Log.Write("{0}（{1}）", _lastError, path);
+                return false;
+            }
+        }
 
         /// <summary>取原始字符串；都没有就返回 null。</summary>
         public static string Raw(string key)

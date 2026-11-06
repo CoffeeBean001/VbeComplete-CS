@@ -19,13 +19,13 @@ namespace VbeComplete
 {
     internal sealed class WordLibrary
     {
-        private const string KeywordSchema =
+        internal const string KeywordSchema =
             "CREATE TABLE IF NOT EXISTS keywords (" +
             "word TEXT PRIMARY KEY, " +
             "wants_space INTEGER NOT NULL DEFAULT 1, " +
             "enabled INTEGER NOT NULL DEFAULT 1)";
 
-        private const string FunctionSchema =
+        internal const string FunctionSchema =
             "CREATE TABLE IF NOT EXISTS functions (" +
             "word TEXT PRIMARY KEY, " +
             "kind TEXT NOT NULL DEFAULT 'function', " +
@@ -243,8 +243,12 @@ namespace VbeComplete
                 sb.AppendLine("VbeComplete（C# 版）的词库说明");
                 sb.AppendLine("=================================");
                 sb.AppendLine();
-                sb.AppendLine("两个库都是标准 SQLite 文件，用任何 SQLite 客户端（DB Browser for SQLite、");
-                sb.AppendLine("Navicat、VS Code 的 SQLite 插件都行）直接当表格改。改完重启程序生效。");
+                sb.AppendLine("**推荐：不用碰这两个文件**。托盘右键 →「添加关键字 / 函数…」（或「设置…」→ 词库），");
+                sb.AppendLine("在窗口里就能增删改，支持一行一个批量粘贴，改完立刻生效、不用重启。");
+                sb.AppendLine();
+                sb.AppendLine("两个库都是标准 SQLite 文件，想用 DB Browser for SQLite / Navicat / VS Code 的");
+                sb.AppendLine("SQLite 插件当表格改也可以。★外部改的只在启动时读一次，改完要重启程序；");
+                sb.AppendLine("只有程序里那套界面改完是即时的。");
                 sb.AppendLine();
                 sb.AppendLine("keywords-cs.db   →  表 keywords");
                 sb.AppendLine("    word         关键字本身，例如 Dim / If / Then");

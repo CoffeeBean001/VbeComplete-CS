@@ -40,10 +40,12 @@ namespace VbeComplete
 
         // ★v140 选中行 = VBE 里"选中文本"那种深蓝（不是 Win10 那种浅蓝 #0078D7，
         //   那个在白色列表里偏亮、偏"系统对话框"，压不住 JetBrains Mono 的字形）。
-        private static readonly Color CSelBg = SettingColor("POPUP_SEL_BG", "#0A62B0");
-        private static readonly Color CSelFg = SettingColor("POPUP_SEL_FG", "#FFFFFF");
+        // ★v175：从 static readonly 改成实例字段 —— 设置界面改了配色要能当场重画
+        //   （见 ReloadStyle）。候选窗整个生命周期就一个实例，实例字段没有额外代价。
+        private Color CSelBg = SettingColor("POPUP_SEL_BG", "#0A62B0");
+        private Color CSelFg = SettingColor("POPUP_SEL_FG", "#FFFFFF");
         // 蓝底上不能用黑字加粗标命中（看不见），改用亮黄 —— 对比度高且不刺眼
-        private static readonly Color CSelHit = SettingColor("POPUP_SEL_HIT", "#FFD97A");
+        private Color CSelHit = SettingColor("POPUP_SEL_HIT", "#FFD97A");
 
         /// <summary>读一个 #RRGGBB 形式的配色；写错 / 没写就用默认值，绝不让配色配置崩掉窗口。</summary>
         private static Color SettingColor(string key, string def)
@@ -118,8 +120,8 @@ namespace VbeComplete
         private bool _dragScroll;
         private int _dragOffset;
 
-        private readonly Font _font;
-        private readonly Font _fontBold;
+        private Font _font;
+        private Font _fontBold;
         private int _charW;          // 一个字符的像素宽（按 "x"*16 量）
         private int _minTextW;       // 至少留这么多字的宽度
         private Dictionary<string, int> _widthCache =
@@ -140,6 +142,26 @@ namespace VbeComplete
             SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint |
                      ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
 
+            ReloadStyle();
+            TabStop = false;
+        }
+
+        /// <summary>
+        /// 重新读一遍字体与配色并重算行高/字宽。
+        /// ★v175：设置界面改完外观要立刻能看到效果 —— 候选窗是 App 全程只有一份的
+        ///   常驻窗口，不重算就得重启程序（用户会以为"保存没生效"）。
+        /// ★旧字体必须自己 Dispose：Control 不拥有 Font，`_fontBold` 在某些字体上
+        ///   就是 `_font` 本身（创建粗体失败时的兜底），所以要判同一个对象不能删两次。
+        /// </summary>
+        public void ReloadStyle()
+        {
+            var oldFont = _font;
+            var oldBold = _fontBold;
+
+            CSelBg = SettingColor("POPUP_SEL_BG", "#0A62B0");
+            CSelFg = SettingColor("POPUP_SEL_FG", "#FFFFFF");
+            CSelHit = SettingColor("POPUP_SEL_HIT", "#FFD97A");
+
             _font = BuildFont(out float pt);
             try
             {
@@ -157,8 +179,11 @@ namespace VbeComplete
             //   高估一倍还要靠逐字符回退。量 16 个字符再除，才是本来想做的事。
             _charW = Math.Max(4, MeasureText(new string('x', 16), _font, 0) / 16);
             _minTextW = _charW * MinChars;
+            _widthCache.Clear();
 
-            TabStop = false;
+            if (oldFont != null && !ReferenceEquals(oldFont, _font)) oldFont.Dispose();
+            if (oldBold != null && !ReferenceEquals(oldBold, oldFont) &&
+                !ReferenceEquals(oldBold, _font)) oldBold.Dispose();
         }
 
         /// <summary>
@@ -669,7 +694,7 @@ namespace VbeComplete
         /// 类型=琥珀菱形、关键字=灰横线。**拿不到档位就不画**。
         /// 选中行整行是深蓝底：图标统一改白，否则蓝竖条会沉进背景里。
         /// </summary>
-        private static void DrawIcon(Graphics g, string kind, int x, int y, int w, bool selected)
+        private void DrawIcon(Graphics g, string kind, int x, int y, int w, bool selected)
         {
             if (string.IsNullOrEmpty(kind)) return;
             Color color;

@@ -106,22 +106,27 @@ namespace VbeComplete
         private SnippetStore _snippetStore;
         private SnippetForm _snippetForm;
 
-        private readonly bool NoCtrlNav = Settings.Flag("NO_CTRL_NAV", false);
-        private readonly bool NoSnippets = Settings.Flag("NO_SNIPPETS", false);
-        private readonly bool NoComment = Settings.Flag("NO_COMMENT", false);
-        private readonly bool NoDupLine = Settings.Flag("NO_DUP_LINE", false);
-        private readonly bool NoDelLine = Settings.Flag("NO_DEL_LINE", false);
-        private readonly bool NoInsertAbove = Settings.Flag("NO_INSERT_ABOVE", false);
-        private readonly bool NoEnterIndent = Settings.Flag("NO_ENTER_INDENT", false);
-        private readonly bool NoAutoClose = Settings.Flag("NO_AUTOCLOSE", false);
-        private readonly bool NoBranchAlign = Settings.Flag("NO_BRANCH_ALIGN", false);
-        private readonly bool NoShiftNav = Settings.Flag("NO_SHIFT_NAV", false);
-        private readonly bool NoAutoPair = Settings.Flag("NO_AUTOPAIR", false);
-        private readonly bool NoBsDelLine = Settings.Flag("NO_BS_DELLINE", false);
-        private readonly bool NoBsDelPair = Settings.Flag("NO_BS_DELPAIR", false);
+        // ---- 设置界面（托盘「设置…」/ 双击图标 / 「添加关键字…」共用这一个实例） ----
+        private SettingsForm _settingsForm;
+
+        // ★v175：这一组不再是 readonly 快照 —— 设置界面保存后由 ReloadSettings() 重读。
+        //   钩子线程只读它们（volatile 那个另有说明），UI 线程写，所以是普通字段。
+        private bool NoCtrlNav;
+        private bool NoSnippets;
+        private bool NoComment;
+        private bool NoDupLine;
+        private bool NoDelLine;
+        private bool NoInsertAbove;
+        private bool NoEnterIndent;
+        private bool NoAutoClose;
+        private bool NoBranchAlign;
+        private bool NoShiftNav;
+        private bool NoAutoPair;
+        private bool NoBsDelLine;
+        private bool NoBsDelPair;
         // 自动弹窗只认按键：鼠标右键粘贴 / 拖拽 / 别的程序改代码造成的文本变化
         // 只收起、不弹（Python 版 REQUIRE_KEY_TRIGGER，默认开）。
-        private readonly bool RequireKeyTrigger = Settings.Flag("REQUIRE_KEY_TRIGGER", true);
+        private bool RequireKeyTrigger = true;
         /// <summary>
         /// v174 的口子：关掉"宿主重排空白"的处理。只为 --fmtprobe 的 A/B 对照存在 ——
         /// 探针得能证明"把这段关掉就复现了用户报的现象"，否则绿了也不知道绿的是什么。
@@ -185,6 +190,65 @@ namespace VbeComplete
             };
             // VBE 自己的成员列表弹出来的时候我们让位（它的类型信息比我们准）
             _eng.YieldToVbe = () => Native.VbeMemberListVisible();
+
+            // ★v175：这些开关以前靠字段初始化器读一次，现在改成可重载 ——
+            //   构造时先灌一遍，之后设置界面保存会再灌（ReloadSettings）。
+            ReloadSettings();
+        }
+
+        /// <summary>
+        /// 重新读一遍设置（设置界面点「保存」/「恢复默认」之后调）。
+        /// 三件事：钩子侧的开关字段、候选窗的字体配色、候选池（关键字开关 / 词库都变了）。
+        /// ★任何一项出错都不能拦住别的项 —— 设置界面点保存不许因为某个分支异常
+        ///   而"看起来什么都没发生"。
+        /// </summary>
+        internal void ReloadSettings()
+        {
+            NoCtrlNav = Settings.Flag("NO_CTRL_NAV", false);
+            NoSnippets = Settings.Flag("NO_SNIPPETS", false);
+            NoComment = Settings.Flag("NO_COMMENT", false);
+            NoDupLine = Settings.Flag("NO_DUP_LINE", false);
+            NoDelLine = Settings.Flag("NO_DEL_LINE", false);
+            NoInsertAbove = Settings.Flag("NO_INSERT_ABOVE", false);
+            NoEnterIndent = Settings.Flag("NO_ENTER_INDENT", false);
+            NoAutoClose = Settings.Flag("NO_AUTOCLOSE", false);
+            NoBranchAlign = Settings.Flag("NO_BRANCH_ALIGN", false);
+            NoShiftNav = Settings.Flag("NO_SHIFT_NAV", false);
+            NoAutoPair = Settings.Flag("NO_AUTOPAIR", false);
+            NoBsDelLine = Settings.Flag("NO_BS_DELLINE", false);
+            NoBsDelPair = Settings.Flag("NO_BS_DELPAIR", false);
+            RequireKeyTrigger = Settings.Flag("REQUIRE_KEY_TRIGGER", true);
+            try { _eng.MemberPopup = Settings.Flag("MEMBER_POPUP", false); } catch { }
+            try { _popup.ReloadStyle(); } catch (Exception e) { Log.Write("候选窗重读外观失败：{0}", e.Message); }
+            try { _eng.InvalidatePool(); } catch { }
+            Log.Write("设置已重载：Ctrl+Nav={0} 片段={1} 注释={2} 按键触发={3}",
+                !NoCtrlNav, !NoSnippets, !NoComment, RequireKeyTrigger);
+        }
+
+        /// <summary>打开设置窗口（page：0 常用 / 1 快捷键 / 2 候选 / 3 外观 / 4 词库）。</summary>
+        internal void OpenSettings(int page = 0)
+        {
+            try
+            {
+                _eng.Hide();
+                if (_settingsForm == null || _settingsForm.IsDisposed)
+                {
+                    _settingsForm = new SettingsForm(ReloadSettings, () => _eng.InvalidatePool(), page);
+                    _settingsForm.FormClosed += (s, e) =>
+                    {
+                        _settingsForm = null;
+                        try { _be.FocusVbe(); } catch { }
+                    };
+                }
+                else _settingsForm.GoPage(page);
+
+                if (_settingsForm.WindowState == FormWindowState.Minimized)
+                    _settingsForm.WindowState = FormWindowState.Normal;
+                _settingsForm.Show();
+                _settingsForm.Activate();
+                _settingsForm.BringToFront();
+            }
+            catch (Exception e) { Log.Write("打开设置窗口失败：{0}", e); }
         }
 
         public void Start()
@@ -320,6 +384,12 @@ namespace VbeComplete
                 var title = new ToolStripMenuItem("VbeComplete · VBA 补全（C# 版）") { Enabled = false };
                 menu.Items.Add(title);
                 menu.Items.Add(new ToolStripSeparator());
+                // ★v175：设置界面。以前改一项配置要拿记事本翻 settings.ini 找那一行、
+                //   删掉行首分号；两个词库更是得装 DB Browser 才能加一个字。
+                menu.Items.Add("设置…", null, (s, e) => OpenSettings(0));
+                // 单独挂一条"添加关键字"：这是用户最常来的地方，埋在设置的第二层
+                // 就等于没做（他原来的办法是"我不知道怎么操作数据库"）。
+                menu.Items.Add("添加关键字 / 函数…", null, (s, e) => OpenSettings(4));
                 menu.Items.Add("代码片段…", null, (s, e) =>
                 {
                     try { ToggleSnippets(); }
@@ -394,10 +464,12 @@ namespace VbeComplete
                     Visible = true,
                     ContextMenuStrip = menu,
                 };
+                // 双击图标 = 打开设置（托盘程序的惯例，也是用户第一次点进来最想找的东西）
                 _tray.DoubleClick += (s, e) =>
                 {
                     var snap = _be.Snapshot();
                     Log.Write("托盘双击：snapshot={0}", snap == null ? "null" : snap.ToString());
+                    OpenSettings(0);
                 };
             }
             catch (Exception e) { Log.Write("托盘创建失败：{0}", e.Message); }
@@ -1256,6 +1328,7 @@ namespace VbeComplete
             try { _popup.Hide(); _popup.Dispose(); } catch { }
             try { _snippetForm?.Hide(); _snippetForm?.Dispose(); } catch { }
             try { _snippetStore?.Dispose(); } catch { }
+            try { _settingsForm?.Hide(); _settingsForm?.Dispose(); } catch { }
             try
             {
                 if (_tray != null) { _tray.Visible = false; _tray.Dispose(); _tray = null; }

@@ -47,6 +47,7 @@ namespace VbeComplete
 
         private static int RunMain(string[] args)
         {
+            bool openSettings = false;
             Settings.Load();
             // 诊断命令把中文打到控制台时，默认代码页（936）会吐一串乱码 ——
             // 这些输出同时会落盘成 UTF-8 日志，能对上才不会看错。
@@ -90,6 +91,10 @@ namespace VbeComplete
                     case "--enginetest":  return EngineTest();
                     case "--startuptest": return StartupTest();
                     case "--trusttest":   return TrustTest();
+                    // ★v175：正常启动 + 顺带打开设置窗口（桌面快捷方式可以绑这个）。
+                    //   不加这个开关的话，"设置"只能从托盘右键进来，而托盘图标
+                    //   常被 Win11 收进 ^ 溢出区，用户找不到。
+                    case "--settings":    openSettings = true; break;
                 }
             }
 
@@ -97,7 +102,9 @@ namespace VbeComplete
             //   让人以为"检查跑过了"（其实什么都没跑）。打一行用法就退出。
             //   单横线（`-enterprobe`）也算认不出 —— 以前的判据只认 `--`，于是
             //   敲错一个横线就变成"悄悄启动一个常驻进程"。
-            if (args.Length > 0)
+            // ★v175：`--settings` 是**唯一**不 return 的开关（它要继续正常启动），
+            //   所以这里必须把它排除掉 —— 否则 switch 匹配上了、下面照样打用法退出。
+            if (args.Length > 0 && !openSettings)
             {
                 const string usage =
                     "用法：VbeComplete.exe [开关]\r\n" +
@@ -119,7 +126,8 @@ namespace VbeComplete
                     "  --declprobe   真机逐字符敲声明位置（Private Fu / ReDim Preserve res），看弹不弹\r\n" +
                     "  --fmtprobe    真机验证「宿主重排空白后光标落在哪儿」（模拟 Ctrl+S 保存的格式化）\r\n" +
                     "  --startuptest 图标 + 开机自启的登记/回滚（会短暂改注册表，随后还原）\r\n" +
-                    "  --trusttest   AccessVBOM 现状（只读；VBECOMPLETE_TRUST_WRITE=1/0 才真写）\r\n";
+                    "  --trusttest   AccessVBOM 现状（只读；VBECOMPLETE_TRUST_WRITE=1/0 才真写）\r\n" +
+                    "  --settings    正常启动，并直接打开设置窗口\r\n";
                 Console.WriteLine("未知开关：" + args[0]);
                 Console.WriteLine(usage);
                 try
@@ -147,6 +155,9 @@ namespace VbeComplete
 
             var app = new App();
             app.Start();
+            // --settings：启动后直接把设置窗口摆到前面（顺序必须在 Start 之后 ——
+            // 托盘、钩子、词库都要先就绪，设置窗口里那些状态才有意义）
+            if (openSettings) app.RunOnUi(() => app.OpenSettings(0));
 
             // Ctrl+C / 关控制台 时收干净。★必须回 UI 线程：Shutdown 要释放 NotifyIcon
             // 和窗口，从控制台线程直接 Dispose 是跨线程操作，托盘图标会残留。
@@ -2276,6 +2287,51 @@ namespace VbeComplete
                 }
                 new WordLibrary().Load();
                 check("enabled=0 的词条不提示", !VbaBuiltins.IsBuiltinFunction("我的函数"), "");
+
+                // ---- v175：设置界面用的那层（WordBank）—— 增 / 改 / 停用 / 删 ----
+                // ★这一段就是在验"用户点『新增』之后到底发生了什么"：写库 + 重灌内存。
+                //   全程跑在临时库上（上面已经把两个环境变量指到临时文件了）。
+                string err;
+                check("WordBank 加关键字",
+                    WordBank.Save(WordBank.Keywords,
+                        new WordEntry { Word = "我的关键字", Enabled = true, WantsSpace = true },
+                        null, out err), err);
+                var kw1 = WordBank.All(WordBank.Keywords, out err);
+                check("WordBank 读回关键字", kw1.Any(x => x.Word == "我的关键字"), err);
+
+                WordBank.Reload();
+                check("加完立刻进候选池（不用重启）", VbaBuiltins.IsKeyword("我的关键字"), "");
+
+                check("WordBank 改名（主键是 word，删+插）",
+                    WordBank.Save(WordBank.Keywords,
+                        new WordEntry { Word = "我的关键字2", Enabled = true, WantsSpace = false },
+                        "我的关键字", out err), err);
+                kw1 = WordBank.All(WordBank.Keywords, out err);
+                check("改名后旧词没了", !kw1.Any(x => x.Word == "我的关键字"), "");
+                check("改名后新词在", kw1.Any(x => x.Word == "我的关键字2"), "");
+
+                check("WordBank 停用",
+                    WordBank.SetEnabled(WordBank.Keywords, new[] { "我的关键字2" }, false, out err), err);
+                WordBank.Reload();
+                check("停用后不进候选", !VbaBuiltins.IsKeyword("我的关键字2"), "");
+
+                int del = WordBank.Delete(WordBank.Keywords, new[] { "我的关键字2" }, out err);
+                check("WordBank 删除（返回真的删掉几条）", del == 1, "del=" + del + " err=" + err);
+                kw1 = WordBank.All(WordBank.Keywords, out err);
+                check("删掉的词不在库里", !kw1.Any(x => x.Word == "我的关键字2"), "");
+
+                check("WordBank 加类型（kind=type）",
+                    WordBank.Save(WordBank.Functions,
+                        new WordEntry { Word = "我的类型", Kind = "type", Enabled = true,
+                            WantsParens = true }, null, out err), err);
+                WordBank.Reload();
+                check("类型名不补括号", VbaBuiltins.IsBuiltinType("我的类型") &&
+                                        !VbaBuiltins.IsCallableBuiltin("我的类型"), "");
+
+                string why;
+                check("带空格的词条被拒", !WordBank.IsValidWord("a b", out why), why);
+                check("纯数字的词条被拒", !WordBank.IsValidWord("123", out why), why);
+                check("中文标识符合法", WordBank.IsValidWord("我的函数", out why), why);
             }
             catch (Exception e)
             {
@@ -3010,6 +3066,87 @@ namespace VbeComplete
                     sb.AppendLine("snippet preview skipped: " + e2.Message);
                 }
 
+                // ---- v175：设置界面 + 添加词条窗也离屏渲染，布局一眼能核对 ----
+                try
+                {
+                    var sf = new SettingsForm(() => { }, () => { }, 0);
+                    sf.StartPosition = FormStartPosition.Manual;
+                    sf.Location = new System.Drawing.Point(-4000, -4000);
+                    sf.Show();
+                    for (int i = 0; i < 5; i++)
+                    {
+                        sf.GoPage(i);
+                        Application.DoEvents();
+                        Thread.Sleep(150);
+                        int pw = sf.Width, ph = sf.Height;
+                        using (var bmp3 = new System.Drawing.Bitmap(pw, ph))
+                        {
+                            sf.DrawToBitmap(bmp3, new System.Drawing.Rectangle(0, 0, pw, ph));
+                            string p3 = Path.Combine(Settings.Home,
+                                "settings-preview-" + i + ".png");
+                            bmp3.Save(p3, System.Drawing.Imaging.ImageFormat.Png);
+                            sb.AppendLine("saved " + p3 + "  " + pw + "x" + ph);
+                        }
+                    }
+                    // 接线自检：勾选框 -> ini 键这一层是不是接对了（走真 SaveAll）。
+                    // ★必须换到临时 ini：绝不能把用户的 settings.ini 改掉。
+                    try
+                    {
+                        string oldIni = Environment.GetEnvironmentVariable(
+                            Settings.PREFIX + "SETTINGS");
+                        string tmpIni = Path.Combine(Path.GetTempPath(),
+                            "vbecomplete-ui-" + Guid.NewGuid().ToString("N") + ".ini");
+                        File.WriteAllText(tmpIni, "[settings]\r\n", new UTF8Encoding(false));
+                        Environment.SetEnvironmentVariable(Settings.PREFIX + "SETTINGS", tmpIni);
+                        Settings.Load();
+
+                        var sf2 = new SettingsForm(() => { }, () => { }, 0);
+                        bool wrote = sf2.SetRowForTest("AUTO_SPACE", "0");
+                        bool took = !Settings.Flag("AUTO_SPACE", true);
+                        bool savedAgain = sf2.SetRowForTest("AUTO_SPACE", "1");
+                        bool tookBack = Settings.Flag("AUTO_SPACE", true);
+                        sf2.Dispose();
+                        sb.AppendLine("wire AUTO_SPACE -> ini: wrote=" + wrote +
+                                      " effective=" + took + " back=" + (savedAgain && tookBack));
+
+                        Environment.SetEnvironmentVariable(Settings.PREFIX + "SETTINGS", oldIni);
+                        Settings.Load();
+                        try { File.Delete(tmpIni); } catch { }
+                    }
+                    catch (Exception e4)
+                    {
+                        sb.AppendLine("wire test FAILED: " + e4.Message);
+                        sb.AppendLine("RESULT: FAIL");
+                    }
+
+                    // 布局自检：把第一页的控件树（类型 / 文字 / 实际尺寸）写进日志。
+                    // ★凡是"看起来少了点什么"的布局问题，先看这里 —— 高度 0 还是没加进来，
+                    //   一眼就分得清，不用靠截图猜。
+                    DumpControls(sf.Controls, sb, 0);
+                    sf.Hide();
+                    sf.Dispose();
+
+                    var wf = WordEditForm.Preview(WordBank.Functions, null);
+                    wf.StartPosition = FormStartPosition.Manual;
+                    wf.Location = new System.Drawing.Point(-4000, -4000);
+                    wf.Show();
+                    Application.DoEvents();
+                    Thread.Sleep(120);
+                    using (var bmp4 = new System.Drawing.Bitmap(wf.Width, wf.Height))
+                    {
+                        wf.DrawToBitmap(bmp4, new System.Drawing.Rectangle(0, 0, wf.Width, wf.Height));
+                        string p4 = Path.Combine(Settings.Home, "wordedit-preview.png");
+                        bmp4.Save(p4, System.Drawing.Imaging.ImageFormat.Png);
+                        sb.AppendLine("saved " + p4 + "  " + wf.Width + "x" + wf.Height);
+                    }
+                    wf.Hide();
+                    wf.Dispose();
+                }
+                catch (Exception e3)
+                {
+                    sb.AppendLine("settings preview FAILED: " + e3);
+                }
+
                 sb.AppendLine("RESULT: PASS");
                 File.WriteAllText(Path.Combine(Settings.Home, "uitest.log"), sb.ToString(), Encoding.UTF8);
                 return 0;
@@ -3019,6 +3156,21 @@ namespace VbeComplete
                 sb.AppendLine("EXCEPTION " + e);
                 File.WriteAllText(Path.Combine(Settings.Home, "uitest.log"), sb.ToString(), Encoding.UTF8);
                 return 1;
+            }
+        }
+
+        /// <summary>把控件树按缩进打进日志（离线布局核对用）。</summary>
+        private static void DumpControls(Control.ControlCollection cs, StringBuilder sb, int depth)
+        {
+            if (depth > 6) return;
+            foreach (Control c in cs)
+            {
+                string txt = (c.Text ?? "").Replace("\r", " ").Replace("\n", " ");
+                if (txt.Length > 40) txt = txt.Substring(0, 40) + "…";
+                sb.AppendLine(new string(' ', depth * 2) + c.GetType().Name +
+                              " [" + c.Left + "," + c.Top + " " + c.Width + "x" + c.Height + "]" +
+                              (txt.Length > 0 ? " «" + txt + "»" : ""));
+                DumpControls(c.Controls, sb, depth + 1);
             }
         }
 

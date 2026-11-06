@@ -32,12 +32,15 @@ namespace VbeComplete
 
         // ★一屏最多几行：与 Python 版 MAX_VISIBLE_ROWS 对齐（15）。候选不足时
         //   窗口自己变矮 —— 用户口径是"显示几行就几行高"，不是固定 15 行留白。
-        public readonly int ViewRows = Settings.Int("VIEW_ROWS", 15, 3, 30);
-        public readonly bool HideOnComplete = Settings.Flag("HIDE_ON_COMPLETE", true);
+        // ★v175：改成**现读**（原来是 readonly 快照）—— 设置界面改完要立刻生效，
+        //   否则用户勾掉"打全即收"还得重启程序，看起来像没保存。
+        //   每次弹窗读几次 Settings 是字典查表 + 两个环境变量，代价可以忽略。
+        public int ViewRows => Settings.Int("VIEW_ROWS", 15, 3, 30);
+        public bool HideOnComplete => Settings.Flag("HIDE_ON_COMPLETE", true);
         // ★v138：不是 readonly —— 探针要能当场切成 1 做 A/B（证明"点号后不弹"
         //   确实是这条判据在起作用），运行期只读一次 settings.ini。
         public bool MemberPopup = Settings.Flag("MEMBER_POPUP", false);
-        public readonly bool DeclPopup = Settings.Flag("DECL_POPUP", false);
+        public bool DeclPopup => Settings.Flag("DECL_POPUP", false);
 
         // UI 回调
         public Action<IReadOnlyList<Candidate>, int, int> OnShow;   // items, selected, top

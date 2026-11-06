@@ -12,9 +12,15 @@ pane**, and its message loop costs nothing when idle.
 
 ## Features
 
-- **Two editable word databases**: `keywords-cs.db` (79 VBA keywords) and `functions-cs.db`
-  (171 functions + 13 types). Plain SQLite files — open them in DB Browser, edit them like a
-  spreadsheet, restart to pick up the change. Both are created from built-in seeds on first run.
+- **Settings window**: right-click the tray icon → **设置…** (or double-click it). Five pages —
+  behaviour, shortcuts, candidates, appearance, word banks — instead of hunting for a commented
+  line in `settings.ini`. Changes apply **immediately** (no restart) and only the keys you actually
+  changed are written back; "restore defaults" re-comments those lines rather than deleting them.
+- **Two editable word databases**: `keywords-cs.db` and `functions-cs.db`. Add / edit / disable /
+  delete entries right in the settings window (**添加关键字 / 函数…**), with batch paste (one word
+  per line) — no SQLite client required, and new words show up in the popup on the very next
+  keystroke. They stay plain SQLite files, so DB Browser still works if you prefer it. Both are
+  created from built-in seeds on first run.
   **Enums are deliberately excluded** (`vbRed` / `xlUp` and friends are noise in a popup).
 - **Live candidates** for identifiers, declarations, procedures, modules, forms, controls, and the
   keywords / functions from the two word databases.
@@ -101,7 +107,7 @@ pane**, and its message loop costs nothing when idle.
   (`REQUIRE_KEY_TRIGGER`).
 - **Tray icon + run at Windows startup**: a dark-blue V badge sits in the notification area
   (`app.ico` carries 16/20/24/32/40/48/64/128/256 frames, so it still reads at 16 px). The context
-  menu has **"开机自动启动" (start with Windows)** — written to
+  menu has **设置… / 添加关键字 / 代码片段**, **"开机自动启动" (start with Windows)** — written to
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, **no admin rights needed** — plus open-log
   and exit. On startup it also asks Windows to keep the icon always visible, so Win11 does not
   bury it in the `^` overflow.
@@ -115,7 +121,7 @@ pane**, and its message loop costs nothing when idle.
   tool; they are fully independent of the Python edition, sharing no file with it.
 - Every shortcut follows one rule: **if the action fails, the original key is replayed**, so keys
   are never silently swallowed.
-- 416 self-checks (fuzzy matching, scopes, `Option Explicit`, Chinese identifiers, member completion,
+- 533 self-checks (fuzzy matching, scopes, `Option Explicit`, Chinese identifiers, member completion,
   highlight splitting, call-site detection, `As`/`New` suppression, line continuations) plus
   word-DB, snippet-store, icon/autostart and off-screen rendering checks, and seven live probes
   keep the logic honest.
@@ -127,8 +133,9 @@ pane**, and its message loop costs nothing when idle.
 - **Fewer features than the Python edition**: no watchdog / auto-restart on hang, no parameter-info
   popup, no host enum constants, and the optional `MEMBER_POPUP=1` member list only understands
   `Dim ... As` and `Set ... = New` (it does no return-type inference).
-- The word databases are read once at startup, so a change needs a restart (deliberate: it keeps
-  "file changed underneath us" out of the running process).
+- Word-bank edits made **in the settings window** are reloaded on the spot; edits made with an
+  external SQLite client are still only read at startup, so those need a restart (deliberate: it
+  keeps "file changed underneath us" out of the running process).
 - Autostart writes to the current user's registry; some security suites block that (the menu then
   reports a failure and the log says why). You can always drag the icon out of the `^` overflow
   yourself.

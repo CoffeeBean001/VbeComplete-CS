@@ -38,5 +38,38 @@ namespace VbeComplete
             }
             catch (Exception e) { Log.Write("提示框显示失败：{0}", e.Message); }
         }
+
+        /// <summary>
+        /// 确认框（是 / 否）。用它而不是裸 MessageBox 的理由和上面那条一样：
+        /// 托盘程序没有主窗口，裸框会被压在当前窗口后面，用户以为"没反应"。
+        /// </summary>
+        public static DialogResult Confirm(string text, string title)
+        {
+            try
+            {
+                using (var owner = new Form
+                {
+                    StartPosition = FormStartPosition.Manual,
+                    Location = new Point(-32000, -32000),
+                    Size = new Size(1, 1),
+                    ShowInTaskbar = false,
+                    FormBorderStyle = FormBorderStyle.None,
+                    TopMost = true,
+                })
+                {
+                    owner.Show();
+                    owner.Activate();
+                    var r = MessageBox.Show(owner, text, title, MessageBoxButtons.OKCancel,
+                        MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+                    owner.Hide();
+                    return r;
+                }
+            }
+            catch (Exception e)
+            {
+                Log.Write("确认框显示失败：{0}", e.Message);
+                return DialogResult.Cancel;
+            }
+        }
     }
 }

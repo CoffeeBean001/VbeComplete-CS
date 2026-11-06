@@ -65,8 +65,9 @@ namespace VbeComplete
         private DateTime _scopesAt = DateTime.MinValue;
         private readonly double _scopesTtl = Settings.Double("SCOPE_TTL", 2.0);
 
-        public static readonly bool AutoParen = !Settings.Flag("NO_AUTOPAREN", false);
-        public static readonly bool AutoSpace = !Settings.Flag("NO_AUTOSPACE", false);
+        // ★v175：现读，别做启动快照 —— 设置界面里勾掉"自动补括号"要当场生效。
+        public static bool AutoParen => !Settings.Flag("NO_AUTOPAREN", false);
+        public static bool AutoSpace => !Settings.Flag("NO_AUTOSPACE", false);
 
         public Action<char> SendChar;     // 由 main 注入（补空格用）
         public Action<int, bool, bool> SendVk;

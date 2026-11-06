@@ -14,7 +14,8 @@ namespace VbeComplete
 {
     internal static class VbaBuiltins
     {
-        public static readonly bool EnableKeywords = Settings.Flag("VBA_KEYWORDS", true);
+        /// <summary>关键字总开关。★现读而非快照：设置界面里关掉要立刻生效。</summary>
+        public static bool EnableKeywords => Settings.Flag("VBA_KEYWORDS", true);
 
         private static readonly HashSet<string> _kw = Mk();
         private static readonly HashSet<string> _kwSpace = Mk();
