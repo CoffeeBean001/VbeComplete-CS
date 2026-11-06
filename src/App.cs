@@ -48,10 +48,14 @@ namespace VbeComplete
         // 触发一次【在钩子线程上创建窗口句柄】，那是跨线程建窗，必炸。
         private volatile IntPtr _snippetHwnd;
         private long _lastKeyTs;
-        // ★v174：最近一次"会改文本"的按键（文字键 + 空格 / Tab / 退格 / Delete）的时刻。
-        //   宿主重排空白后的"光标搬家"要看它 —— 用户自己在敲空格/退格时绝不能去动光标，
-        //   否则等于把他刚敲的那个空格吞回去。
-        private long _lastEditTs;
+        // ★v179：最近一次"能改空白"的按键（空格 / Tab / 退格 / Delete）的时刻。
+        //   宿主重排空白后的"光标搬家"要看它 —— 用户自己在敲空格/退格时绝不能动光标。
+        //   ★v174 用的是"任何编辑键"，于是"敲完 `1` 立刻按 Ctrl+S"（间隔常 < 400ms）
+        //     被当成人手改空白，搬家整条被跳过 = 用户报的"错位又复现"。
+        private long _lastBlankTs;
+        // ★v179：最近一次 Ctrl+S 的时刻。VBE 保存时会顺手把当前行格式化，
+        //   这是比"数空格"更硬的前兆 —— 刚按过保存，空白怎么变都是它干的。
+        private long _lastSaveTs;
 
         // ---- 探针专用：0 = 注入键一律不理（= 生产行为），-1 = 全放行，其它 = 只放行这一个 vk ----
         // 钩子必须跳过 LLKHF_INJECTED（否则自己补的空格/括号会自己触发自己），而
@@ -130,11 +134,13 @@ namespace VbeComplete
         private readonly bool NoRespacedFix = Settings.Flag("NO_RESPACED_FIX", false);
         private const long KeyTriggerWindowMs = 1200;
         /// <summary>
-        /// "最近这么久没按过编辑键"才算宿主自己重排了空白（见 PollOnce 里的 hostRespaced）。
-        /// 打字时轮询是 50ms 一跳，正常敲一个空格不会超过这个窗口；反过来说，人敲完最后
-        /// 一个字再去按 Ctrl+S，间隔基本上都大于它。
+        /// "最近这么久没按过空白键"才认"空白是怎么变的不是用户干的"（见 PollOnce 里的
+        /// hostRespaced）。打字时轮询 50ms 一跳，人敲一个空格不可能漏过这个窗口。
+        /// ★v179：v174 之前这里是 400ms + "任何编辑键"，把"敲完立刻保存"挡在了门外。
         /// </summary>
-        private const long NoEditKeyMs = 400;
+        private const long NoBlankKeyMs = 300;
+        /// <summary>刚按过 Ctrl+S 的认账窗口 —— VBE 保存时格式化当前行就在这几百毫秒内。</summary>
+        private const long SaveWindowMs = 1200;
 
         public App()
         {
@@ -584,14 +590,15 @@ namespace VbeComplete
 
             if (win) return Native.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
 
-            // ★v174：记"会改文本"的键。文字键之外还要算上空格 / Tab / 退格 / Delete ——
-            //   它们改的是空白，轮询那边正是靠"刚有没有按过编辑键"来区分
-            //   "用户在敲空白"和"宿主自己把这一行重排了"（见 PollOnce 里的 spacingOnly）。
-            if (Editing.IsTextKey(vk) || vk == Native.VK_BACK || vk == Native.VK_DELETE ||
-                vk == Native.VK_TAB)
+            // ★v179：只记"能改空白"的键。敲 `1` 不是改空白，不能拿它挡住光标搬家 ——
+            //   用户打完最后一个字马上按 Ctrl+S（间隔一两百毫秒）是最自然的操作，
+            //   而 VBE 保存时正是"重排这一行 + 光标按原列号留着"。
+            if (vk == Native.VK_SPACE || vk == Native.VK_TAB ||
+                vk == Native.VK_BACK || vk == Native.VK_DELETE)
             {
-                _lastEditTs = Environment.TickCount64;
+                _lastBlankTs = Environment.TickCount64;
             }
+            if (ctrl && vk == Native.VK_S) _lastSaveTs = Environment.TickCount64;
 
             // ---- 数"按了可能写字的键、文档却没变"的次数 ----
             // 那就是输入法正在组字的信号（拼音被吃掉、还没上屏）。组字状态下
@@ -1079,6 +1086,15 @@ namespace VbeComplete
                     return;
                 }
 
+                // ★v180：刚按过键就别吃快照缓存 —— 这一行可能已经被宿主改过了，而改法
+                //   恰好叫缓存命中。VBE 保存（Ctrl+S）时会把当前行重排空白，**却把光标
+                //   留在原列号上**；缓存的键就是"行号 + 光标列"，于是新行最多晚
+                //   SNAP_MAX_AGE（默认 1 秒）才看得见。用户在这一秒里接着打字：
+                //   那半截词被当成真词弹窗，光标也没人搬 —— 就是用户报的"又复现"。
+                //   代价：按键后这段窗口里每轮多读一次行文本（缓存本来也命不中，光标在动）。
+                if (Environment.TickCount64 - _lastKeyTs <= KeyTriggerWindowMs)
+                    _be.InvalidateSnapshot();
+
                 Snapshot snap = _be.Snapshot();
                 if (snap == null)
                 {
@@ -1148,15 +1164,21 @@ namespace VbeComplete
                     //   而光标只按原列号保留，于是跑到第二个 `n` 后面。两件事都要收：
                     //     ① 别弹 —— 那屏候选是对着一个不存在的"正在输入的词"算出来的；
                     //     ② 光标按"非空白字符序号"搬回等价位置，否则接着打字就插错地方。
-                    //   ★与"人手敲空格"的区分：重排会一次加好几个空格（`=` 前后各一个），
-                    //     且 400ms 内没有编辑键（_lastEditTs）。只加一个空格的不当重排。
+                    //   ★与"人手敲空格"的区分（v179 重写）：
+                    //     ① 刚按过 Ctrl+S —— VBE 保存时一定会格式化当前行，最硬的前兆；
+                    //     ② 空白个数变了、且最近没按过空白键（空格/Tab/退格/Delete）。
+                    //        人一次只能动一个空格，一次轮询出现多寡变化只能是宿主干的。
+                    //     ★v174 那版用的是"最近 400ms 没有任何编辑键"，于是"敲完 `1`
+                    //       立刻 Ctrl+S"整条被跳过 —— 恰好把用户最常做的动作排除在外。
                     if (!NoRespacedFix && prev != null && !modSwitched && !lineJumped &&
                         Rules.SameCodeIgnoringSpace(snap.Text, prev.Text))
                     {
                         if (_popupVisible) _eng.Hide();
-                        bool hostRespaced =
-                            Rules.SpaceCount(snap.Text) - Rules.SpaceCount(prev.Text) >= 2 &&
-                            Environment.TickCount64 - _lastEditTs > NoEditKeyMs;
+                        long nowTs = Environment.TickCount64;
+                        int dSpace = Rules.SpaceCount(snap.Text) - Rules.SpaceCount(prev.Text);
+                        bool saveRecent = nowTs - _lastSaveTs <= SaveWindowMs;
+                        bool blankKeyRecent = nowTs - _lastBlankTs <= NoBlankKeyMs;
+                        bool hostRespaced = saveRecent || (dSpace != 0 && !blankKeyRecent);
                         if (hostRespaced)
                         {
                             int oldCaret = Rules.CharColFromDisp(prev.Text ?? "", prev.CaretCol);

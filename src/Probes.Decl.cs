@@ -411,34 +411,41 @@ namespace VbeComplete
                         be.ForceReloadModule();
                         be.ReplaceLineRaw(at + 1, formatted);
                         be.SetCaret(at + 1, Math.Max(1, rawCharCol));
-                        be.InvalidateSnapshot();
                     });
                     // 再"按一下无关的键" —— 真机上这一下就是 Ctrl+S 本身。
-                    // ★为什么非按不可：App 的快照有 800ms 保鲜期，而保存之后**光标列没变**
-                    //   （正是这个 bug），缓存整条命中 ⇒ 要等它过期才看得见新文本。这期间
-                    //   "最近 1.2 秒按过键"早就过期了，弹窗那一半根本测不出来（试过一次，
-                    //   A/B 关掉修复也只看到光标错位、看不到弹窗）。
+                    // ★为什么非按不可：App 的快照有 1 秒保鲜期（SNAP_MAX_AGE），而保存之后
+                    //   **光标列没变**（正是这个 bug），缓存整条命中 ⇒ 不按键就看不见新文本。
                     SendKeys(app, Native.VK_SHIFT);
-                    Thread.Sleep(900);
 
-                    Snapshot s1 = null;
-                    app.RunOnUi(() =>
+                    // ★v180：采样必须**早**。用户按下保存后几十毫秒就接着打字，光标得当场
+                    //   搬好；以前这里 `Sleep(900)` 再采样一次，恰好让那 1 秒保鲜期过期 ——
+                    //   修与不修都绿，等于没测（真机上"又复现"就是这么漏出去的）。
+                    //   400ms 采样仍在保鲜期内：只有"刚按过键就不吃缓存"能把新行读回来。
+                    int want = formatted.Length + 1;      // `1` 后面 = 行尾
+                    int caret = -1;
+                    bool shown = false;
+                    string text = "";
+                    var sw = Stopwatch.StartNew();
+                    while (sw.ElapsedMilliseconds < 400)
                     {
-                        be.ForceReloadModule();
-                        s1 = be.Snapshot();
-                    });
-                    string text = s1?.Text ?? "";
-                    int caret = s1 == null ? -1 : Rules.CharColFromDisp(text, s1.CaretCol);
-                    bool shown = app.PopupVisible;
-                    string names = app.PopupNames;
-                    int want = text.Length + 1;      // `1` 后面 = 行尾
-                    bool pass = typOk && !shown && s1 != null && caret == want &&
+                        Snapshot s1 = null;
+                        bool pv = false;
+                        app.RunOnUi(() => { s1 = be.Snapshot(); pv = app.PopupVisible; });
+                        text = s1?.Text ?? "";
+                        caret = s1 == null ? -1 : Rules.CharColFromDisp(text, s1.CaretCol);
+                        shown = pv;
+                        if (caret == want && !shown) break;
+                        Thread.Sleep(20);
+                    }
+                    bool pass = typOk && !shown && caret == want &&
                                 string.Equals(Rules.Rstrip(text), Rules.Rstrip(formatted),
                                     StringComparison.Ordinal);
-                    check("保存重排后：不弹窗 + 光标回到行尾", pass,
-                        "弹=" + shown + (names.Length > 0 ? "[" + names + "]" : "") +
-                        " 行=[" + text + "] 光标字符列=" + caret + "（期望 " + want + "）" +
-                        " 敲入=" + typOk);
+                    check("保存重排后：不弹窗 + 光标当场回到行尾", pass,
+                        "弹=" + shown + " 行=[" + text + "] 光标字符列=" + caret +
+                        "（期望 " + want + "，等 " + sw.ElapsedMilliseconds + "ms） 敲入=" + typOk);
+                    // ⚠️ 这里只断言光标：**弹窗那一半测不出来** —— 重排只动空白，
+                    //    App 会走"只差空白"那条直接 return，本来就不弹；用户看到的弹窗是
+                    //    "他在这一秒里又敲了一个字"之后的事。光标搬对了，那半个问题就没了。
 
                     if (!string.Equals(Rules.Rstrip(text), Rules.Rstrip(formatted),
                             StringComparison.Ordinal))

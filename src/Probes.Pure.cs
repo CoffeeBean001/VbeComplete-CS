@@ -589,6 +589,20 @@ namespace VbeComplete
             sprobe("Dim 跨续行：续行上的模块级名要给（gT| -> gTwo）", "modDim", 10,
                 "    gT", 7, true, new[] { "gTwo" }, null);
 
+            // ---- 1g. v180：形参表里"一个新参数的开头"要提示 ByVal / ByRef ----
+            //   用户报："在形参列表里，不会提示 byval 和 byref"。整行是 Sub 声明 ⇒ 被判成
+            //   "正在起一个新名字"（参数名确实是新名字）⇒ 一个候选都不出。这一格只该收窄成
+            //   四个修饰词 + 参数名：`Boolean` 这类类型名不能出现在参数名之前。
+            sprobe("形参开头给 ByVal/ByRef（Sub Foo(…, B|）", "模块1", 11,
+                "    Sub Foo(a As Long, B", 25, true, new[] { "ByVal", "ByRef" },
+                new[] { "Boolean", "Byte" });
+            // 参数名本身仍然不弹（v169 的规矩）：`…, okk|` 不是那四个词的前缀
+            sprobe("形参里打参数名仍不弹（…, okk|）", "模块1", 11,
+                "    Sub Foo(a As Long, okk", 27, false, null, null);
+            // 反例：同一行 `As` 之后仍然是类型位置（不弹），别被上面那条放宽过头
+            sprobe("形参 As 后照旧不弹（…, b As Str|）", "模块1", 11,
+                "    Sub Foo(a As Long, b As Str", 32, false, null, null);
+
             // ---- 2. Option Explicit：未声明的名字不进候选 ----
             // 光标所在行会被"挖掉半截词"，所以搜索词要和模块里的名字错开：
             // 池子里若混进了第 10 行的 `student`，它就会在 stud 这次冒出来。

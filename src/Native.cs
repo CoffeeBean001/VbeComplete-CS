@@ -30,6 +30,7 @@ namespace VbeComplete
         public const int VK_DELETE = 0x2E;
         public const int VK_OEM_2 = 0xBF;   // /
         public const int VK_DIVIDE = 0x6F;  // 小键盘 /
+        public const int VK_S = 0x53;       // S —— 只用来认 Ctrl+S（保存会重排当前行）
 
         /// <summary>
         /// 这个 vk 是不是"`/` 键"—— 主键盘与**小键盘除号**都算。

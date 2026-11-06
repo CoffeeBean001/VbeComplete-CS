@@ -368,9 +368,16 @@ namespace VbeComplete
             bool declNamesBlocked = false;
             if (word.Length > 0)
             {
-                var slot = Rules.DeclSlotOf(line, wordStart, out declFollow);
-                if (slot == Rules.DeclSlot.None) declFollow = null;
-                declNamesBlocked = slot == Rules.DeclSlot.KeywordsOnly;
+                // ★v180：形参表里"一个新参数的开头"是独立的一格 —— 那里要的是
+                //   ByVal / ByRef / Optional / ParamArray（参数名照留）。以前它被
+                //   "声明位置不弹"整条封死（用户报：形参列表里这两条一条都不提示）。
+                declFollow = Rules.ParamStartFollow(line, wordStart);
+                if (declFollow == null)
+                {
+                    var slot = Rules.DeclSlotOf(line, wordStart, out declFollow);
+                    if (slot == Rules.DeclSlot.None) declFollow = null;
+                    declNamesBlocked = slot == Rules.DeclSlot.KeywordsOnly;
+                }
             }
 
             // ★v174：关键字的"使用场合"限制（用户报：标准模块里冒出 Property、

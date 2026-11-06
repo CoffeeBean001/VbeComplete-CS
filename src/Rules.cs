@@ -210,12 +210,70 @@ namespace VbeComplete
             string[] follow = DeclKeywordFollow(line, ws + 1);
             if (follow != null && typed.Length > 0 && PrefixOfAny(typed, follow)) return false;
 
+            // ★v180：形参表里"一个参数的开头"不是死区 —— 那里要的是 ByVal / ByRef /
+            //   Optional / ParamArray（用户报：形参列表里这两条一条都不提示）。
+            //   ★但只在"正在打的词是这几个修饰词的前缀"时放行：`Sub f(a|`（参数名）与
+            //     `Sub f(B|` 是同一个语法位置，靠词本身分不开 —— 而"正在起新名字不弹"
+            //     对参数名依然是对的（v169 立的规矩别推翻）。
+            string[] paramKw = ParamStartFollow(line, ws + 1);
+            if (paramKw != null && typed.Length > 0 && PrefixOfAny(typed, paramKw)) return false;
+
             // ★v170：`Dim arr(0 To n|` —— 括号里是表达式，不是新名字（同一类过度抑制）。
             //   但过程/API 声明的括号里是**新参数名**，那里照旧拦。
             if (!ReParamHead.IsMatch(seg) && InParens(line, segStart, end)) return false;
 
             return true;
         }
+
+        /// <summary>形参表里"新参数的开头"允许出现的关键字（也允许直接写参数名）。</summary>
+        private static readonly string[] AfterParamStart =
+            { "ByVal", "ByRef", "Optional", "ParamArray" };
+
+        /// <summary>
+        /// 光标是不是停在过程头形参表里"一个参数的开头"：`Sub Foo(|`、`Sub Foo(a As Long, |`、
+        /// `Declare PtrSafe Function X Lib "k" (|`。那里该提示 ByVal / ByRef / Optional / ParamArray。
+        /// ★v180 用户报"形参列表里不提示 byval 和 byref"：这类行整条被 InDeclarationPosition
+        ///   判成"正在起新名字"（参数名确实是新名字）⇒ 一个候选都不出。
+        /// ★只认**语句头**是 Sub/Function/Property/Declare/Event 的第一层括号：`Foo(a, b)` 的
+        ///   括号里是实参，那里给 ByVal 就是错的。
+        /// <paramref name="wordStartCol"/> 是正在输入的那个词的起始列（1-based）——按词起点判，
+        ///   否则 `Sub Foo(By|` 的 `By` 会让"括号到光标之间只剩空白"不成立。
+        /// </summary>
+        public static bool AtParamStart(string line, int wordStartCol)
+        {
+            if (string.IsNullOrEmpty(line)) return false;
+            int end = Math.Max(0, Math.Min(wordStartCol - 1, line.Length));
+            int segStart = StatementStart(line, end);
+            string seg = line.Substring(segStart, end - segStart);
+            if (!ReParamHead.IsMatch(seg)) return false;
+
+            int depth = 0, lastBreak = -1;
+            bool inStr = false;
+            for (int i = segStart; i < end; i++)
+            {
+                char c = line[i];
+                if (c == '"')
+                {
+                    if (inStr && i + 1 < end && line[i + 1] == '"') { i++; continue; }
+                    inStr = !inStr;
+                    continue;
+                }
+                if (inStr) continue;
+                if (c == '\'') return false;              // 注释之后没有参数表了
+                if (c == '(') { if (++depth == 1) lastBreak = i + 1; continue; }
+                if (c == ')') { depth--; continue; }
+                if (c == ',' && depth == 1) lastBreak = i + 1;
+            }
+            // 必须正好在第一层括号里，且"上一个 `(` / `,` 到词起点"之间只有空白
+            if (depth != 1 || lastBreak < 0) return false;
+            for (int i = lastBreak; i < end; i++)
+                if (!char.IsWhiteSpace(line[i])) return false;
+            return true;
+        }
+
+        /// <summary>形参表里"新参数开头"该给的关键字；不是这个位置返回 null。</summary>
+        public static string[] ParamStartFollow(string line, int wordStartCol) =>
+            AtParamStart(line, wordStartCol) ? AfterParamStart : null;
 
         /// <summary>光标之前有没有**没闭合**的圆括号（引号里、注释里的括号不算）。</summary>
         private static bool InParens(string line, int from, int end)
@@ -500,7 +558,12 @@ namespace VbeComplete
         // 宿主重排空白之后的"光标搬家"（v174）
         // ------------------------------------------------------------------
 
-        /// <summary>两行去掉**全部空白**之后是否相同 —— 相同 = 只差空白，不是打字。</summary>
+        /// <summary>
+        /// 两行去掉**全部空白**之后是否相同 —— 相同 = 只差空白，不是打字。
+        /// ★v179：大小写也算"一样"。VBE 有"智能大小写"，保存/回车时会把 `dim x` 改成
+        ///   `Dim x`、把 `n` 改成声明里的 `N`。那同样是宿主行为，不该当成"用户在打字"
+        ///   （v174 比的是 Ordinal，一遇大小写差异就整条失效 ⇒ 假候选窗又弹出来）。
+        /// </summary>
         public static bool SameCodeIgnoringSpace(string a, string b)
         {
             a = a ?? "";
@@ -512,7 +575,7 @@ namespace VbeComplete
                 while (j < b.Length && char.IsWhiteSpace(b[j])) j++;
                 if (i >= a.Length || j >= b.Length)
                     return i >= a.Length && j >= b.Length;
-                if (a[i] != b[j]) return false;
+                if (char.ToUpperInvariant(a[i]) != char.ToUpperInvariant(b[j])) return false;
                 i++; j++;
             }
         }

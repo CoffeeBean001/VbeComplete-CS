@@ -390,6 +390,24 @@ namespace VbeComplete
             Ok("decl-slot/Case 后不设限",
                 Rules.DeclSlotOf("    Case vbY", 10, out _) == Rules.DeclSlot.None);
 
+            // ★v180：形参表里"一个新参数的开头"是关键字位置 —— 用户报的
+            //   "形参列表里不提示 byval 和 byref"。整行本来是"声明位置"（参数名是新名字），
+            //   于是整条被 Hide；现在这一格单独放行，只留四个修饰词 + 参数名。
+            Eq("param-slot/形参开头给四个修饰词",
+                string.Join(",", Rules.ParamStartFollow("    Sub Foo(", 13) ?? Array.Empty<string>()),
+                "ByVal,ByRef,Optional,ParamArray");
+            Ok("param-slot/逗号后第二个参数",
+                Rules.AtParamStart("    Sub Foo(a As Long, B", 24));
+            Ok("param-slot/Declare 头的括号也算",
+                Rules.AtParamStart("Private Declare PtrSafe Function X Lib \"k\" (B", 45));
+            // 反例：调用表达式的括号里是实参，`ByVal` 出现在那里是错的
+            Ok("param-slot/实参表不算", !Rules.AtParamStart("    x = Foo(a, B", 16));
+            Ok("param-slot/括号还没开不算", !Rules.AtParamStart("    Sub Foo a As Long", 13));
+            Ok("param-slot/括号已闭合不算",
+                !Rules.AtParamStart("    Sub Foo(a As Long)", 23));
+            // 这个词起点落在参数表里 ⇒ 不再是"声明死区"（不然 Engine 会先 Hide）
+            Ok("param-slot/不是声明死区", !Rules.InDeclarationPosition("    Sub Foo(a As Long, B", 25));
+
 
             // ★v137：`As` / `New` 之后一律不弹 —— 与 decl-position 互补：
             //   那条认"声明语句的行首"，这条认 `Set c = New |` / `For i As |` /
