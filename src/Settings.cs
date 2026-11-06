@@ -104,7 +104,17 @@ namespace VbeComplete
         /// 模板里那一行上面就写着它是什么意思，删掉等于把说明书一起撕了。</para>
         /// <para>认不出 / 找不到那一行就把新行插在段尾（老用户手写的 ini 也可能压根没这一项）。</para>
         /// </summary>
-        public static bool Set(string key, string value)
+        public static bool Set(string key, string value) => Write(key, value, null);
+
+        /// <summary>
+        /// 恢复默认：把那一行重新注释掉，并把值写回 <paramref name="defaultValue"/>。
+        /// <para>★为什么不能只写 `; KEY =`：模板里 `; AUTO_SPACE = 1` 的那个 1 本身就是说明书。</para>
+        /// <para>★为什么不能沿用行上原有的值：被改过的活行上是用户的值（比如 0），注释保留它
+        /// 会让"注释掉 = 用默认值"变成"注释掉 = 看起来还是关着"，正好把用户绕回去。</para>
+        /// </summary>
+        public static bool Reset(string key, string defaultValue) => Write(key, null, defaultValue);
+
+        private static bool Write(string key, string value, string commentValue)
         {
             if (string.IsNullOrWhiteSpace(key)) return false;
             key = key.Trim();
@@ -149,7 +159,21 @@ namespace VbeComplete
                     }
                 }
 
-                string newLine = value == null ? "; " + key + " =" : key + " = " + value;
+                string newLine;
+                if (value == null)
+                {
+                    // 注释掉的那一行：优先用调用方给的模板默认值；没给就从原行里把值抄下来
+                    // （原行本来就是注释时它一般就是模板值）。
+                    string keep = commentValue;
+                    if (keep == null && hit >= 0)
+                    {
+                        string old = lines[hit].Trim().TrimStart(';', '#').Trim();
+                        int e2 = old.IndexOf('=');
+                        if (e2 > 0) keep = old.Substring(e2 + 1).Trim();
+                    }
+                    newLine = "; " + key + " =" + (string.IsNullOrEmpty(keep) ? "" : " " + keep);
+                }
+                else newLine = key + " = " + value;
                 if (hit >= 0) lines[hit] = newLine;
                 else if (lastInSection >= 0) lines.Insert(lastInSection + 1, newLine);
                 else if (secLine >= 0) lines.Insert(secLine + 1, newLine);

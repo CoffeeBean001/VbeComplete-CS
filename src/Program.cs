@@ -3105,9 +3105,27 @@ namespace VbeComplete
                         bool took = !Settings.Flag("AUTO_SPACE", true);
                         bool savedAgain = sf2.SetRowForTest("AUTO_SPACE", "1");
                         bool tookBack = Settings.Flag("AUTO_SPACE", true);
+                        bool rowCommented = Settings.IniValue("AUTO_SPACE") == null;  // 改回默认 = 那行重新注释掉
                         sf2.Dispose();
                         sb.AppendLine("wire AUTO_SPACE -> ini: wrote=" + wrote +
-                                      " effective=" + took + " back=" + (savedAgain && tookBack));
+                                      " effective=" + took + " back=" + (savedAgain && tookBack) +
+                                      " commentedBack=" + rowCommented);
+
+                        // 反向项（NO_AUTOPAIR）：空 ini 时框必须是勾上的（功能默认开），
+                        // 取消勾选才往 ini 里写 1，再勾回来 ini 应当回到 0。
+                        var sf3 = new SettingsForm(() => { }, () => { }, 0);
+                        bool pairOnOpen = sf3.RowCheckedForTest("NO_AUTOPAIR");
+                        bool pairCleanIni = Settings.IniValue("NO_AUTOPAIR") == null;
+                        bool pairWroteOff = sf3.SetRowForTest("NO_AUTOPAIR", "1");
+                        bool pairOff = Settings.Flag("NO_AUTOPAIR", false) &&
+                                       !sf3.RowCheckedForTest("NO_AUTOPAIR");
+                        bool pairBack = sf3.SetRowForTest("NO_AUTOPAIR", "0") &&
+                                        !Settings.Flag("NO_AUTOPAIR", false) &&
+                                        sf3.RowCheckedForTest("NO_AUTOPAIR");
+                        sf3.Dispose();
+                        sb.AppendLine("wire NO_AUTOPAIR -> ui: checkedOnOpen=" + pairOnOpen +
+                                      " iniClean=" + pairCleanIni + " off=" + (pairWroteOff && pairOff) +
+                                      " back=" + pairBack);
 
                         Environment.SetEnvironmentVariable(Settings.PREFIX + "SETTINGS", oldIni);
                         Settings.Load();

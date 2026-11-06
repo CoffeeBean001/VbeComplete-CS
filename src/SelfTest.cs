@@ -1836,10 +1836,12 @@ End Sub
                     string.Join("|", lines));
                 Eq("ini/没被顺手改掉别的项", Settings.Flag("NO_COMMENT", false), false);
 
-                Ok("ini/恢复默认（写 null）", Settings.Set("AUTO_SPACE", null), Settings.LastError());
+                Ok("ini/恢复默认（写 null）", Settings.Reset("AUTO_SPACE", "1"), Settings.LastError());
                 lines = File.ReadAllLines(tmp, Encoding.UTF8);
                 Ok("ini/恢复默认后那一行变回注释",
                     lines.Any(l => l.Trim().StartsWith("; AUTO_SPACE")), string.Join("|", lines));
+                Ok("ini/恢复默认后默认值还在（不是光秃秃的 `; AUTO_SPACE =`）",
+                    lines.Any(l => l.Trim() == "; AUTO_SPACE = 1"), string.Join("|", lines));
                 Eq("ini/恢复默认后值回到默认", Settings.Flag("AUTO_SPACE", true), true);
 
                 Ok("ini/写一个全新的键", Settings.Set("MY_TEST_KEY", "7"), Settings.LastError());

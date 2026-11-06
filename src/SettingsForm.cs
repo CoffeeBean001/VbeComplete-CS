@@ -36,6 +36,7 @@ namespace VbeComplete
             public string Def;                 // 默认值（字符串形式）
             public Func<string> Read;          // 从控件读出当前值
             public Action<string> Write;       // 把值写回控件（"恢复默认"用）
+            public Func<bool> Checked;         // 勾选框此刻勾着没有（非勾选项为 null）
             public string Original;            // 打开窗口时 ini 里的值（null = 没写过）
         }
 
@@ -260,8 +261,15 @@ namespace VbeComplete
         }
 
         /// <summary>勾选项：标题一行、说明一行（说明自动换行，不会被切掉）。</summary>
+        /// <param name="invert">
+        /// 反向项：ini 键名是 `NO_XXX`（**写了 = 把这个功能关掉**），而界面上那句话说的是
+        /// 功能本身，所以勾上必须对应"ini 里没有这一项"。
+        /// ★v176 的教训：之前一律 `勾上 = 写 1`，于是"自动配对括号 / 引号"这类项的框
+        ///   默认是空的（功能明明开着）、勾上反倒是关掉 —— 界面上每一个 NO_ 项都和用户
+        ///   的心智反着来。凡"键名带 NO_ / 标签说的是功能而不是禁用"的，一律走这个口子。
+        /// </param>
         private void AddToggle(TableLayoutPanel page, string key, bool def,
-            string title, string desc)
+            string title, string desc, bool invert = false)
         {
             var box = new TableLayoutPanel
             {
@@ -276,7 +284,7 @@ namespace VbeComplete
             box.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             box.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-            var cb = UiTheme.Check(title, Settings.Flag(key, def));
+            var cb = UiTheme.Check(title, invert ? !Settings.Flag(key, def) : Settings.Flag(key, def));
             cb.Margin = new Padding(0, 0, 0, 1);
             box.Controls.Add(cb, 0, 0);
 
@@ -290,10 +298,22 @@ namespace VbeComplete
                 Key = key,
                 Def = def ? "1" : "0",
                 Original = Settings.IniValue(key),
-                Read = () => cb.Checked ? "1" : "0",
-                Write = v => cb.Checked = v != "0",
+                // 反向项：勾上 = 不写这个 NO_ 键（"0" 与"没写过"等价，SaveAll 会跳过默认值，
+                // 所以来回点也不会把 ini 塞满）。
+                Read = () => (cb.Checked ^ invert) ? "1" : "0",
+                Write = v =>
+                {
+                    bool on = v != "0";
+                    cb.Checked = invert ? !on : on;
+                },
+                Checked = () => cb.Checked,
             });
         }
+
+        /// <summary>反向项（键名 `NO_XXX`，勾上 = 功能开着）。见 <see cref="AddToggle"/>。</summary>
+        private void AddToggleOff(TableLayoutPanel page, string key, bool def,
+            string title, string desc)
+            => AddToggle(page, key, def, title, desc, invert: true);
 
         /// <summary>带输入框的一行：左边标题 + 说明，右边控件。</summary>
         private void AddField(TableLayoutPanel page, string key, string def,
@@ -380,24 +400,26 @@ namespace VbeComplete
                 "敲完 `End If` 补一个空格。关掉之后补全只替换词本身。");
             AddToggle(page, "AUTO_PAREN", true, "函数名后自动补一对括号",
                 "补全 `MsgBox` 得到 `MsgBox()`；类型名（String / Long）永远不补括号。");
-            AddToggle(page, "NO_PARAM_INFO", false, "补完括号后不弹形参提示",
-                "勾上 = 不替你按 Ctrl+Shift+I。默认是弹的。");
             AddToggle(page, "REQUIRE_KEY_TRIGGER", true, "只有真的在打字时才自动弹候选",
                 "鼠标右键粘贴、拖拽、别的程序改代码造成的文本变化只收窗、不弹窗。");
             AddToggle(page, "HIDE_ON_COMPLETE", true, "词打全了就收窗",
                 "例如已经打完 `Select` 时不再挂在屏幕上。Ctrl+Space 不受影响。");
 
             Add(page, Section("括号与缩进"));
-            AddToggle(page, "NO_AUTOPAIR", false, "自动配对括号 / 引号",
-                "敲 `(` 补 `)`，敲 `\"` 补另一个 `\"`。勾上 = 关闭配对。");
-            AddToggle(page, "NO_IME_PUNCT", false, "中文标点也按半角配对",
-                "输入法处于全角状态时，`（` 也补 `)`。勾上 = 只认半角。");
-            AddToggle(page, "NO_ENTER_INDENT", false, "回车自动缩进",
-                "勾上 = 回车完全交还给 VBE 原生行为。");
-            AddToggle(page, "NO_AUTOCLOSE", false, "回车自动补结构收尾",
-                "`Sub` / `If` / `For` 回车后自动补 `End Sub` / `End If` / `Next`。勾上 = 只缩进、不补。");
-            AddToggle(page, "NO_BRANCH_ALIGN", false, "分支缩进对齐",
-                "`Else` / `Case` 自动对齐到所属块的层级。");
+            AddToggleOff(page, "NO_AUTOPAIR", false, "自动配对括号 / 引号",
+                "敲 `(` 补 `)`，敲 `\"` 补另一个 `\"`。不勾 = 只敲你按的那一个字符。");
+            AddToggleOff(page, "NO_IME_PUNCT", false, "中文标点也一起配对",
+                "输入法切在中文标点 / 全角档时，自动配出来的另一半也跟着全角" +
+                "（敲 `(` 得到 `（）`，引号得到 `“”`），和你此刻打出来的字一致。" +
+                "不勾 = 不管输入法什么档，一律补半角 `()` / `\"\"`。");
+            AddToggleOff(page, "NO_ENTER_INDENT", false, "回车自动缩进",
+                "回车后新行沿用上一行的缩进，`If` / `For` / `Sub` 这类块头自动再进一级。" +
+                "不勾 = 回车完全交还给 VBE 原生行为。");
+            AddToggleOff(page, "NO_AUTOCLOSE", false, "回车自动补结构收尾",
+                "`Sub` / `If` / `For` 回车后自动补 `End Sub` / `End If` / `Next`，光标落在两行中间。" +
+                "不勾 = 只缩进、不补收尾。");
+            AddToggleOff(page, "NO_BRANCH_ALIGN", false, "分支缩进对齐",
+                "`Else` / `Case` 自动对齐到所属块的层级。不勾 = 按你敲的列原样放着。");
 
             var unit = Combo(new[] { "自动（看工程里既有的写法）", "2 个空格", "4 个空格", "Tab" },
                 IndentIndex(Settings.Raw("INDENT_UNIT")), 220);
@@ -411,10 +433,10 @@ namespace VbeComplete
                     unit.SelectedIndex = i < 0 ? 0 : i;
                 });
 
-            AddToggle(page, "NO_BS_DELLINE", false, "退格一次删掉整行空白",
-                "行首只有缩进时，按一下退格就删掉整段空白。勾上 = 关。");
-            AddToggle(page, "NO_BS_DELPAIR", false, "退格一次删掉成对的空括号 / 引号",
-                "`()` 中间按退格，两个一起删。勾上 = 关。");
+            AddToggleOff(page, "NO_BS_DELLINE", false, "退格一次删掉整行空白",
+                "行首只有缩进时，按一下退格就删掉整段空白。不勾 = 一格一格退。");
+            AddToggleOff(page, "NO_BS_DELPAIR", false, "退格一次删掉成对的空括号 / 引号",
+                "`()` 中间按退格，两个一起删。不勾 = 只删前一个字符，留下一个孤零零的 `）`。");
 
             Add(page, Section("排障"));
             AddToggle(page, "LOG", false, "写诊断日志",
@@ -446,24 +468,23 @@ namespace VbeComplete
             var page = Page();
 
             Add(page, Section("自己的组合键"));
-            AddToggle(page, "NO_SNIPPETS", false, "Ctrl+Q 打开代码片段窗",
-                "勾上 = 这个键还给 VBE。");
-            AddToggle(page, "NO_COMMENT", false, "Ctrl+/ 批量注释 / 取消注释",
-                "走 VBE 自己的命令，Undo 归 VBE。勾上 = 还给 VBE。");
-            AddToggle(page, "NO_CTRL_NAV", false, "Ctrl+↑ / Ctrl+↓ 跳过程两端",
+            AddToggleOff(page, "NO_SNIPPETS", false, "Ctrl+Q 打开代码片段窗",
+                "在 VBE 代码窗里按 Ctrl+Q。不勾 = 把这个键还给 VBE。");
+            AddToggleOff(page, "NO_COMMENT", false, "Ctrl+/ 批量注释 / 取消注释",
+                "走 VBE 自己的命令，Undo 归 VBE。不勾 = 还给 VBE。");
+            AddToggleOff(page, "NO_CTRL_NAV", false, "Ctrl+↑ / Ctrl+↓ 跳过程两端",
                 "Ctrl+↑ 跳到本过程最后一个 Dim 行，Ctrl+↓ 跳到收尾行上方最后一条代码。");
-            AddToggle(page, "NO_CTRL_NAV_TAB", false, "跳转后不再补缩进",
-                "只在上面那组跳转开着时有意义。");
-            AddToggle(page, "NO_SHIFT_NAV", false, "Shift+↑/↓ 跳出候选列表并上下移一行",
-                "勾上 = 候选窗开着时 Shift+方向键交还 VBE（= 选中文本）。");
+            AddToggleOff(page, "NO_SHIFT_NAV", false, "Shift+↑/↓ 跳出候选列表并上下移一行",
+                "候选窗开着时，先按 Shift+方向键关掉候选、再按方向键正常移光标。" +
+                "不勾 = 交还 VBE（效果是选中文本）。");
 
             Add(page, Section("行操作"));
-            AddToggle(page, "NO_DUP_LINE", false, "Ctrl+D 复制当前行",
-                "勾上 = 还给 VBE。");
-            AddToggle(page, "NO_DEL_LINE", false, "Ctrl+Shift+K 删除当前行",
-                "勾上 = 还给 VBE。");
-            AddToggle(page, "NO_INSERT_ABOVE", false, "Ctrl+Enter 在上方插入一行",
-                "勾上 = 还给 VBE。");
+            AddToggleOff(page, "NO_DUP_LINE", false, "Ctrl+D 复制当前行",
+                "不勾 = 还给 VBE。");
+            AddToggleOff(page, "NO_DEL_LINE", false, "Ctrl+Shift+K 删除当前行",
+                "不勾 = 还给 VBE。");
+            AddToggleOff(page, "NO_INSERT_ABOVE", false, "Ctrl+Enter 在上方插入一行",
+                "不勾 = 还给 VBE（回车就是普通回车）。");
 
             return Wrap(page);
         }
@@ -488,7 +509,7 @@ namespace VbeComplete
 
             Add(page, Section("什么位置弹"));
             AddToggle(page, "MEMBER_POPUP", false, "`对象.` 之后也弹候选",
-                "默认一个都不出，整个让给 VBE 自己的成员列表（它的类型信息更准）。" +
+                "不勾 = 一个都不出，整个让给 VBE 自己的成员列表（它的类型信息更准）。" +
                 "勾上 = 出：能定出类型的按类型收窄。Ctrl+Space 不受这个开关影响。");
             AddToggle(page, "DECL_POPUP", false, "声明位置（正在起新名字）也弹候选",
                 "`Dim x As |` 这种位置默认不弹。");
@@ -938,12 +959,17 @@ namespace VbeComplete
             {
                 string now;
                 try { now = r.Read(); } catch { continue; }
+                bool atDefault = string.Equals(now, r.Def, StringComparison.Ordinal);
                 if (string.Equals(now, r.Original ?? r.Def, StringComparison.Ordinal) &&
                     r.Original != null)
                     continue;                                  // 没动过
-                if (r.Original == null && string.Equals(now, r.Def, StringComparison.Ordinal))
+                if (r.Original == null && atDefault)
                     continue;                                  // 仍然是默认值，别往 ini 里塞
-                if (Settings.Set(r.Key, now)) { r.Original = now; n++; }
+                // 改回默认值 = 把那一行重新注释掉（模板里的中文说明和默认值都留着），
+                // 不然来回点几次就会在 ini 里攒下一堆 `; NO_XXX = 0` 这样的活行。
+                string target = atDefault ? null : now;
+                bool ok = target == null ? Settings.Reset(r.Key, r.Def) : Settings.Set(r.Key, target);
+                if (ok) { r.Original = target; n++; }
                 else failed.Add(r.Key);
             }
 
@@ -969,7 +995,22 @@ namespace VbeComplete
             if (r == null) return false;
             r.Write(value);
             SaveAll();
-            return string.Equals(Settings.IniValue(key), value, StringComparison.Ordinal);
+            // ★判据看**界面读值**，不看 ini 原文：写回默认值时 SaveAll 会把那一行重新
+            //   注释掉，IniValue 于是变 null —— 那正是对的行为，不该判红。
+            string now;
+            try { now = r.Read(); } catch { return false; }
+            return string.Equals(now, value, StringComparison.Ordinal);
+        }
+
+        /// <summary>
+        /// 离屏自检用：这一项的勾选框现在是不是勾上的。
+        /// ★反向项（`NO_XXX`）要验的正是"功能开着时框是勾上的"—— 只验 ini 读值验不到这一层，
+        ///   而用户看到的只有框。
+        /// </summary>
+        internal bool RowCheckedForTest(string key)
+        {
+            var r = _rows.FirstOrDefault(x => x.Key == key);
+            return r != null && r.Checked != null && r.Checked();
         }
 
         private void ResetDefaults()
@@ -984,7 +1025,7 @@ namespace VbeComplete
                 // 只处理"ini 里真的写过"的项：没写过的本来就是默认值，
                 // 再去写一条注释行只会把 ini 越堆越长。
                 if (Settings.IniValue(r.Key) == null) { r.Write(r.Def); continue; }
-                if (Settings.Set(r.Key, null)) { r.Write(r.Def); r.Original = null; n++; }
+                if (Settings.Reset(r.Key, r.Def)) { r.Write(r.Def); r.Original = null; n++; }
             }
             try { _onSaved?.Invoke(); } catch { }
             SetStatus("已把 " + n + " 项恢复成默认值（settings.ini 里那几行已注释掉）。", false);
