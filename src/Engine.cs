@@ -471,7 +471,13 @@ namespace VbeComplete
             foreach (var h in hits) if (seenName.Add(h.Name)) dedup.Add(h);
             hits = dedup;
 
-            _wordComplete = word.Length > 0 &&
+            // ★v176：单字符输入**永远不算打全**。用户报"写 `for i`，这里的 `i` 为什么不提示，
+            //   单个字符的变量应该会提示自身的" —— 根因不在池子（`i` 好好地躺在里面），
+            //   而在这一行：`For` 后面的位置把内建全剔了（那个位置只可能是 `Each` 或一个
+            //   变量名），候选里只剩 `i` 自己一条 ⇒ `PrefixIsResolved` 认为"打全了、没有
+            //   更长的候选" ⇒ 窗口刚算出来就被 HideOnComplete 收掉，用户看到的是"没提示"。
+            //   打一个字母本来也还没到"确认完毕"的阶段，留一条让它被看见更合理。
+            _wordComplete = word.Length > 1 &&
                             Rules.PrefixIsResolved(word, hits.Select(x => x.Name).ToList());
 
             if (!manual && HideOnComplete && _wordComplete)

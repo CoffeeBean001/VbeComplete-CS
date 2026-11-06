@@ -1488,6 +1488,11 @@ namespace VbeComplete
             var cases = new (string name, string header, string typed, bool want, string[] must, string[] bad)[]
             {
                 ("ReDim 后补 Preserve", "    ReDim P", "re", true, new[] { "Preserve" }, null),
+                // ★v176：用户报"写 for i，这里的 i 为什么不提示"。单字符的变量名打完时，
+                //   `For` 后面的位置已经把内建全剔了，候选只剩它自己一条 —— 旧版被
+                //   "打全即收"（HIDE_ON_COMPLETE）当成"名字已经敲完"立刻收窗，看起来
+                //   就是"没提示"。单字符不算打全（见 Engine 里 _wordComplete 那条）。
+                ("For 后敲单字符变量（i）", "    For", " i", true, new[] { "i" }, null),
                 // ★v170：`ReDim` 后面命名的是**已经存在**的数组 ⇒ 该弹名字（用户报的就是这里）。
                 //   `bad` 里的 Resume / Reset 是旧口径的噪音：那里本该只有名字。
                 ("Preserve 后敲变量名（res）", "    ReDim Preserve", " res", true,
@@ -1641,7 +1646,8 @@ namespace VbeComplete
                         // 额外塞一行 `Dim`：`ReDim Preserve resProbe` 的 resProbe 必须是
                         // **已经在作用域里**的变量，否则池子里没有它，弹不弹都验不出来。
                         RebuildScaffold(app, be, at, c.header,
-                            "    Dim resProbe() As Long, nProbe&");
+                            // ★v176：`i&` 是给"单字符变量"那条用例摆的（用户报 `for i` 不提示）。
+                            "    Dim resProbe() As Long, nProbe&, i&");
                         Thread.Sleep(350);
                         bool typed = TypeTyping(app, c.typed, 55, out string how);
                         eval((k + 1) + " " + c.name, c.want, c.must, c.bad, typed, how);
@@ -2490,6 +2496,17 @@ namespace VbeComplete
                 "    set getTitle2=di\n" +
                 "End Function\n";
 
+            // ★v176：用户报"写了 for i，这里的 i 为什么不提示" —— 代码里是
+            //   `Dim i&, j&, lastCol&`（带类型后缀、无 As）。单独一个模块，因为
+            //   要的行号很短，混进模块1 会被上面那些用例的行号顶偏。
+            const string modFor =
+                "Option Explicit\n" +
+                "\n" +
+                "Sub 循环()\n" +
+                "    Dim i&, j&, lastCol&\n" +
+                "    For i\n" +
+                "End Sub\n";
+
             var synth = new SyntheticBackend()
                 .Add("模块1", 1, modStd)
                 .Add("cls1", 2, modCls)
@@ -2498,7 +2515,8 @@ namespace VbeComplete
                 .Add("模块2", 1, modFree)
                 .Add("modT", 1, modType)
                 .Add("模块3", 1, modUser)
-                .Add("模块4", 1, modUser2);
+                .Add("模块4", 1, modUser2)
+                .Add("模块5", 1, modFor);
 
             // 说明, 模块, 行, 行文本, 光标显示列, 期望该弹?, 必须有, 不许有
             Action<string, string, int, string, int, bool?, string[], string[]> sprobe =
@@ -2640,6 +2658,11 @@ namespace VbeComplete
                 "    ReDi", 9, false, null, new[] { "ReDim" });
             sprobe("过程体里有 ReDim（ReDi|）", "模块1", 11,
                 "    ReDi", 9, true, new[] { "ReDim" }, null);
+
+            // ---- 1e. v176：单字母变量名（`Dim i&`）在循环头要提示 ----
+            //   用户报"写了 for i，这里的 i 为什么不提示，单个字符的变量应该会提示自身"。
+            sprobe("For 后给单字母变量（For i|）", "模块5", 5,
+                "    For i", 10, true, new[] { "i" }, null);
 
             // ---- 2. Option Explicit：未声明的名字不进候选 ----
             // 光标所在行会被"挖掉半截词"，所以搜索词要和模块里的名字错开：
