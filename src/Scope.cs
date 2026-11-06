@@ -52,6 +52,18 @@ namespace VbeComplete
         /// </summary>
         public int ComponentType;
 
+        /// <summary>
+        /// 窗体（ComponentType=3）设计器里的控件名：`TextBox1` / `CommandButton1` / `Label1`…
+        /// <para>★控件名只活在**设计器数据**里：窗体代码模块通常一个字都没有（除非那个控件
+        /// 挂过事件过程 —— 那才会以 `Label1_Click` 的形式出现在代码里）。所以它只能由
+        /// <see cref="VbeBackend.ProjectScopes"/> 走 `comp.Designer.Controls` 灌进来，
+        /// 光解析文本永远拿不到。</para>
+        /// <para>★语义是**本窗体的模块级名字**：在窗体自己的代码里裸名可用（`TextBox1.Text`），
+        /// 在别的模块里必须写 `UserForm1.TextBox1`。所以裸名池只放【正在编辑的那个窗体】的
+        /// （见 Engine.EnsurePool），别的窗体的控件收进去永远看不见，白占池子。</para>
+        /// </summary>
+        public List<string> Controls = new List<string>();
+
         /// <summary>行数。池子缓存用它判"文本变了没有"。</summary>
         public int LineCount;
 
@@ -98,6 +110,8 @@ namespace VbeComplete
                 }
                 Put(map, n, 2);
             }
+            // 窗体控件：模块级名字，本模块任何过程里都能裸名用（档位同模块级声明）
+            foreach (var n in Controls) Put(map, n, 3);
             return map;
         }
 
@@ -111,6 +125,8 @@ namespace VbeComplete
                 if (d.IsPrivate) continue;          // Private 在别的模块看不见
                 Put(map, d.Name, 2);
             }
+            // 控件在 VBA 里是窗体的 Public 成员（`UserForm1.TextBox1.Text = "x"` 合法）
+            foreach (var n in Controls) Put(map, n, 2);
             return map;
         }
 
@@ -127,6 +143,8 @@ namespace VbeComplete
                 if (d.Proc != null) continue;
                 Put(map, d.Name, 2);
             }
+            // `Me.TextBox1` 也在这里 —— 用户最常敲的就是它
+            foreach (var n in Controls) Put(map, n, 2);
             return map;
         }
 

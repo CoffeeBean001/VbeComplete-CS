@@ -426,7 +426,18 @@ namespace VbeComplete
                 .Add("模块5", 1, modFor)
                 .Add("modParam", 1, modParamNoExp)
                 .Add("modParamX", 1, modParamExp)
-                .Add("modDim", 1, modDim);
+                .Add("modDim", 1, modDim)
+                // v183：窗体。控件名只存在于设计器数据里，真机由 Designer 灌进来，
+                //   这里直接摆（验的是"灌进来之后该在哪个模块可见"）。
+                .AddForm("UserForm1",
+                    "Private Sub CommandButton1_Click()\n" +
+                    "    Dim s$\n" +
+                    "    s = te\n" +
+                    "End Sub\n",
+                    "TextBox1", "CommandButton1", "Label1")
+                // 一行代码都没有的新窗体：控件名照样要能提示（读代码时不能因为
+                // 行数为 0 就把整个组件跳过）
+                .AddForm("UserForm2", "", "ListBox1", "SpinButton1");
 
             // 说明, 模块, 行, 行文本, 光标显示列, 期望该弹?, 必须有, 不许有
             Action<string, string, int, string, int, bool?, string[], string[]> sprobe =
@@ -633,6 +644,18 @@ namespace VbeComplete
             sprobe("Type 成员不进裸名池（模块1 里 Nic| 不冒 Nickname）", "模块1", 11,
                 "    Nic", 8, null, null, new[] { "Nickname" });
 
+            // ---- 2e. v183：窗体控件名（用户报"我在窗体里，不提示 TextBox1"）----
+            //   控件名只活在**设计器数据**里，窗体代码模块里通常一个字都没有 ⇒ 只能由
+            //   后端走 Designer 灌进 ModuleScope.Controls。这一组验可见性口径：
+            //   在它自己的窗体里裸名可用，换个模块打同样的前缀不许冒出来。
+            sprobe("窗体里打 te 出控件名（UserForm1）", "UserForm1", 3,
+                "    s = te", 11, true, new[] { "TextBox1" }, null);
+            sprobe("控件名不跨模块泄露（模块1 里 te|）", "模块1", 11,
+                "    te", 7, null, null, new[] { "TextBox1" });
+            // 一行代码都没有的新窗体：读代码时不能因为行数 0 就把组件整个跳过
+            sprobe("空窗体也认控件（UserForm2 里 Li|）", "UserForm2", 1,
+                "    Li", 7, true, new[] { "ListBox1" }, null);
+
             // ---- 2d. v158：用户案例（Set 出来的隐式变量必须能提示）----
             var dbg = Scope.Analyze("模块3", modUser);
             sb.AppendLine("  [诊断] Decls: " + string.Join(",", dbg.Decls.Select(d => d.Name + "@" + (d.Proc ?? "-"))));
@@ -745,6 +768,10 @@ namespace VbeComplete
                 new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             private readonly Dictionary<string, int> _types =
                 new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            // 窗体控件名（ComponentType=3 才有）。真机上由 VbeBackend 走 Designer 读，
+            // 合成后端直接摆 —— 这一格验的是"控件名有没有进池 / 该不该跨模块可见"。
+            private readonly Dictionary<string, List<string>> _ctrls =
+                new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
 
             public string Current;
 
@@ -752,6 +779,14 @@ namespace VbeComplete
             {
                 _texts[name] = text;
                 _types[name] = type;
+                return this;
+            }
+
+            /// <summary>加一个窗体（ComponentType=3）并给它挂上控件名。</summary>
+            public SyntheticBackend AddForm(string name, string text, params string[] controls)
+            {
+                Add(name, 3, text);
+                _ctrls[name] = new List<string>(controls ?? Array.Empty<string>());
                 return this;
             }
 
@@ -770,6 +805,8 @@ namespace VbeComplete
                 {
                     var ms = Scope.Analyze(kv.Key, kv.Value);
                     ms.ComponentType = _types[kv.Key];
+                    List<string> cs;
+                    if (_ctrls.TryGetValue(kv.Key, out cs)) ms.Controls = cs;
                     list.Add(ms);
                 }
                 return list;

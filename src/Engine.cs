@@ -151,6 +151,10 @@ namespace VbeComplete
                                           StringComparison.OrdinalIgnoreCase))
                         {
                             cur.ComponentType = ms.ComponentType;
+                            // ★v183：窗体控件名也不在文本里（见 Scope.ModuleScope.Controls），
+                            //   同样只能从缓存里那份抄过来 —— 不抄的话池子里只有一个"空窗体"。
+                            if (ms.Controls != null && ms.Controls.Count > 0)
+                                cur.Controls = ms.Controls;
                             break;
                         }
                 scopes.Add(cur);
@@ -179,6 +183,18 @@ namespace VbeComplete
                              string.Equals(ms.Module, moduleName ?? "",
                                            StringComparison.OrdinalIgnoreCase);
                 if (!isCur && ms.ComponentType != 0 && ms.ComponentType != 1) continue;
+
+                // ★v183：窗体控件名。控件是**本窗体的模块级名字** —— 在窗体自己的代码里
+                //   裸名直接可用（`TextBox1.Text = "x"`），在别的模块里必须写
+                //   `UserForm1.TextBox1`。所以只收当前模块的：收别的窗体的控件名，它永远
+                //   不会在这个模块里可见，只是白占池子、把用户的候选挤下去。
+                //   放在 Decls 之前：控件是用户最想补全的那一类，同分时靠前更顺手。
+                if (isCur && ms.Controls != null && !Settings.Flag("NO_FORM_CTL", false))
+                    foreach (var n in ms.Controls)
+                    {
+                        if (nameSeen.Add(n)) names.Add(n);
+                        _poolScoped.Add(n);
+                    }
 
                 foreach (var d in ms.Decls)
                 {

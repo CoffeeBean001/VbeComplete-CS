@@ -1478,6 +1478,55 @@ End Sub
             };
             eng.Backend = beCode;
             Ok("gate/同一行代码位置照常弹", eng.Trigger(false, beCode.Snap));
+
+            // ---- v183：窗体控件名 ----
+            //   用户报："我在窗体里，不会提示 TextBox1" —— 控件名根本不在模块文本里
+            //   （只在设计器数据里），必须由后端灌进来。这里验两件事：灌进来之后
+            //   三种视图都认它；以及"只在它自己的窗体里能裸名用"。
+            var formText = "Private Sub CommandButton1_Click()\r\n" +
+                           "    Dim s$\r\n" +
+                           "    s = te\r\n" +
+                           "End Sub\r\n";
+            var formMs = Scope.Analyze("UserForm1", formText);
+            formMs.ComponentType = 3;
+            formMs.Controls = new List<string> { "TextBox1", "CommandButton1", "Label1" };
+            var fv = formMs.Visible("CommandButton1_Click");
+            KeyValuePair<string, int> ctlRank;
+            Ok("form-ctl/Visible 含控件且算模块级",
+                fv.TryGetValue("textbox1", out ctlRank) && ctlRank.Value == 3,
+                string.Join(",", fv.Keys));
+            Ok("form-ctl/Exported 含控件（UserForm1.TextBox1 合法）",
+                formMs.Exported().ContainsKey("TextBox1"));
+            Ok("form-ctl/Members 含控件（Me.TextBox1）",
+                formMs.Members().ContainsKey("TextBox1"));
+
+            eng.Hide();
+            var beForm = new FakeBackend
+            {
+                Text = formText,
+                Extra = new List<ModuleScope> { formMs },
+                Snap = new Snapshot { Line = 3, Text = "    s = te", Module = "UserForm1", CaretCol = 11 },
+            };
+            eng.Backend = beForm;
+            bool formShown = eng.Trigger(false, beForm.Snap);
+            var formNames = eng.Items.Select(x => x.Name).ToList();
+            Ok("form-ctl/窗体里打 te 出 TextBox1", formShown && formNames.Contains("TextBox1"),
+                string.Join(",", formNames));
+
+            // 反向：换个标准模块打同样的 te，别的窗体的控件名不许冒进来
+            //   （控件是**那个窗体**的成员，跨模块得写 UserForm1.TextBox1）
+            eng.Hide();
+            var beOtherMod = new FakeBackend
+            {
+                Text = "Sub T()\r\n    Dim s$\r\n    s = te\r\nEnd Sub\r\n",
+                Extra = new List<ModuleScope> { formMs },
+                Snap = new Snapshot { Line = 3, Text = "    s = te", Module = "Mod1", CaretCol = 11 },
+            };
+            eng.Backend = beOtherMod;
+            eng.Trigger(false, beOtherMod.Snap);
+            var otherNames = eng.Items.Select(x => x.Name).ToList();
+            Ok("form-ctl/别的模块不泄露控件名", !otherNames.Contains("TextBox1") &&
+                !otherNames.Contains("CommandButton1"), string.Join(",", otherNames));
         }
 
         // ------------------------------------------------------------------

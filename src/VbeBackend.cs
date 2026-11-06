@@ -65,6 +65,16 @@ namespace VbeComplete
         private DateTime _scopesAt = DateTime.MinValue;
         private readonly double _scopesTtl = Settings.Double("SCOPE_TTL", 2.0);
 
+        // ★v183：窗体控件名（模块名 -> 控件名 + 读取时刻）。
+        //   过 Designer 接口约 23ms/窗体（PY 版真机实测），所以单独一条短缓存：
+        //   ProjectScopes 每 2 秒一轮，这里 5 秒最多读一次 —— 拖上新控件后最多 5 秒
+        //   就能提示，而打字时（每字符都会重建池子）一次都不额外付 COM。
+        private readonly Dictionary<string, KeyValuePair<List<string>, DateTime>> _formCtrls =
+            new Dictionary<string, KeyValuePair<List<string>, DateTime>>(StringComparer.OrdinalIgnoreCase);
+        private static readonly double FormCtrlTtl = Settings.Double("FORM_CTL_TTL", 5.0);
+        private const int FormCtrlLimit = 300;      // 控件多到 300 个就不是正常窗体了，防卡死
+        private const int MSForm = 3;               // vbext_ct_MSForm：UserForm 窗体
+
         // ★v175：现读，别做启动快照 —— 设置界面里勾掉"自动补括号"要当场生效。
         public static bool AutoParen => !Settings.Flag("NO_AUTOPAREN", false);
         public static bool AutoSpace => !Settings.Flag("NO_AUTOSPACE", false);
@@ -235,9 +245,42 @@ namespace VbeComplete
             catch (Exception e) { Fail(e); return null; }
         }
 
-        /// <summary>我在"文本被我们改过"之后必须调它，否则下一轮读到的是旧代码。</summary>
-        public void OnWeWrote()
+        /// <summary>
+        /// 指定模块的全文（只读；**不切当前代码窗、不动光标**）。
+        /// <para>`ModuleText()` 只能给"当前打开"那个模块。探针想验"另一个模块里的候选"
+        /// （比如不抢前台验某个窗体的控件名）时，改代码窗会干扰用户，用它。</para>
+        /// </summary>
+        public string ModuleTextOf(string moduleName)
         {
+            if (string.IsNullOrEmpty(moduleName)) return null;
+            try
+            {
+                dynamic vbe = ComCtx.Vbe();
+                if (ReferenceEquals(vbe, null)) return null;
+                dynamic proj = vbe.ActiveVBProject;
+                if (ReferenceEquals(proj, null)) return null;
+                dynamic comps = proj.VBComponents;
+                int n = Convert.ToInt32(comps.Count);
+                for (int i = 1; i <= n; i++)
+                {
+                    try
+                    {
+                        dynamic c = comps.Item(i);
+                        if (!string.Equals(Convert.ToString(c.Name), moduleName,
+                                           StringComparison.OrdinalIgnoreCase)) continue;
+                        dynamic cm = c.CodeModule;
+                        int count = Convert.ToInt32(cm.CountOfLines);
+                        return count > 0 ? Convert.ToString(cm.Lines(1, count)) ?? "" : "";
+                    }
+                    catch { }
+                }
+            }
+            catch (Exception e) { Fail(e); }
+            return null;
+        }
+
+        /// <summary>我在"文本被我们改过"之后必须调它，否则下一轮读到的是旧代码。</summary>
+        public void OnWeWrote()        {
             _modCount = -1;
             _modAt = DateTime.MinValue;
             InvalidateSnapshot();
@@ -370,20 +413,35 @@ namespace VbeComplete
                         int ctype = 0;
                         try { ctype = Convert.ToInt32(comp.Type); } catch { }
 
+                        // ★v183：窗体控件名只存在于**设计器数据**里 —— 窗体代码模块通常
+                        //   一个字都没有（除非那个控件挂过事件过程），所以"刚拖上去一个
+                        //   TextBox1，打 te 想让它提示"只能走 Designer 这一条路。
+                        //   必须在读 CodeModule 之后仍然拿（新窗体 0 行也要收），也不能因为
+                        //   取不到就放弃整个组件。
+                        List<string> ctrls = null;
+                        if (ctype == MSForm) ctrls = FormControls(comp, nm);
+
                         dynamic cm = comp.CodeModule;
                         int count = Convert.ToInt32(cm.CountOfLines);
                         sig = unchecked(sig * 31 + nm.ToLowerInvariant().GetHashCode() * 17 + count);
+                        // 控件名也算进签名：拖上新控件时模块文本一个字都没变，
+                        // 不进签名的话池子会一直用旧的那份（打新控件名永远没提示）。
+                        if (ctrls != null)
+                            foreach (var cn in ctrls)
+                                sig = unchecked(sig * 31 + cn.ToLowerInvariant().GetHashCode());
 
                         ModuleScope ms;
                         if (_modScopes.TryGetValue(nm, out ms) && ms.LineCount == count)
                         {
                             ms.ComponentType = ctype;   // 缓存命中也要刷新类型
+                            if (ctrls != null) ms.Controls = ctrls;
                             list.Add(ms);
                             continue;
                         }
                         string text = count > 0 ? Convert.ToString(cm.Lines(1, count)) : "";
                         ms = Scope.Analyze(nm, text);
                         ms.ComponentType = ctype;
+                        if (ctrls != null) ms.Controls = ctrls;
                         _modScopes[nm] = ms;
                         list.Add(ms);
                     }
@@ -404,6 +462,52 @@ namespace VbeComplete
                 signature = sig;
             }
             catch (Exception e) { Fail(e); }
+            return list;
+        }
+
+        /// <summary>
+        /// 窗体设计器里的控件名（`TextBox1` / `CommandButton1` / `Label1`…）。
+        /// <para>★为什么非走 Designer：控件名只存在于**设计器数据**里，窗体代码模块通常
+        /// 一个字都没有 —— 除非那个控件挂过事件过程，才会以 `Label1_Click` 的形式留下。
+        /// 用户"刚拖上一个 TextBox1，打 te 想让它提示"只能从这里拿。</para>
+        /// <para>★为什么不递归：`Designer.Controls` 已经是**扁平全集** —— 容器控件
+        /// （Frame / Page）自身在列表里，它们的子控件同样被列出（VBA 要求控件名全窗体
+        /// 唯一）。再对容器递归一次只会把子控件重复收一遍。</para>
+        /// <para>★取不到就返回空：窗体处于运行态、WPS 不支持 Designer 接口都会抛，
+        /// 绝不能因为一个窗体把整个作用域收集带崩。</para>
+        /// </summary>
+        private List<string> FormControls(object comp, string moduleName)
+        {
+            KeyValuePair<List<string>, DateTime> hit;
+            if (_formCtrls.TryGetValue(moduleName, out hit) &&
+                (DateTime.UtcNow - hit.Value).TotalSeconds < FormCtrlTtl)
+                return hit.Key;
+
+            var list = new List<string>();
+            try
+            {
+                dynamic c = comp;
+                dynamic designer = c.Designer;
+                if (!ReferenceEquals(designer, null))
+                {
+                    dynamic cs = designer.Controls;
+                    int n = Convert.ToInt32(cs.Count);
+                    if (n > FormCtrlLimit) n = FormCtrlLimit;
+                    // MSForms 的 Controls 集合是 0-based（Item(index)）
+                    for (int k = 0; k < n; k++)
+                    {
+                        try
+                        {
+                            string nm = Convert.ToString(cs.Item(k).Name) ?? "";
+                            if (nm.Length > 0) list.Add(nm);
+                        }
+                        catch { }   // 单个控件读不出来（奇怪类型）不影响其它
+                    }
+                }
+            }
+            catch { }   // 运行态 / WPS 无 Designer：空列表照样缓存，5 秒后重试
+
+            _formCtrls[moduleName] = new KeyValuePair<List<string>, DateTime>(list, DateTime.UtcNow);
             return list;
         }
 
