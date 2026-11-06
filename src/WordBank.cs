@@ -1,12 +1,7 @@
-// 词库的**读写**层：给设置界面用（WordLibrary 只负责"读进来变成内存镜像"）。
-//
-// ★为什么单独一层：WordLibrary 的 Load 有"表空了就灌种子"的语义，绝不能拿来
-//   做增删改 —— 用户删到 0 条会被当成"库坏了"，一重启种子全回来。这里只做 CRUD，
-//   一条 SQL 一个动作，出什么事都在 LastError 里。
-// ★两个库的表结构在 WordLibrary 里（internal const），建表语句共用一份 ——
-//   两处各写一遍，早晚有一处少一列。
-// ★改完必须调 Reload()：内存镜像是启动时一次性灌进去的，不重灌就得重启程序。
-//   重灌之后再让 Engine.InvalidatePool()（调用方负责），新词立刻能出现在候选里。
+// 词库的读写层（给设置界面用；WordLibrary 只负责"读进来变成内存镜像"）。
+// ★WordLibrary.Load 有"表空了就灌种子"的语义，绝不能拿来做增删改 —— 用户删到 0 条会被
+//   当成库坏了，一重启种子全回来。这里只做 CRUD，出事都在 LastError 里。
+// ★改完必须 Reload()，再由调用方 Engine.InvalidatePool()，新词才立刻出现在候选里。
 
 using System;
 using System.Collections.Generic;

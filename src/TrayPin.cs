@@ -1,11 +1,7 @@
-// 让托盘图标"常驻显示"（而不是被 Win11 折叠进 ^ 溢出区）。
-//
-// ★为什么需要：Win11 默认把新图标设成"隐藏"，它把每个托盘图标的状态记在
-//   HKCU\Control Panel\NotifyIconSettings\<id>\ 的 ExecutablePath / IsPromoted 上。
-//   启动后找到**自己那条**（ExecutablePath 精确比对，绝不碰别人的）把 IsPromoted 置 1，
-//   任务栏下次读取生效（重启 explorer / 重新登录后可见）。
-// ★这条记录是图标第一次出现时才创建的：第一次可能找不到，下次启动就找到了 —— 找不到就安静返回。
-// ★只改 IsPromoted、只改自己那条子键。可逆、无副作用。
+// 让托盘图标常驻（不被 Win11 折叠进 ^ 溢出区）。
+// ★Win11 把每个图标的状态记在 HKCU\Control Panel\NotifyIconSettings\<id>：
+//   按 ExecutablePath 精确找到自己那条，只把 IsPromoted 置 1，绝不碰别人的。
+// ★这条记录在图标第一次出现时才创建，找不到就安静返回。
 
 using System;
 using Microsoft.Win32;

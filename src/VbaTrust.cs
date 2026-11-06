@@ -1,13 +1,9 @@
 // "信任对 VBA 工程对象模型的访问"（AccessVBOM）。
-//
-// ★WPS 默认是 0：此时 Application.VBE 直接抛 E_FAIL（0x80004005 "发生意外"），
-//   看起来像"WPS 不支持对象模型"，其实只是这个开关没开。开了之后 VBE / VBProjects /
-//   CodeModule / CodePane.SetSelection 在 WPS 上与 Office 完全一致（窗口类也一样）。
-// ★WPS 读的是 Microsoft\Office\12.0\Excel\Security（它自称 "Microsoft Excel 12.0"），
-//   但用户装的 Office 可能是别的版本 ⇒ 4 个版本号 × 3 个组件全写一遍，谁读都生效。
-//   没有 Microsoft Office 的用户也没关系：多出来的注册表项是无害的。
-// ★这是**用户的开关**，不是我们的：托盘那一项点一下开、再点一下关（v167），
-//   用户关掉之后绝不能在背后自动写回 1（trust-off.txt 记"这是他自己的选择"）。
+// ★WPS 默认是 0：此时 Application.VBE 直接 E_FAIL，看着像"WPS 不支持对象模型"，
+//   其实只是这个开关没开。
+// ★WPS 读 Microsoft\Office\12.0\Excel\Security，但用户装的 Office 版本不定 ⇒
+//   4 个版本号 × 3 个组件全写一遍，谁读都生效。
+// ★这是用户的开关：他关掉之后绝不能在背后自动写回 1（trust-off.txt 记着他的选择）。
 
 using System;
 using System.Collections.Generic;

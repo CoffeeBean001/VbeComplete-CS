@@ -1,10 +1,7 @@
-// 候选引擎：攒池子、匹配、排序、决定弹不弹、以及"选完之后该补什么"。
-//
-// ★不引用 WinForms —— 窗口通过回调接进来，于是"弹不弹 / 排第几 / 补括号还是补空格"
-//   全都能在没有界面的情况下测。
-// ★v132：排序键顺序对齐 Python 版（那版是用户在真机上一条条调出来的）：
-//   命中质量 > 命中位置 > 跨度 > 作用域 > 最近使用 > 内建 > 名字长度。
-//   ⚠️ 别把"作用域"提到最前 —— 它会把匹配得更好的候选顶掉（用户口径明确不要）。
+// 候选引擎：攒池子、匹配、排序、决定弹不弹、选完之后补什么。
+// ★不引用 WinForms（窗口靠回调接进来），所以"弹不弹 / 排第几 / 补什么"都能离线测。
+// ★排序键顺序对齐 Python 版（用户在真机上调出来的）：命中质量 > 位置 > 跨度 > 作用域 >
+//   最近使用 > 内建 > 名字长度。⚠️ 别把"作用域"提前，它会顶掉匹配更好的候选。
 
 using System;
 using System.Collections.Generic;
@@ -364,12 +361,9 @@ namespace VbeComplete
             // 刚确认过的词不再提示自己（按 Tab 之后光标处那个词）
             if (!manual && QuietFromAccepted(word, snap)) { Hide(); return false; }
 
-            // ★v168：`Private Fu|` / `ReDim Pre|` 这种"关键字后面还该跟关键字"的位置，
-            //   只留这个位置合法的关键字。不然 `Private P|` 会把同前缀的 Public / Print /
-            //   Preserve 一并塞进来（那是另一种噪音：位置不对的候选）。
-            // ★v173：`Preserve re|` 用户报"应该只提示 ReDim" —— 位置收窄不止管关键字，
-            //   纯语法位置（End / Exit / On Error / 语句头的 Preserve …）连名字也不合法，
-            //   那里冒出来的 `result` / `Replace` / `CreateObject` 全是噪音。三态见 Rules.DeclSlotOf。
+            // ★声明关键字后面（`Private Fu|` / `Preserve re|`）只留该位置合法的东西：
+            //   关键字位置只出关键字（不然 `Private P|` 会把 Public / Print 一起塞进来），
+            //   纯语法位置（End / Exit / On Error …）连名字也不合法。三态见 Rules.DeclSlotOf。
             string[] declFollow = null;
             bool declNamesBlocked = false;
             if (word.Length > 0)
@@ -471,12 +465,9 @@ namespace VbeComplete
             foreach (var h in hits) if (seenName.Add(h.Name)) dedup.Add(h);
             hits = dedup;
 
-            // ★v176：单字符输入**永远不算打全**。用户报"写 `for i`，这里的 `i` 为什么不提示，
-            //   单个字符的变量应该会提示自身的" —— 根因不在池子（`i` 好好地躺在里面），
-            //   而在这一行：`For` 后面的位置把内建全剔了（那个位置只可能是 `Each` 或一个
-            //   变量名），候选里只剩 `i` 自己一条 ⇒ `PrefixIsResolved` 认为"打全了、没有
-            //   更长的候选" ⇒ 窗口刚算出来就被 HideOnComplete 收掉，用户看到的是"没提示"。
-            //   打一个字母本来也还没到"确认完毕"的阶段，留一条让它被看见更合理。
+            // ★单字符输入**永远不算打全**：`For` 后面的位置把内建全剔了，候选只剩 `i` 一条
+            //   ⇒ PrefixIsResolved 认为"打全了" ⇒ 窗口刚算出来就被 HideOnComplete 收掉，
+            //   用户看到的是"没提示"。打一个字母还没到"确认完毕"的阶段。
             _wordComplete = word.Length > 1 &&
                             Rules.PrefixIsResolved(word, hits.Select(x => x.Name).ToList());
 
@@ -808,20 +799,5 @@ namespace VbeComplete
             return ok;
         }
 
-        /// <summary>Tab 被按住时"这个按键该不该由我们吃掉"。</summary>
-        public bool ShouldTakeAccept() => Visible && _items.Count > 0;
-
-        /// <summary>
-        /// 空格确认：只在"光标前的词还没打全"时才接管。
-        /// ★旧版只要选中项是关键字就吃 —— `Set w` 时选中 `With`，按空格就把 `w` 变成
-        ///   `With`，整行写坏。口径是"already complete 就不吃"。
-        /// </summary>
-        public bool CanSpaceConfirm()
-        {
-            if (!Visible || _items.Count == 0) return false;
-            if (_wordComplete) return false;
-            var c = _items[_sel];
-            return VbaBuiltins.IsKeyword(c.Name);
-        }
     }
 }

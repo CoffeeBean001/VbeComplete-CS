@@ -1,16 +1,8 @@
-// 候选窗：无边框、置顶、【永不抢焦点】、全部自绘。
-//
-// ★四条不能动的规矩：
-//   1. 绝不抢焦点（WS_EX_NOACTIVATE + ShowWithoutActivation）—— 抢一下用户在 VBE 的输入
-//      就断了，整个工具等于废掉；
-//   2. 全部自绘（一个 OnPaint 画完）—— 每行一个 Control 的话，滚一下要重排几十个句柄；
-//   3. 拿不到光标矩形就不显示，绝不猜一个位置糊上去；
-//   4. 宽度按内容定，上限 640px。
-//
-// 外观照 VBE 自带列表做（v139/v140，真机截图为据）：字体从注册表 7.1 → 7.0 → 6.0 读 VBE
-//   编辑器字体并去掉 Light/Thin 字重后缀，默认小一号（POPUP_FONT_SIZE 可改）；白底黑字、
-//   命中字母加粗；行高 = 字高 + 4；边框上/左 #F0F0F0、下/右 #646464；选中行深蓝底白字、
-//   命中字母改亮黄。自家的东西：图标、点击选词、滚轮、超宽时的详情行。
+// 候选窗：无边框、置顶、永不抢焦点、全部自绘。
+// ★四条不能动：① 绝不抢焦点（抢一下用户在 VBE 的输入就断了）；② 一个 OnPaint 画完
+//   （每行一个 Control 的话滚一下要重排几十个句柄）；③ 拿不到光标矩形就不显示；
+//   ④ 宽度按内容定，上限 640px。
+// 外观照 VBE 自带列表：字体从注册表 7.1→7.0→6.0 读并去掉 Light/Thin，默认小一号。
 
 using System;
 using System.Collections.Generic;
@@ -25,18 +17,18 @@ namespace VbeComplete
     internal sealed class PopupForm : Form
     {
         // ---- 配色（v139 按 VBE 成员列表截图逐像素取值） ----
-        private static readonly Color CBg = ColorTranslator.FromHtml("#FFFFFF");
-        private static readonly Color CFg = ColorTranslator.FromHtml("#000000");
-        private static readonly Color CHoverBg = ColorTranslator.FromHtml("#F0F0F0");
-        private static readonly Color CDetailBg = ColorTranslator.FromHtml("#F0F0F0");
-        private static readonly Color CDetailFg = ColorTranslator.FromHtml("#333333");
-        private static readonly Color CDetailSep = ColorTranslator.FromHtml("#A0A0A0");
-        private static readonly Color CTrack = ColorTranslator.FromHtml("#F0F0F0");
-        private static readonly Color CThumb = ColorTranslator.FromHtml("#C0C0C0");
+        private static readonly Color CBg = UiTheme.Hex("#FFFFFF");
+        private static readonly Color CFg = UiTheme.Hex("#000000");
+        private static readonly Color CHoverBg = UiTheme.Hex("#F0F0F0");
+        private static readonly Color CDetailBg = UiTheme.Hex("#F0F0F0");
+        private static readonly Color CDetailFg = UiTheme.Hex("#333333");
+        private static readonly Color CDetailSep = UiTheme.Hex("#A0A0A0");
+        private static readonly Color CTrack = UiTheme.Hex("#F0F0F0");
+        private static readonly Color CThumb = UiTheme.Hex("#C0C0C0");
         // 立体边框：上/左取浅色、下/右取深色（VBE 的 NameListWndClass 就是这个配色）
-        private static readonly Color CEdgeLight = ColorTranslator.FromHtml("#F0F0F0");
-        private static readonly Color CEdgeDark = ColorTranslator.FromHtml("#646464");
-        private static readonly Color CScrollEdge = ColorTranslator.FromHtml("#808080");
+        private static readonly Color CEdgeLight = UiTheme.Hex("#F0F0F0");
+        private static readonly Color CEdgeDark = UiTheme.Hex("#646464");
+        private static readonly Color CScrollEdge = UiTheme.Hex("#808080");
 
         // ★v140 选中行 = VBE 里"选中文本"那种深蓝（不是 Win10 那种浅蓝 #0078D7，
         //   那个在白色列表里偏亮、偏"系统对话框"，压不住 JetBrains Mono 的字形）。
@@ -56,7 +48,7 @@ namespace VbeComplete
                 if (string.IsNullOrWhiteSpace(s)) continue;
                 try
                 {
-                    var c = ColorTranslator.FromHtml(s.Trim());
+                    var c = UiTheme.Hex(s.Trim());
                     if (c.A > 0) return c;
                 }
                 catch { }
@@ -92,11 +84,11 @@ namespace VbeComplete
         private static readonly Dictionary<string, Color> IconColor =
             new Dictionary<string, Color>(StringComparer.OrdinalIgnoreCase)
             {
-                { "func", ColorTranslator.FromHtml("#1F8A3B") },
-                { "prop", ColorTranslator.FromHtml("#7A3FA8") },
-                { "var",  ColorTranslator.FromHtml("#2A5CAA") },
-                { "type", ColorTranslator.FromHtml("#B26A00") },
-                { "kw",   ColorTranslator.FromHtml("#707070") },
+                { "func", UiTheme.Hex("#1F8A3B") },
+                { "prop", UiTheme.Hex("#7A3FA8") },
+                { "var",  UiTheme.Hex("#2A5CAA") },
+                { "type", UiTheme.Hex("#B26A00") },
+                { "kw",   UiTheme.Hex("#707070") },
             };
 
         private const int PadX = 2;
@@ -147,11 +139,9 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 重新读一遍字体与配色并重算行高/字宽。
-        /// ★v175：设置界面改完外观要立刻能看到效果 —— 候选窗是 App 全程只有一份的
-        ///   常驻窗口，不重算就得重启程序（用户会以为"保存没生效"）。
-        /// ★旧字体必须自己 Dispose：Control 不拥有 Font，`_fontBold` 在某些字体上
-        ///   就是 `_font` 本身（创建粗体失败时的兜底），所以要判同一个对象不能删两次。
+        /// 重新读一遍字体与配色并重算行高/字宽（设置里改完外观要立刻见效，候选窗是常驻的）。
+        /// ★旧字体必须自己 Dispose：Control 不拥有 Font，而 `_fontBold` 在某些字体上就是
+        ///   `_font` 本身（建粗体失败的兜底），要判同一个对象不能删两次。
         /// </summary>
         public void ReloadStyle()
         {
@@ -188,11 +178,9 @@ namespace VbeComplete
 
         /// <summary>
         /// 字体 = "好看 + 比 VBE 小一号"。
-        ///   * 名字：`POPUP_FONT` 优先；否则用 VBE 编辑器字体（去掉 Light/Thin 字重）；
-        ///     再否则从 <see cref="PrettyFaces"/> 里挑第一个装了的；
-        ///   * 字号：`POPUP_FONT_SIZE` 正数 = 直接用它，负数 = 比 VBE 小几号，
-        ///     0/没写 = **比 VBE 小一号**（v141 用户口径：一样大太大）。
-        ///     注册表读不到就退回 Courier New 10。
+        ///   名字：`POPUP_FONT` 优先，否则 VBE 编辑器字体（去掉 Light/Thin），再否则 PrettyFaces。
+        ///   字号：`POPUP_FONT_SIZE` 正数 = 绝对值，负数 = 比 VBE 小几号，0/没写 = 小一号。
+        ///   注册表读不到就退回 Courier New 10。
         /// </summary>
         private static Font BuildFont(out float pt)
         {
@@ -420,10 +408,8 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 宽度 = 最长候选 + 图标 + 内边距 + 滚动条，至少 MinChars 个字符宽。
-        /// ★跟 VBE 一样"够用就好"：VBE 的列表也是贴着最长条目收窄的。
-        /// 每个名字的宽度按名字缓存 —— 每次按键都会重算一次宽度，逐条 MeasureText
-        /// 在几十条候选上会变成可感知的开销。
+        /// 宽度 = 最长候选 + 图标 + 内边距 + 滚动条，至少 MinChars 个字符宽（贴着内容收窄）。
+        /// ★名字宽度按名字缓存：每次按键都重算，几十条候选逐条 MeasureText 会被感知到。
         /// </summary>
         private int ComputeWidth()
         {
@@ -669,10 +655,9 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 超过 maxW 就用 ... 省略。prefixLen 是"原名字里还能完整显示几个字符"
-        /// （命中下标超出这个范围的不再上色 —— 它们已经被省略号吃掉了）。
-        /// 先按等宽字体的字符宽估算再微调：逐字符 MeasureText 在长名字上是 O(n)
-        /// 次 GDI 调用，而这一步每帧每行都要做。
+        /// 超过 maxW 就用 ... 省略。prefixLen = 原名字里还能完整显示几个字符
+        /// （命中下标超出这个范围的不再上色）。
+        /// ★先按等宽估算再微调：逐字符 MeasureText 是 O(n) 次 GDI 调用，而每帧每行都要做。
         /// </summary>
         public string Truncate(string name, int maxW, out int prefixLen)
         {

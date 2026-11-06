@@ -12,7 +12,6 @@ namespace VbeComplete
 {
     internal static class Rules
     {
-        public static bool IsIdentStart(char c) => char.IsLetter(c) || c == '_';
         public static bool IsIdentChar(char c) => char.IsLetterOrDigit(c) || c == '_';
 
         /// <summary>
@@ -46,10 +45,9 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// VBE 重排整行之后，找回补全词真正的结束下标（0-based 排他）。只认**整词**出现，
-        /// 多处取起点最接近 near0 的，找不到用 fallback0。
-        /// ★v131b：原来只用 LastIndexOf 不校验词边界 —— `Split = Split(x)` 会取到最后一个，
-        ///   光标跑到别的词后面去。
+        /// VBE 重排整行之后，找回补全词真正的结束下标（0-based 排他）。
+        /// 只认整词出现，多处取起点最接近 near0 的。★不能只 LastIndexOf ——
+        /// `Split = Split(x)` 会取到最后一个，光标跑到别的词后面。
         /// </summary>
         public static int FindCompletionEnd(string actual, string completion, int near0, int fallback0)
         {
@@ -118,10 +116,9 @@ namespace VbeComplete
             (c >= 0xFFE0 && c <= 0xFFE6);
 
         /// <summary>
-        /// 反向换算：VBE 给的显示列（1-based）-> 1-based 字符列。
-        /// ★v131b：GetSelection 返回的是**显示列**（`    学生 = Split()` 里 `(` 前是 17 列，
-        ///   按字符数是 15）。直接当字符列取词，含中文的行会取错甚至取到空词 —— 症状是
-        ///   "这一行根本不弹候选"。凡是吃 snap.CaretCol 的判据都必须先过这一道。
+        /// 反向换算：VBE 给的显示列（1-based）→ 1-based 字符列。
+        /// ★GetSelection 返回的是**显示列**（Tab 展开、全角占 2），当字符列用会取错词甚至
+        /// 取到空词，症状是"这一行根本不弹候选"。吃 CaretCol 的判据都得先过这一道。
         /// </summary>
         public static int CharColFromDisp(string text, int dispCol, int tabw = -1)
         {
@@ -143,10 +140,8 @@ namespace VbeComplete
         // ------------------------------------------------------------------
 
         /// <summary>
-        /// 声明语句的"头"：带 Dim 的常规声明，以及**不带 Dim 的裸声明**。
-        /// ★v133：补上裸声明这一支 —— `Public gCount` / `Private m_arr` 是模块级变量的常见
-        ///   写法，旧正则只认"修饰符 + 关键字"，于是 `Public g|` 被判成普通表达式、弹窗照弹，
-        ///   而候选池里刚好有它自己（"定义全局变量时提示它自己"）。
+        /// 声明语句的"头"：带 Dim 的常规声明，以及不带 Dim 的裸声明（`Public gCount`）。
+        /// ★裸声明必须认 —— 不认就会在 `Public g|` 处弹它自己（"定义全局变量时提示它自己"）。
         /// </summary>
         private static readonly Regex ReDeclHead = new Regex(
             @"^[ \t]*(?:" +
@@ -175,17 +170,10 @@ namespace VbeComplete
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         /// <summary>
-        /// 光标是不是停在"造新名字 / 写类型"的位置 —— 这类位置一律不弹。
-        /// ★v133 口径：`As` 后面不弹（那里只可能是类型名，VBE 自己的处理更准，弹上去只会挡住
-        ///   它）；裸声明的名字位置不弹。
-        /// 例外：`Const PI = 3.14` 的等号右边是表达式，照常提示。
-        /// ★v168 例外：`Private Fu|` / `ReDim Pre|` 这种"关键字后面还该跟关键字"的位置照弹
-        ///   （见 DeclKeywordFollow）。以前整条声明都算造名字的位置，于是这两个位置一个候选
-        ///   都不出 —— 用户对着 `Private Function` 和 `ReDim Preserve` 各框了一处。
-        /// ★v170：这条判据只该拦"**正在起一个新名字**"的位置。两类位置被它误伤了：
-        ///   ① `ReDim [Preserve] arr|` —— 命名的是**已经存在**的数组（用户报："ReDim
-        ///      Preserve 后面再打变量名不会提示了"），那正是最需要提示的地方；
-        ///   ② `Dim arr(0 To n|` —— 括号里是上界表达式，`n` 是既有变量。
+        /// 光标是不是停在"造新名字 / 写类型"的位置 —— 这类位置一律不弹
+        /// （`As` 后不弹，裸声明的名字位不弹；`Const PI = 3.14` 右边是表达式，照常提示）。
+        /// ★只拦"正在起一个**新**名字"：`ReDim [Preserve] arr|`（命名既有数组）与
+        ///   `Dim arr(0 To n|`（上界表达式）都不拦 —— 那里正是最需要提示的地方。
         /// </summary>
         public static bool InDeclarationPosition(string line, int caretCol)
         {
@@ -291,37 +279,23 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 光标前那个词是"后面还该跟一个关键字"的声明关键字时，返回该位置允许的关键字集合；
-        /// 不是这种位置返回 null。
-        /// ★用户 v168 的原始描述："private function、redim preserve，这俩都是连续两处 vba
-        ///   关键字……跟 dim 定义变量、变量名不提示的约束冲突了" —— 说得很准：声明位置
-        ///   **不提示变量名**是对的，但不该连关键字一起封掉。
-        /// ★不认识的组合一律返回 null（照旧按声明位置处理），宁可少弹不要乱弹。
-        /// ★v171：光看"前一个词"不够，还要求那个词是**这条语句的头**（或头的合法第二节）。
-        ///   否则同一个词出现在别处会被误套：行首孤零零一个 `Preserve`（不是 `ReDim` 的
-        ///   续行）也按"这里只能跟数组名"处理，把 `ReDim` 自己一起过滤掉了 —— 用户报的
-        ///   "preserve 后面不会提示 redim 了"。同类还有 `Case`：后面是**表达式**不是封闭
-        ///   关键字集（`Case vbYes` / `Case Chr(65)` 都被滤掉），所以整条不设限。
+        /// 光标前那个词是"后面还该跟一个关键字"的声明关键字时，返回该位置可用的关键字；
+        /// 不是这种位置返回 null（照旧按声明位置处理 —— 宁可少弹不要乱弹）。
+        /// ★光看前一个词不够，还要求它是**这条语句的头**（或头的合法第二节），否则同一个词
+        ///   出现在别处会被误套：行首孤零零的 `Preserve` 会把 `ReDim` 自己滤掉。
         /// </summary>
         public static string[] DeclKeywordFollow(string line, int wordStartCol) =>
             DeclSlotOf(line, wordStartCol, out string[] kw) == DeclSlot.None ? null : kw;
 
         /// <summary>
-        /// 光标前那个词后面允许出现什么。keywords 与返回值配套：None → null；
-        /// KeywordsOnly / KeywordsAndNames → 白名单（可能是空数组 = 一个关键字都不许）。
+        /// 光标前那个词后面允许出现什么：None（不限）/ KeywordsOnly / KeywordsAndNames。
+        /// keywords 与返回值配套（None → null，其余给白名单，空数组 = 一个关键字都不许）。
         /// </summary>
         /// <remarks>
-        /// ★v173：用户盯着 `Preserve re|` 报的 —— "应该只提示 redim 才对吧"。对：
-        ///   `Preserve` 在语句头只能是 `ReDim Preserve` 的残缺态，这个位置除了 `ReDim`
-        ///   什么都不合法。可 v171 只做到"把 ReDim 放回来"，其余 Replace / Rem / Reset /
-        ///   Resume / Return / RaiseEvent / CreateObject / result 照样满屏 —— 位置对了一半。
-        ///   于是把返回值从"关键字白名单"扩成三态：这些位置**连名字也不该出现**。
-        ///   ★哪些位置名字合法，是逐个对 VBA 语法核过的，别凭手感改：
-        ///     名字合法：`Private gCount`（裸声明）、`ReDim arr`（既有数组）、
-        ///               `ReDim Preserve arr`（只能跟名字）、`For i = 1 To`（循环变量）
-        ///     名字不合法：End / Exit / Option / Do / Loop / Resume / Select / Property /
-        ///               Declare / PtrSafe / On Error / 语句头的 Preserve
-        ///   `Case` 后面是表达式，整条不设限（`Case vbYes` / `Case Chr(65)`）。
+        /// ★按 VBA 语法逐个核过，别凭手感改。名字合法的只有：`Private gCount`（裸声明）、
+        ///   `ReDim [Preserve] arr`、`For i = 1 To`。其余一律连名字都不许出：End / Exit /
+        ///   Option / Do / Loop / Resume / Select / Property / Declare / PtrSafe / On Error /
+        ///   语句头的 Preserve。`Case` 后面是表达式，整条不设限。
         /// </remarks>
         public static DeclSlot DeclSlotOf(string line, int wordStartCol, out string[] keywords)
         {
@@ -460,15 +434,10 @@ namespace VbeComplete
         }
 
         // ------------------------------------------------------------------
-        // 关键字的上下文限制（v174）
-        //
-        // 关键字不像函数名那样"写在哪儿都合法"：`Property` 只在类/窗体/文档模块里有意义，
-        // `Private` / `Public` 只能在模块级写，`ReDim` / `RaiseEvent` 只能在过程体里写。
-        // 以前这些词一律进候选池 —— 用户在标准模块里打 `Prop` 会看到 `Property`、在函数体里
-        // 打 `Pri` 会看到 `Private`，按 Tab 补上去就是一条红着的过程。
-        // ★判据只看两个事实：**模块种类**（ComponentType）与**光标是否在过程体内**。
-        //   两者都拿不准时（类型读不出来 / 解析不到过程）一律放行 —— 宁可多提示，
-        //   也不要因为一次 COM 抖动把用户真正要用的关键字吞掉。
+        // 关键字的上下文限制：`Property` 只在类/窗体/文档模块有意义，`Private` / `Public`
+        // 只能在模块级写，`ReDim` / `RaiseEvent` 只能在过程体里写。
+        // ★判据只看两个事实：模块种类（ComponentType）+ 光标是否在过程体内。两者拿不准时
+        //   一律放行 —— 宁可多提示，也不要因一次 COM 抖动吞掉用户真正要用的关键字。
         // ------------------------------------------------------------------
 
         /// <summary>当前模块的种类 —— 关键字能不能用，一半取决于它。</summary>
@@ -491,10 +460,9 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 只能在**模块级**写的关键字。写进过程体里一定是语法错误。
-        /// ★刻意**不**收 Sub / Function / Property / Type / Enum：它们同时是 `End Sub` /
-        ///   `Exit Function` / `Exit Property` 的第二节，在过程体里是**合法**的。
-        ///   那几个位置由 DeclSlotOf（`End Su|` 只给 Sub/Function/…）管，别在这边封掉。
+        /// 只能在**模块级**写的关键字（写进过程体一定是语法错误）。
+        /// ★刻意**不**收 Sub / Function / Property / Type / Enum：它们也是 `End Sub` /
+        ///   `Exit Function` 的第二节，在过程体里合法；那几个位置归 DeclSlotOf 管。
         /// </summary>
         private static readonly HashSet<string> ModuleLevelOnly =
             new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -558,13 +526,11 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 把光标从"旧文本的第 <paramref name="oldCharCol"/> 个字符之前"搬到新文本里的等价位置。
-        /// 锚是**非空白字符的序号**：重排只动空白，非空白序列不变，所以这个序号是稳的。
-        /// ★真机现象（用户报）：敲完 `n=n+1` 按 Ctrl+S，VBE 会把这一行格式化一遍
-        ///   （`    n = n + 1`），可光标只按**原来的列号**保留 —— 于是从行尾跑到第二个
-        ///   `n` 后面，接着打字就插错地方，还会对着那个假词弹候选。
-        /// 返回 1-based 字符列；返回 0 表示"别搬"（光标前面一个非空白字符都没有，
-        /// 搬过去只会把它推到行首）。
+        /// 把光标从"旧文本第 <paramref name="oldCharCol"/> 个字符之前"搬到新文本的等价位置，
+        /// 返回 1-based 字符列。锚是**非空白字符的序号**（重排只动空白，这个序号是稳的）。
+        /// ★真机：敲完 `n=n+1` 按 Ctrl+S，VBE 会把行格式化成 `    n = n + 1`，但光标只按原
+        ///   列号保留 —— 于是跑到第二个 `n` 后面，接着打字插错地方还会弹假窗。
+        /// 返回 0 = 别搬（光标前面一个非空白字符都没有，搬过去只会推到行首）。
         /// </summary>
         public static int RemapCaretOverSpaces(string oldText, int oldCharCol, string newText)
         {
@@ -584,12 +550,9 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 光标所在**语句段**的起点（0-based）。VBA 用 `:` 分隔同一行里的多条语句，
-        /// 只认「引号外、注释外」的冒号 —— `s = "a:b"` 里的那个不算分隔符。
-        /// ★v169：`Then` / `Else` 也是语句边界（单行 If）——
-        ///   `If n > 0 Then ReDim Preserve res` 里声明起点是 Then 之后，不是行首。
-        ///   不切这一刀，ReDeclHead（要求 `^` 之后就是声明关键字）永远不成立，
-        ///   "声明位置不弹候选"在紧凑写法下整条失效（真机 declprobe 16/17 条）。
+        /// 光标所在**语句段**的起点（0-based）。`:` 分隔多条语句，只认引号外 / 注释外的冒号。
+        /// ★`Then` / `Else` 也是边界（单行 If）：`If n > 0 Then ReDim Preserve res` 的声明
+        ///   起点在 Then 之后。不切这一刀，"声明位置不弹候选"在紧凑写法下整条失效。
         /// </summary>
         public static int StatementStart(string line, int endCol)
         {
@@ -629,11 +592,10 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 光标前那个词是不是紧跟在 `As` / `New` 这类"后面只可能是类型名"的关键字后面。
-        /// ★为什么不并进 InDeclarationPosition：那条只认 `Dim`/`Const`/`ReDim`/`WithEvents`
-        ///   开头的整行，而 `Set c = New |`、`dic.Add 1, New |`、`Sub Foo(a As |)` 的行首都
-        ///   不是声明关键字，旧实现里它们照弹（用户口径 v137：New 后面也一样不弹）。
-        /// wordStartCol 是正在输入的词的起始列；词还没开始时 WordBefore 会回 caret 本身。
+        /// 光标前那个词是不是紧跟在 `As` / `New` 后面（那里只可能是类型名，不弹）。
+        /// ★不能并进 InDeclarationPosition：那条只认 Dim/Const/ReDim/WithEvents 开头的整行，
+        ///   而 `Set c = New |`、`Sub Foo(a As |)` 的行首不是声明关键字。
+        /// wordStartCol 是词的起始列；词还没开始时 WordBefore 会回 caret 本身。
         /// </summary>
         public static bool AfterTypeKeyword(string line, int wordStartCol)
         {
@@ -647,10 +609,9 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 把模块全文里"正在输入的那个词"挖成空格。
-        /// ★用户打到一半的名字（`Dim glo` / `Public g`）本身会被解析成一个声明，池子里就出现
-        ///   这个词自己（自我提示）。挖掉之后只剩"已经写完的名字"。
-        /// ★先核对那一行那一列确实就是这个词，对不上就原样返回：模块全文有缓存、偶尔比光标慢
+        /// 把模块全文里"正在输入的那个词"挖成空格，免得半截名字被当成声明、在池子里提示
+        /// 它自己（`Dim glo|`）。
+        /// ★先核对那一行那一列确实就是这个词，对不上就原样返回：全文有缓存、可能比光标慢
         ///   一拍，宁可这次不挖，也不能拿错位的位置把别人挖掉（挖坏 Dim 会让整个模块解析失败）。
         /// </summary>
         public static string BlankToken(string moduleText, int line1, int startCol1, string token)
@@ -681,12 +642,10 @@ namespace VbeComplete
         private const string WithOwnerBoundary = ":,=(&+-*/\\^><";
 
         /// <summary>
-        /// 光标若停在**成员访问位置**，返回那个点号的 0-based 下标；否则 -1。
-        /// ★v138：这是"要不要让给 VBE"的唯一判据（从 PY 的 _member_list_dot_col 整条移植）。
-        ///   原先只认"光标紧跟点号"，`Range("A1").|` / `student.na|` 漏判 —— 我们的裸名池
-        ///   会照弹、压在 VBE 的成员列表上面。
-        /// 认：`student.|`、`Range("A1").|`、With 块的 `    .Size`。
-        /// 不认：`1.5`、`"abc".c`、注释/字符串里的点。
+        /// 光标停在**成员访问位置**时返回那个点号的 0-based 下标，否则 -1。
+        /// ★这是"要不要让给 VBE"的唯一判据：我们的裸名池在上面弹会把 VBE 的成员列表压住。
+        /// 认 `student.|` / `Range("A1").|` / With 块的 `    .Size`；
+        /// 不认 `1.5` / `"abc".c` / 注释与字符串里的点。
         /// </summary>
         public static int MemberDotCol(string line, int caretCol)
         {
@@ -763,10 +722,9 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 光标是不是在**注释**里（`'...` 或语句开头的 `Rem ...`）。
-        /// ★与 InCommentOrString 的差别只在"字符串算不算"。自动配对必须用这一版：打
-        ///   `s = "abc` 再按 `"` 时，光标正在未闭合字符串内部，那一下正是收尾的引号；
-        ///   按"在字符串里就不配对"提前放弃，结果是 `s = "abc""`。
+        /// 光标是不是在注释里（`'...` 或语句开头的 `Rem`）。
+        /// ★与 InCommentOrString 只差"字符串算不算"：自动配对必须用这一版 —— 打 `s = "abc`
+        ///   再按 `"` 时光标正在未闭合字符串里，那一下正是收尾的引号。
         /// </summary>
         public static bool InCommentOnly(string line, int caretCol) =>
             ScanDead(line, caretCol, strCounts: false, remCounts: true);
@@ -888,12 +846,10 @@ namespace VbeComplete
         public static string Rstrip(string s) => (s ?? "").TrimEnd(' ', '\t', '\r', '\n');
 
         /// <summary>
-        /// 自动弹出候选窗的总判据（v141）：四个条件同时成立才弹 —— 快照真的变了、不是切了
-        /// 代码窗、最近按过键、**光标没有跳到别的行**。
-        /// ★第 4 条修的是"鼠标单击到某个变量名就自动弹"：点另一行的变量时"行号 + 行文本"
-        ///   全变，和刚敲一个字长得一样，而"最近按过键"拦不住（用户常打完字顺手点一下）。
-        ///   真打字时行号绝不会变，方向键 / Ctrl+Home 这类只移动光标的操作一定会变 ——
-        ///   所以行号一变就当"光标移动"：只收不弹。
+        /// 自动弹窗的总判据，四个条件同时成立：快照真变了、不是切了代码窗、最近按过键、
+        /// **行号没变**。
+        /// ★第 4 条拦的是"鼠标点一下变量名就弹"：点另一行的变量时行号会变，真打字绝不会变
+        /// （方向键 / Ctrl+Home 只移动光标，也一定会变），所以行号一变只收不弹。
         /// </summary>
         public static bool AutoTriggerWanted(bool changed, bool modSwitched,
             bool keyTriggered, bool lineJumped)

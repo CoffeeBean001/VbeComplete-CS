@@ -1,11 +1,7 @@
-// 模糊匹配：决定"打的这几个字命中哪几个候选、命中在哪几位、排第几档"。
-//
-// ★与 PY 的 engine.fuzzy_match 同一套语义：① 优先整块连续（arr → dataArr 命中 Arr）；
-//   ② 否则逐字符贪心，优先落在词边界（ds → dataSheet）；
-//   ③ 贪心必须带**反向可行性上界**，否则"明明是子序列"也会被判不匹配
-//      （getSettingTitle3 里输 getse3 就是这个坑）；
-//   ④ 命中位置是**逐字符下标集合**，不是区间 —— UI 要拿它逐字符上色。
-// ★不依赖任何 VBA 知识：只做字符串匹配，类别判定在 Engine。
+// 模糊匹配：哪几个候选命中、命中在哪几位、排第几档（只做字符串，不懂 VBA）。
+// ★整块连续优先（arr → dataArr），否则逐字符贪心、优先落在词边界（ds → dataSheet）。
+// ★贪心必须带反向可行性上界，否则"明明是子序列"也会判成不匹配。
+// ★命中位置是逐字符下标集合（UI 拿它逐字符上色），不是区间。
 
 using System;
 using System.Collections.Generic;
@@ -44,11 +40,8 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 小写化，但**保证长度不变**。
-        /// fuzzy 返回的下标要拿去索引原始名字（UI 高亮、Kind/Span 都按它算），
-        /// 所以 low 必须与 name 逐字符对齐。C# 的 char.ToLowerInvariant 是逐字符的、
-        /// 一定不变长；这里显式写出来是为了让"长度必须相等"这条约束有个落点
-        /// （Python 版 `str.lower()` 会变长，那边才需要特殊处理）。
+        /// 小写化，但**保证长度不变**：返回的下标要拿去索引原始名字（高亮 / Kind / Span）。
+        /// char.ToLowerInvariant 逐字符转换、一定不变长；写出来是为了让这条约束有个落点。
         /// </summary>
         public static string LowerKeepLen(string s)
         {
@@ -118,11 +111,8 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 模糊匹配。query 为空表示"全都要"（手动 Ctrl+Space），此时 Kind=0、
-        /// Positions 为空、First=0。
-        ///
-        /// Kind 越大越像用户要的：
-        ///   4 完全相等 > 3 前缀 > 2 词首缩略 > 1 连续块 > 0 分散
+        /// 模糊匹配。query 为空 = 全都要（手动 Ctrl+Space），此时 Kind=0、Positions 为空。
+        /// Kind 越大越像用户要的：4 完全相等 > 3 前缀 > 2 词首缩略 > 1 连续块 > 0 分散。
         /// </summary>
         public static bool Match(string name, string query, out FuzzyHit hit)
         {

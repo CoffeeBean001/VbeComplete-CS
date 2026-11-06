@@ -1,15 +1,7 @@
-// 编辑手感相关的【纯判据】：块结构识别、缩进推算、自动配对、退格接管。
-//
-// ★一行 COM 都不许有：这些函数在【键盘钩子线程】里跑（决定"这一下按键吃不吃"），
-//   钩子线程没有 COM 单元，碰一次就可能让全系统键盘卡住（PY v56 的教训）。
-//   所以全部只吃"一行文本 + 一个光标列"，能被自检直接钉住。
-//
-// ★与 PY 版 vbe_bridge.py 一一对应（_block_kind / next_line_indent / enter_indent_wanted /
-//   pair_delete_span / _pair_insertion …）。两个故意不一样的地方：
-//   1. 缩进单位不做"按工程反推 tabw"的拟合，Tab 一律按 TabWidth 算 —— 拟合猜错就会把
-//      光标落进词中间。
-//   2. ~~CloserNeeded 用保守口径~~ ★v142 作废：那条极简口径正是用户报的"回车不补结构
-//      结尾"，现已按 PY v80a/v82/v86 完整移植。
+// 编辑手感相关的纯判据：块结构识别、缩进推算、自动配对、退格接管。
+// ★一行 COM 都不许有：这些函数在键盘钩子线程里跑，碰一次 COM 就可能卡住全系统键盘。
+//   只吃"一行文本 + 一个光标列"，因此每条规则都能被自检直接钉住。
+// ★与 Python 版刻意不同：缩进单位不按工程反推 TabWidth —— 拟合猜错就把光标落进词中间。
 
 using System;
 using System.Collections.Generic;
@@ -156,10 +148,9 @@ namespace VbeComplete
         // ------------------------------------------------------------------
 
         /// <summary>
-        /// 这一行是哪一种块结构的开头？返回规范化类型名；不是块头返回 null。
-        ///   * "branch"    —— Else / ElseIf…Then / Case：要缩进一级，但**没有收尾**；
-        ///   * "directive" —— #If / #Else：要缩进一级，收尾必须由用户写 `#End If`；
-        ///   * 其余 —— Closers 里有对应收尾的那些。
+        /// 这一行是哪一种块结构的开头？不是块头返回 null。
+        ///   "branch" = Else / ElseIf…Then / Case（缩进一级但**没有收尾**）；
+        ///   "directive" = #If / #Else（收尾由用户写 `#End If`）；其余见 Closers。
         /// </summary>
         public static string BlockKind(string line)
         {
@@ -353,12 +344,10 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 下方到底要不要补 closer —— 移植 PY v80a/v82/v86 的完整口径。
-        /// 传了 kind（生产路径一定传）时：下方已挂着本块自己的收尾 -> 不补（OwnCloserBelow）；
-        /// 下方第一个非空行是同类收尾但缩进更浅 -> 再问 OwnerAboveAt（外层收尾=该补 / 用户写歪=不补）；
-        /// 其余 -> 补。空行 / 整行注释 / 分支行 / 行标签 / `#` 指令一律跳过（缩进不代表层级）。
-        /// ★用户真机报的：先写一个 `For`（补了 Next），再回到它**上面**补一个新 `For` 回车 ——
-        ///   下面压着同级旧块，旧口径"同级一律不补"于是新块的 Next 永远补不出来。
+        /// 下方到底要不要补 closer（移植 PY v80a/v82/v86 的完整口径）：
+        /// 已有本块收尾 → 不补；下方是同类但更浅 → 问 OwnerAboveAt；其余 → 补。
+        /// 空行 / 整行注释 / 分支行 / 行标签 / `#` 指令一律跳过（缩进不代表层级）。
+        /// ★同级旧块压在下面时也要补 —— 旧口径"同级一律不补"会让新块永远没有 Next。
         /// 不传 kind 时保持旧口径（只有老测试在用）。
         /// </summary>
         public static bool CloserNeeded(IList<string> below, string closer, int baseIndent)
@@ -403,10 +392,9 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 下方是不是已经挂着【本块自己的】收尾（移植 PY `_own_closer_below`）。
-        /// 只按"和块头同缩进"的行配平：同类块头 +1、同类收尾 -1；配平到 0 遇到的同类收尾就是
-        /// 本块的；同缩进的别的东西 = 本块早结束了；更浅 = 已出这一层；更深的同类另用 deeper
-        /// 配平（免得把内层 Next 当成"用户写歪的"）。空行/注释/分支行/行标签/`#` 整行跳过。
+        /// 下方是不是已经挂着本块自己的收尾（移植 PY `_own_closer_below`）。
+        /// 只按"与块头同缩进"的行配平：同类块头 +1、同类收尾 -1，配平到 0 遇到的就是本块的；
+        /// 同缩进的别的东西 = 本块早结束，更浅 = 已出这一层，更深的同类另用 deeper 配平。
         /// </summary>
         private static bool OwnCloserBelow(IList<string> below, string closer, string kind, int baseIndent)
         {
@@ -479,12 +467,10 @@ namespace VbeComplete
         // ------------------------------------------------------------------
 
         /// <summary>
-        /// 这一行"看起来像块头 / 整行注释"—— **允许只写了半截**。
-        /// ★v142：钩子线程只有轮询留下的快照，用户常敲完 `For i = 1 To 3` 最后一个字符立刻
-        ///   回车，那一瞬快照还少一个 `3`，EnterIndentWanted 判 false ⇒ 回车原样放给 VBE ⇒
-        ///   只换行、不补收尾（用户说的"按回车不自动补结构结尾"）。
-        ///   所以这里只做**宽松**判据（看行首词是不是块关键字、或整行注释），只决定"要不要先
-        ///   接管"；真判定交给 NewLineBelow 拿真 COM 数据重判，判不过就把回车还回去。
+        /// 这一行"看起来像块头 / 整行注释"—— 允许只写了半截。
+        /// ★只做**宽松**判据，决定"要不要先接管"：钩子线程拿到的是轮询快照，用户敲完最后
+        ///   一个字符立刻回车时快照还少一位，严格判据会把回车直接放给 VBE（不补收尾）。
+        ///   真判定交给 NewLineBelow 拿真 COM 数据重判，判不过就把回车还回去。
         /// </summary>
         public static bool LooksLikeBlockHeaderPrefix(string line)
         {
@@ -508,10 +494,10 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 这一下回车值不值得由我们接管：只有整行注释、块结构开头两种；另有三道保守门槛
+        /// 这一下回车值不值得由我们接管：只认整行注释与块结构开头，另有三道保守门槛
         /// （只能在行尾、行内不能有 Tab、空行交给 VBE）。
-        /// ★caretDisp 是 VBE 报的显示列（全角占 2 格、Tab 展开），所以拿"行尾显示列"当靶子
-        ///   要求完全相等 —— 全角行上直接跟字符数比会算错。
+        /// ★caretDisp 是显示列（全角占 2 格、Tab 展开），所以拿"行尾显示列"当靶子比 ——
+        ///   全角行上跟字符数比会算错。
         /// </summary>
         public static bool EnterIndentWanted(string line, int caretDisp)
         {
@@ -539,9 +525,8 @@ namespace VbeComplete
 
         /// <summary>
         /// 光标夹在一对**空**括号 / 空引号正中间时，给出那一对的下标（0-based）。
-        /// 判据只有一条：光标左边那个字符与右边那个字符是不是一对配对符。
-        /// caretDisp 是 VBE 的显示列，这里先换算成字符列再判（换算只走一条路，
-        /// 绝不"两种都试"—— 两种都试就从精确判据退化成并集，会误删）。
+        /// caretDisp 先换算成字符列再判 —— 换算只走一条路，两种都试就从精确判据退化成
+        /// 并集，会误删。
         /// </summary>
         public static bool PairDeleteSpan(string line, int caretDisp, out int left, out int right)
         {
@@ -566,10 +551,9 @@ namespace VbeComplete
         // ------------------------------------------------------------------
 
         /// <summary>
-        /// 算出自动配对后的结果；返回 null 表示"一个字符都不用写"（右半边已在光标右边，
-        /// 只把光标跨过去）。
-        ///   * 引号特殊（开收同字）：左边的引号个数是奇数说明这一下是收尾；
-        ///   * `(`：右边还有内容就只插左括号，除非光标正待在实参/形参表里（那是开新的一层）。
+        /// 算出自动配对后的结果；null = 一个字符都不用写（右半边已在右边，只把光标跨过去）。
+        /// 引号开收同字，左边引号个数为奇数说明这一下是收尾；`(` 右边还有内容时只插左括号，
+        /// 除非光标正待在实参/形参表里（那是开新的一层）。
         /// </summary>
         public static string PairInsertion(string line, int col0, char open, char close,
             out int caretOff, out bool paired)
@@ -695,10 +679,9 @@ namespace VbeComplete
             new Regex(@"^Dim\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         /// <summary>
-        /// `Ctrl+↑` 的落点：过程（startLine..endLine，1-based 闭区间）里**最后一个 `Dim`**
+        /// `Ctrl+↑` 的落点：过程（startLine..endLine，1-based 闭区间）里最后一个 `Dim`
         /// 语句的结束行；找不到返回 0（调用方据此把键还回去）。
-        /// ★跨续行的 Dim 要连续行一起跨过去：`Dim a, _` / `b As String` 的行尾是后一行，
-        ///   落在 `Dim a, _` 上等于落在半条语句里。
+        /// ★跨续行的 Dim 要整条跨过去，落在 `Dim a, _` 上等于落在半条语句里。
         /// </summary>
         public static int LastDimEndLine(IList<string> lines, int startLine, int endLine)
         {
@@ -757,10 +740,9 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 注释 / 解除注释之后光标该落在哪个字符列（1-based）。
-        /// 只在"改动发生在光标之前"时才改变列 —— 按改动前的列直接换算，会让光标每注释一次
-        /// 左移一格、解除一次右移一格（v151 修）。放在纯函数里是为了能被 --selftest 钉住：
-        /// 这段只在 VBE 原生"注释块"按钮不可用时才走，真机上几乎触发不到。
+        /// 注释 / 解除注释之后光标该落在哪个字符列（1-based）。只在"改动发生在光标之前"时
+        /// 才调整 —— 否则每注释一次左移一格、解除一次右移一格。
+        /// 抽成纯函数是为了能被 --selftest 钉住（真机上几乎走不到这条路）。
         /// </summary>
         public static int AfterCommentCharCol(string oldLine, int oldCharCol, bool allCommented)
         {

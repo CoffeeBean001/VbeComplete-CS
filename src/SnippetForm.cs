@@ -1,12 +1,7 @@
-// 代码片段窗（Ctrl+Q）—— C# 版自己的界面，与 Python 版没有视觉/布局继承关系。
-//   顶部"片段库" + 搜索框；左侧自绘列表（标题命中高亮 + 代码首行预览）；
-//   右侧标题输入框 + 代码编辑区（等宽、Tab 缩进、Ctrl+Enter 插入）；底部状态条 + 按钮。
-// ★列表为什么自绘：搜索命中要逐字符高亮（与候选窗同一套观感），而 ListBox 的
-//   DrawToBitmap 在离屏渲染时经常画不出条目 —— --uitest 就废了。
-// ★与补全弹窗刻意相反：那个是 NOACTIVATE 浮窗、一个键都不收；这个要收键盘（搜索/编辑），
-//   所以是普通窗口、会抢焦点 —— 代价是打开期间全局钩子的焦点判据会把按键全放行，于是
-//   窗内的 Esc / Ctrl+Q 必须由本窗自己绑。
-// 数据在 SnippetStore，插入动作由 App 注入（onInsert）；本文件不碰 COM。
+// 代码片段窗（Ctrl+Q）：左侧自绘列表（命中高亮 + 代码首行预览）、右侧标题 + 代码 + 按钮。
+// ★列表自绘：搜索命中要逐字符高亮，且 ListBox 的 DrawToBitmap 在离屏渲染时常画不出条目
+//   （--uitest 就废了）。
+// ★与候选窗相反，这个窗要收键盘（搜索/编辑），所以 Esc / Ctrl+Q 必须由本窗自己绑。
 
 using System;
 using System.Collections.Generic;
@@ -18,17 +13,6 @@ namespace VbeComplete
 {
     internal sealed class SnippetForm : Form
     {
-        // ---- 配色 ----
-        private static readonly Color CBody = ColorTranslator.FromHtml("#F5F7FA");
-        private static readonly Color CCard = ColorTranslator.FromHtml("#FFFFFF");
-        private static readonly Color CLine = ColorTranslator.FromHtml("#DCE3EC");
-        private static readonly Color CText = ColorTranslator.FromHtml("#1F2937");
-        private static readonly Color CMuted = ColorTranslator.FromHtml("#6B7280");
-        private static readonly Color CAccent = ColorTranslator.FromHtml("#2563EB");
-        private static readonly Color CAccentDark = ColorTranslator.FromHtml("#1D4ED8");
-        private static readonly Color CSelectBg = ColorTranslator.FromHtml("#E8F0FE");
-        private static readonly Color CErr = ColorTranslator.FromHtml("#B91C1C");
-
         private const int DefaultW = 820;
         private const int DefaultH = 520;
         private const int RowH = 44;
@@ -69,7 +53,7 @@ namespace VbeComplete
             StartPosition = FormStartPosition.Manual;
             ShowInTaskbar = false;
             TopMost = true;
-            BackColor = CBody;
+            BackColor = UiTheme.Body;
             _uiFont = new Font("Microsoft YaHei UI", 9f);
             Font = _uiFont;
             AutoScaleMode = AutoScaleMode.Font;
@@ -108,7 +92,7 @@ namespace VbeComplete
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
                 RowCount = 3,
-                BackColor = CBody,
+                BackColor = UiTheme.Body,
                 Margin = new Padding(0),
                 Padding = new Padding(0),
             };
@@ -129,9 +113,8 @@ namespace VbeComplete
 
         /// <summary>
         /// 顶部工具栏：左边"片段库"标签（带强调色竖条）+ 搜索框（占满剩余宽度）。
-        /// ★刻意不再写"代码片段"四个字 —— 那是窗口标题，重复一遍只是噪音。
-        /// ★也不在右上角挂"共 N 条 · 命中 M 条"：那是一眼即忘的数字，却会把搜索框
-        ///   挤短、还让它的右边缘跟下面两栏对不齐。计数只在底部状态条出现一次。
+        /// ★不写"代码片段"（那是窗口标题），也不挂"共 N 条 · 命中 M 条"：那会挤短搜索框、
+        ///   还让右边缘跟下面两栏对不齐。计数只在底部状态条出现一次。
         /// </summary>
         private Control BuildToolbar()
         {
@@ -140,7 +123,7 @@ namespace VbeComplete
                 Dock = DockStyle.Fill,
                 ColumnCount = 2,
                 RowCount = 1,
-                BackColor = CBody,
+                BackColor = UiTheme.Body,
                 Padding = new Padding(12, 0, 12, 0),
                 Margin = new Padding(0),
             };
@@ -153,13 +136,13 @@ namespace VbeComplete
                 Text = "片段库",
                 AutoSize = true,
                 Font = _markFont = new Font("Microsoft YaHei UI", 10f, FontStyle.Bold),
-                ForeColor = CText,
+                ForeColor = UiTheme.Text,
                 Anchor = AnchorStyles.Left,
                 Margin = new Padding(9, 0, 14, 0),
             };
             lblMark.Paint += (s, e) =>
             {
-                using (var b = new SolidBrush(CAccent))
+                using (var b = new SolidBrush(UiTheme.Accent))
                     e.Graphics.FillRectangle(b, new Rectangle(0, 3, 3, Math.Max(6, lblMark.Height - 6)));
             };
 
@@ -167,8 +150,8 @@ namespace VbeComplete
             {
                 Dock = DockStyle.Fill,
                 BorderStyle = BorderStyle.FixedSingle,
-                BackColor = CCard,
-                ForeColor = CText,
+                BackColor = UiTheme.Card,
+                ForeColor = UiTheme.Text,
                 PlaceholderText = "搜索标题…（多个词用空格分开，↓ 进列表，Enter 插入）",
                 // 上下各 15px = 在 56px 的工具栏里垂直居中；右边 0 = 与主体/底栏的
                 // 12px 内边距对齐（搜索框右边缘正好压在同一条竖线上）。
@@ -206,7 +189,7 @@ namespace VbeComplete
                 RowCount = 1,
                 Margin = new Padding(0),
                 Padding = new Padding(12, 0, 12, 0),
-                BackColor = CBody,
+                BackColor = UiTheme.Body,
             };
             main.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 250f));
             main.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
@@ -228,7 +211,7 @@ namespace VbeComplete
                 ColumnCount = 2,
                 RowCount = 2,
                 Margin = new Padding(0),
-                BackColor = CBody,
+                BackColor = UiTheme.Body,
             };
             right.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             right.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
@@ -239,7 +222,7 @@ namespace VbeComplete
             {
                 Text = "标题",
                 AutoSize = true,
-                ForeColor = CMuted,
+                ForeColor = UiTheme.Muted,
                 Anchor = AnchorStyles.Left,
                 Margin = new Padding(0, 6, 8, 8),
             };
@@ -247,8 +230,8 @@ namespace VbeComplete
             {
                 Dock = DockStyle.Fill,
                 BorderStyle = BorderStyle.FixedSingle,
-                BackColor = CCard,
-                ForeColor = CText,
+                BackColor = UiTheme.Card,
+                ForeColor = UiTheme.Text,
                 Margin = new Padding(0, 2, 0, 8),
             };
             right.Controls.Add(lblTitle, 0, 0);
@@ -262,8 +245,8 @@ namespace VbeComplete
                 ScrollBars = ScrollBars.Both,
                 WordWrap = false,
                 BorderStyle = BorderStyle.FixedSingle,
-                BackColor = CCard,
-                ForeColor = CText,
+                BackColor = UiTheme.Card,
+                ForeColor = UiTheme.Text,
                 Font = _codeFont = new Font("Consolas", 10.5f),
                 Margin = new Padding(0),
             };
@@ -286,7 +269,7 @@ namespace VbeComplete
                 Dock = DockStyle.Fill,
                 ColumnCount = 2,
                 RowCount = 1,
-                BackColor = CBody,
+                BackColor = UiTheme.Body,
                 Padding = new Padding(12, 0, 12, 0),
                 Margin = new Padding(0),
             };
@@ -302,7 +285,7 @@ namespace VbeComplete
                 WrapContents = false,
                 Anchor = AnchorStyles.Right,
                 Margin = new Padding(0),
-                BackColor = CBody,
+                BackColor = UiTheme.Body,
             };
 
             btnRow.Controls.Add(MakeButton("关闭", Close_, false));
@@ -318,7 +301,7 @@ namespace VbeComplete
             {
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleLeft,
-                ForeColor = CMuted,
+                ForeColor = UiTheme.Muted,
                 AutoSize = false,
                 Margin = new Padding(0),
                 Text = "",
@@ -336,18 +319,18 @@ namespace VbeComplete
                 Text = text,
                 AutoSize = true,
                 FlatStyle = FlatStyle.Flat,
-                BackColor = primary ? CAccent : CCard,
-                ForeColor = primary ? Color.White : CText,
+                BackColor = primary ? UiTheme.Accent : UiTheme.Card,
+                ForeColor = primary ? Color.White : UiTheme.Text,
                 Padding = new Padding(10, 5, 10, 5),
                 Margin = new Padding(8, 0, 0, 0),
                 Cursor = Cursors.Hand,
             };
             b.FlatAppearance.BorderSize = primary ? 0 : 1;
-            b.FlatAppearance.BorderColor = CLine;
+            b.FlatAppearance.BorderColor = UiTheme.Line;
             if (primary)
             {
-                b.FlatAppearance.MouseOverBackColor = CAccentDark;
-                b.FlatAppearance.MouseDownBackColor = CAccentDark;
+                b.FlatAppearance.MouseOverBackColor = UiTheme.AccentDark;
+                b.FlatAppearance.MouseDownBackColor = UiTheme.AccentDark;
             }
             b.Click += (s, e) => onClick();
             return b;
@@ -480,11 +463,8 @@ namespace VbeComplete
             }
             else if (IsDirty())
             {
-                // ★v151：一条都没搜到时**绝不能清编辑框**。用户可能正写着一半没
-                //   保存的片段，在搜索框里敲词时逐字符都会经过"零命中"这个状态
-                //   （打 "msg" 的中间态 "m"、"ms" 常常零命中），旧代码会顺手把
-                //   _title/_code 清空 —— 一整段没保存的代码就这么没了，连确认框
-                //   都没有（对比 target>=0 那条，那里是特意用 IsDirty 保护过的）。
+                // ★一条都没搜到时**绝不能清编辑框**：用户可能正写着一半没保存的片段，
+                //   而打字过程中每个中间态都会经过"零命中"（`m` / `ms` 常常零命中）。
                 //   列表可以空，编辑器必须留在原地，并说清楚"内容没变、只是没搜到"。
                 SetStatus("没有匹配的片段 —— 编辑框里的内容还在（"
                           + (_shownTitle ?? "未保存的新片段") + "），按 Esc 可退出", true);
@@ -569,7 +549,7 @@ namespace VbeComplete
         {
             if (_status == null) return;
             _status.Text = msg ?? "";
-            _status.ForeColor = err ? CErr : CMuted;
+            _status.ForeColor = err ? UiTheme.Err : UiTheme.Muted;
         }
 
         private bool Confirm(string text)
@@ -744,8 +724,8 @@ namespace VbeComplete
             {
                 SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
                          ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
-                BackColor = CCard;
-                ForeColor = CText;
+                BackColor = UiTheme.Card;
+                ForeColor = UiTheme.Text;
                 TabStop = true;
             }
 
@@ -793,18 +773,18 @@ namespace VbeComplete
             {
                 var g = e.Graphics;
                 g.SmoothingMode = SmoothingMode.AntiAlias;
-                using (var bg = new SolidBrush(CCard)) g.FillRectangle(bg, ClientRectangle);
+                using (var bg = new SolidBrush(UiTheme.Card)) g.FillRectangle(bg, ClientRectangle);
 
                 if (_items.Count == 0)
                 {
-                    using (var b = new SolidBrush(CMuted))
+                    using (var b = new SolidBrush(UiTheme.Muted))
                     using (var f = new Font("Microsoft YaHei UI", 9f))
                     {
                         string t = "还没有片段 —— 在右边写好代码，点「新建」";
                         var sz = g.MeasureString(t, f);
                         g.DrawString(t, f, b, (Width - sz.Width) / 2, (Height - sz.Height) / 2);
                     }
-                    using (var pen = new Pen(CLine)) g.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
+                    using (var pen = new Pen(UiTheme.Line)) g.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
                     return;
                 }
 
@@ -813,11 +793,11 @@ namespace VbeComplete
                 using (var titleFont = new Font("Microsoft YaHei UI", 9.5f))
                 using (var titleBold = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold))
                 using (var subFont = new Font("Consolas", 8.5f))
-                using (var textBrush = new SolidBrush(CText))
-                using (var mutBrush = new SolidBrush(CMuted))
-                using (var hitBrush = new SolidBrush(CAccentDark))
-                using (var selBrush = new SolidBrush(CSelectBg))
-                using (var barBrush = new SolidBrush(CAccent))
+                using (var textBrush = new SolidBrush(UiTheme.Text))
+                using (var mutBrush = new SolidBrush(UiTheme.Muted))
+                using (var hitBrush = new SolidBrush(UiTheme.AccentDark))
+                using (var selBrush = new SolidBrush(UiTheme.SelectBg))
+                using (var barBrush = new SolidBrush(UiTheme.Accent))
                 using (var hovBrush = new SolidBrush(ColorTranslator.FromHtml("#F3F6FB")))
                 using (var linePen = new Pen(ColorTranslator.FromHtml("#EEF1F5")))
                 {
@@ -884,7 +864,7 @@ namespace VbeComplete
                     }
                 }
 
-                using (var pen = new Pen(CLine)) g.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
+                using (var pen = new Pen(UiTheme.Line)) g.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
             }
 
             private static string FirstLine(string code)

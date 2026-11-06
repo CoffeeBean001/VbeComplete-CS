@@ -100,17 +100,15 @@ namespace VbeComplete
 
         /// <summary>
         /// 把一项写进 settings.ini 的 `[settings]` 段，并立刻重新 Load（本进程马上生效）。
-        /// <para>`value == null` = 恢复默认：把那一行**注释掉**，而不是删掉 ——
-        /// 模板里那一行上面就写着它是什么意思，删掉等于把说明书一起撕了。</para>
-        /// <para>认不出 / 找不到那一行就把新行插在段尾（老用户手写的 ini 也可能压根没这一项）。</para>
+        /// `value == null` = 恢复默认：把那一行**注释掉**而不是删掉（行上面就是它的说明书）。
+        /// 找不到那一行就把新行插在段尾（手写的 ini 可能压根没这一项）。
         /// </summary>
         public static bool Set(string key, string value) => Write(key, value, null);
 
         /// <summary>
         /// 恢复默认：把那一行重新注释掉，并把值写回 <paramref name="defaultValue"/>。
-        /// <para>★为什么不能只写 `; KEY =`：模板里 `; AUTO_SPACE = 1` 的那个 1 本身就是说明书。</para>
-        /// <para>★为什么不能沿用行上原有的值：被改过的活行上是用户的值（比如 0），注释保留它
-        /// 会让"注释掉 = 用默认值"变成"注释掉 = 看起来还是关着"，正好把用户绕回去。</para>
+        /// ★不能只写 `; KEY =`（模板里的值本身就是说明书）；也不能沿用行上原有的值 ——
+        ///   活行上是用户改的值（比如 0），注释保留它会让"注释掉 = 用默认值"变成"看起来还关着"。
         /// </summary>
         public static bool Reset(string key, string defaultValue) => Write(key, null, defaultValue);
 

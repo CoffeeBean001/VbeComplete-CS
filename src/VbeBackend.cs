@@ -97,10 +97,8 @@ namespace VbeComplete
 
         /// <summary>
         /// 取"当前代码窗 + 它的 CodeModule"，拿不到返回 false。
-        /// <para>★为什么要有这一处：VBE 关着 / 切到没有代码窗的视图时 `ActiveCodePane`
-        /// 是 null，直接点 `.CodeModule` 会抛 "runtime binding on a null reference"。
-        /// 那**不是故障**，不该在日志里制造假警报，更不该让每个方法各判一遍
-        /// （以前 17 处各写一遍，其中 6 处忘了判）。</para>
+        /// ★VBE 关着 / 切到没有代码窗的视图时 `ActiveCodePane` 是 null，点 `.CodeModule`
+        ///   会抛 null reference。那不是故障（不该报警），也不该让每个方法各判一遍。
         /// </summary>
         private bool TryCodePane(out dynamic pane, out dynamic module)
         {
@@ -256,12 +254,6 @@ namespace VbeComplete
             _modAt = DateTime.MinValue;
         }
 
-        public int CurrentLine()
-        {
-            var s = Snapshot();
-            return s == null ? -1 : s.Line;
-        }
-
         /// <summary>本工程所有组件的名字（模块 / 类模块 / 窗体）。缓存 30 秒。</summary>
         public List<string> ComponentNames()
         {
@@ -319,11 +311,9 @@ namespace VbeComplete
         // ------------------------------------------------------------------
 
         /// <summary>
-        /// 全工程每个模块的作用域分析（含"别的模块的 Public 也能提示"）。
-        /// ★旧版只收当前模块，于是在 Module2 写 `Public Sub Refresh()`、在 Module1 敲 `ref`
-        ///   什么都提示不出来 —— 而 VBA 里这是合法的跨模块调用。PY 版一直是全工程。
-        /// signature = "各组件名 + 行数"的滚动哈希，供引擎判"池子要不要重建"（行数没变就复用：
-        /// 读全文跑正则比读 CountOfLines 贵两个数量级，而打字时每秒触发十几次）。
+        /// 全工程每个模块的作用域分析（别的模块的 Public 也要能提示 —— 那是合法的跨模块调用）。
+        /// signature = "各组件名 + 行数"的滚动哈希，供引擎判池子要不要重建：读全文跑正则比读
+        /// CountOfLines 贵两个数量级，而行数没变就不用重读。
         /// </summary>
         public List<ModuleScope> ProjectScopes(out int signature)
         {
@@ -474,13 +464,10 @@ namespace VbeComplete
                     end0 = Rules.FindCompletionEnd(actual, completion, end0 - completion.Length, end0);
                 if (end0 > actual.Length) end0 = actual.Length;
 
-                // ★v131b：`Rules.DispCol(text, i)` 给的是"字符 i【之前】"的 1-based 显示列
-                //   （与 Python 版 `_set_caret` 的 `_disp_width(...) + 1` 同一语义）。
-                //   * 不补括号：光标就在词尾 = 字符 end0 之前 ⇒ DispCol(end0)。
-                //   * 补了括号：end0 指向那个 `(`，而我们要的是【两个括号中间】
-                //     = 字符 end0+1（即 `)`）之前 ⇒ DispCol(end0 + 1)。
-                //   ★v131c：v131b 写成了 DispCol(end0)，于是停在 `(`【左边】
-                //     （`Split|()`），用户报的"落在左括号左侧"就是这一处。
+                // ★`Rules.DispCol(text, i)` 给的是"字符 i【之前】"的 1-based 显示列。
+                //   不补括号：光标在词尾 = 字符 end0 之前 ⇒ DispCol(end0)。
+                //   补了括号：要的是两个括号中间 = 字符 end0+1（即 `)`）之前 ⇒ DispCol(end0+1)。
+                //   ⚠️ 写成 DispCol(end0) 会停在 `(` 左边（`Split|()`）。
                 int caretCol = Rules.DispCol(actual, Math.Min(actual.Length, end0 + (addedParens ? 1 : 0)), 4);
                 if (caretCol < 0) caretCol = 0;
 
@@ -517,23 +504,6 @@ namespace VbeComplete
         // ------------------------------------------------------------------
         // 写：行操作
         // ------------------------------------------------------------------
-
-        /// <summary>在第 lineNo 行后面插入一行，并把光标放过去（缩进由调用方给）。</summary>
-        public bool InsertLineBelow(int lineNo, string text, int caretCol)
-        {
-            try
-            {
-                dynamic vbe = ComCtx.Vbe();
-                if (ReferenceEquals(vbe, null)) return false;
-                dynamic cp = vbe.ActiveCodePane;
-                dynamic cm = cp.CodeModule;
-                cm.InsertLines(lineNo + 1, text);
-                OnWeWrote();
-                cp.SetSelection(lineNo + 1, caretCol, lineNo + 1, caretCol);
-                return true;
-            }
-            catch (Exception e) { Fail(e); return false; }
-        }
 
         public bool ReplaceLineRaw(int lineNo, string text)
         {
@@ -602,10 +572,9 @@ namespace VbeComplete
 
         // ==================================================================
         // VBE 内置命令 —— "设置注释块"/"解除注释块"
-        // ★v145：控件 ID **与 VBE 语言版本无关**（中文"设置注释块"、英文 Comment Block 都是
-        //   192 / 2552）—— 绝不要按 Caption 找控件，换语言版本必然找不到。
-        // 真机实测（Excel 365 / VBE 7.1）：Execute() ≈ 3.5ms（逐行 ReplaceLine 三行约 15ms）；
-        //   执行后选区原样保留；改动进 VBE 自己的 Undo 栈；FindControl 首次 18ms、之后 <1ms ⇒ 必须缓存。
+        // ★控件 ID 与 VBE 语言版本无关（中英文都是 192 / 2552），绝不按 Caption 找。
+        // 真机实测：Execute() ≈ 3.5ms、选区原样保留、改动进 VBE 自己的 Undo 栈；
+        //   FindControl 首次 18ms、之后 <1ms ⇒ 必须缓存。
         // ==================================================================
         public const int CmdCommentBlock = 192;
         public const int CmdUncommentBlock = 2552;
@@ -667,10 +636,9 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 把 text 写回第 lineNo 行。VBE 允许光标停在【模块最后一行的下一行】
-        /// （一个尚不存在的"虚拟空行"）：那时 `Lines()` 读出来是空串、看着一切
-        /// 正常，但 `ReplaceLine()` 会抛"无效的过程调用或参数"（Python 版真机
-        /// 实测）。这种行得先用 `InsertLines()` 真的建出来。
+        /// 把 text 写回第 lineNo 行。VBE 允许光标停在"模块最后一行的下一行"（尚不存在的
+        /// 虚拟空行）：`Lines()` 读出来是空串、看着正常，但 `ReplaceLine()` 会抛"无效的过程
+        /// 调用或参数"。这种行得先用 `InsertLines()` 真的建出来。
         /// </summary>
         public bool WriteLineRaw(int lineNo, string text)
         {
@@ -708,9 +676,9 @@ namespace VbeComplete
         /// Shift+Enter（smart=false）/ 回车（smart=true）：在光标行【下方】新起一行，光标落在
         /// 缩进之后，本行一个字符都不动。
         /// smart=true 多四道保险（任一不满足返回 false，让调用方把回车还给系统）：有选区、
-        /// 光标不在行尾（那是拆行）、空行、引号没闭合。smart=false 刻意不要求行尾。
-        /// alignBranch：本行是 Else/ElseIf/Case 时先把【本行】拉回该在的层级。
-        /// autoClose：块头后面补一行收尾（保守口径见 Editing.CloserNeeded）。
+        /// 光标不在行尾、空行、引号没闭合。
+        /// alignBranch：本行是 Else/ElseIf/Case 时先把本行拉回该在的层级。
+        /// autoClose：块头后面补一行收尾（口径见 Editing.CloserNeeded）。
         /// </summary>
         public bool NewLineBelow(bool smart, bool autoClose, bool alignBranch)
         {
@@ -949,12 +917,10 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 自动配对：敲 `(` / `"` 时替用户补出右半边，光标落在中间。
-        /// 返回 true = "这一下我代为输入了"（调用方据此吞掉原按键）；
-        /// 返回 false = "我没管"（调用方必须放行，绝不吞掉按键却什么都没发生）。
-        ///
-        /// openCh 可能是**全角**（中文标点输入法）—— 由钩子侧换算后送进来，
-        /// 这一层绝不自己再去猜输入法状态（两份判据早晚会打架）。
+        /// 自动配对：敲 `(` / `"` 时补出右半边，光标落在中间。
+        /// true = 这一下我代为输入了（调用方吞掉原按键）；false = 我没管（必须放行）。
+        /// openCh 可能是**全角**（中文标点输入法）：由钩子侧换算后送进来，这一层不再猜
+        /// 输入法状态（两份判据早晚会打架）。
         /// </summary>
         public bool InsertPair(char openCh)
         {
@@ -1089,9 +1055,8 @@ namespace VbeComplete
 
         /// <summary>
         /// 把代码窗光标上/下移 delta 行，尽量保持同一列。
-        /// ★不用"放行按键让 VBE 自己动"：VBE 里 Shift+↑/↓ 的原生语义是**扩选**。
-        /// 列原样透传（VBE 的列与 SetSelection 的列是同一套语义），目标行短时由
-        /// VBE 自己钳到行尾 —— 这里绝不做字符数换算。
+        /// ★不能让 VBE 自己动：Shift+↑/↓ 在 VBE 里的原生语义是**扩选**。
+        /// 列原样透传（两边是同一套语义），目标行短时由 VBE 自己钳到行尾。
         /// </summary>
         public bool MoveCaretLine(int delta)
         {
@@ -1125,10 +1090,10 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 把一段（可能多行的）片段插到光标处。落点模型是整行拼接：前半行 + 片段第 1 行、
-        /// 片段 2..n-1 行、片段最后一行 + 后半行 —— 于是"光标在行中间"也能插；有选区是替换语义。
-        /// 写入尽量原子：中间 n-1 行用**一次** InsertLines 灌进去，再覆盖首行；任何一步失败都
-        /// 回到"什么都没发生"（留下半截片段会让用户再点一次，片段就插两遍）。
+        /// 把一段（可能多行的）片段插到光标处：前半行 + 片段首行、中间行、末行 + 后半行，
+        /// 所以"光标在行中间"也能插；有选区是替换语义。
+        /// ★尽量原子：中间行用**一次** InsertLines 灌进去；任何一步失败都回到"什么都没发生"
+        ///   （留下半截片段会让用户再点一次，片段就插两遍）。
         /// </summary>
         public bool InsertSnippet(string text)
         {
@@ -1256,9 +1221,8 @@ namespace VbeComplete
 
         /// <summary>
         /// 把光标放到第 charCol 个字符【之前】（1-based 字符列，与 VBE 的列语义一致）。
-        /// ★v131c：参数是"第几个字符之前"，不是"跳过几个字符"。以前直接把 charCol 喂给
-        ///   DispCol，而 DispCol(i) 返回的是"字符 i 之前"的列 ⇒ 实际落在第 charCol+1 列，
-        ///   每个调用点都稳定右偏一格（真机：SetCaret(10,1) 读回来是 (10,2)）。
+        /// ★参数是"第几个字符之前"，不是"跳过几个字符"：直接把 charCol 喂给 DispCol 会
+        ///   稳定右偏一格（真机 SetCaret(10,1) 读回来是 (10,2)）。
         /// </summary>
         public bool SetCaret(int lineNo, int charCol)
         {

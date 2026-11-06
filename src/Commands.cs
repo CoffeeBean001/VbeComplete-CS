@@ -1,11 +1,7 @@
-// 换行/行操作命令 —— Ctrl+D / Ctrl+K / Ctrl+/ / Ctrl+Shift+Enter / Ctrl+↑↓。
-//
-// ★为什么单独一个文件：这些是【会改用户代码】的动作，必须满足两条 ——
-//   ① 同一语义只有一份实现：钩子（App）与真机验证（--hktest）走同一批函数，否则"验证通过"
-//      证明不了按键时那条路是好的；② 返回值必须说清"到底做成了没有"：钩子靠它决定要不要把
-//      键还回去（旧写法是 void，拿不到快照直接 return，键被吞、屏幕不动，用户只能得出
-//      "快捷键失效了"）。
-// 全部只在 UI 线程调用（内部走 COM）。
+// 行操作命令：Ctrl+D / Ctrl+K / Ctrl+/ / Ctrl+Enter / Ctrl+↑↓。
+// ★会改用户代码，所以两条必须成立：同一语义只有一份实现（钩子与 --hktest 走同一批函数，
+//   否则"验证通过"证明不了按键那条路是好的）；返回值说清"到底做成了没有"—— 钩子靠它
+//   决定要不要把键还回去（旧写法 void 拿不到结果，键被吞、屏幕不动）。
 
 using System;
 using System.Collections.Generic;
@@ -61,13 +57,9 @@ namespace VbeComplete
         public static bool ToggleComment(VbeBackend be)
         {
             long t0 = Environment.TickCount64;      // 从进函数算起：读选区+读行+执行都算
-            // ★v144：**不要用 Snapshot()**。它有一条"多行选区一律返回 null"的判据
-            //   （见 VbeBackend.Snapshot 里 `if (sl != el) return null`），而 Ctrl+
-            //   的典型用法恰恰是"选中一段代码批量注释"—— 于是用户每次按都被判成
-            //   "拿不到快照"，键被吞掉、文档一个字不动，看起来就是"快捷键失效"。
-            //   Python 版一开始就是直接 GetSelection + 逐行读写（vbe_bridge
-            //   toggle_comment），所以同一个操作在那边一直是好的。
-            //   这里改成同一口径：选区自己取、行自己读、写完把选区原样摆回去。
+            // ★**不能用 Snapshot()**：它对多行选区一律返回 null，而 Ctrl+/ 的典型用法
+            //   恰恰是"选中一段批量注释" ⇒ 每次按都判成"拿不到快照"，键被吞、文档不动。
+            //   这里自己取选区、自己读行，写完把选区原样摆回去。
             int sl, sc, el, ec;
             if (!be.TryGetSelection(out sl, out sc, out el, out ec)) return false;
             if (sl < 1 || el < sl) return false;
@@ -218,9 +210,8 @@ namespace VbeComplete
 
         /// <summary>
         /// 把 `CodeModule.Lines(from, n)` 读回来的一整段拆成 n 行（行尾空白已去掉）。
-        /// ★VBE 用 CRLF 拼接；末尾是空行时 split 会少一个元素，所以**按 n 补齐**——
-        ///   "最后几行是空行"在注释块里极常见（选到 Sub 结尾那种），少一行就会
-        ///   把上一行的撇号加到错的偏移上。
+        /// ★末尾是空行时 split 会少一个元素，必须**按 n 补齐** —— 注释块里"最后几行是空行"
+        ///   极常见（选到 Sub 结尾那种），少数一行就会把撇号加到错的偏移上。
         /// </summary>
         private static List<string> SplitBlock(string block, int n)
         {

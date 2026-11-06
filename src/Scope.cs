@@ -1,13 +1,6 @@
-// 作用域分析：从模块文本算出"每个名字属于谁、在别处看不看得见"。
-//
-// ★为什么要有这一层：候选池原来是"整模块全量标识符"，于是 Sub A 里的 `Dim tmp`
-//   会在 Sub B 里被提示出来 —— 而 VBA 里 B 根本看不见它。这一层不碰 COM、不碰 UI，
-//   只吃字符串，所以每条可见性规则都能写成断言。
-//
-// 档位（越大越近，排序优先）：
-//   4 = 本过程局部 / 参数    3 = 本模块模块级（含 Private）
-//   2 = 别的模块的 Public（以及本模块"用过但没声明"的名字）
-//   0 = 不可见（别的过程的局部、别的模块的 Private）—— 不进池
+// 作用域分析：从模块文本算出"每个名字属于谁、在别处看不看得见"（不碰 COM / UI）。
+// 档位（越大越近，排序优先）：4 = 本过程局部/参数，3 = 本模块模块级（含 Private），
+// 2 = 别的模块 Public（以及本模块"用过但没声明"的名字），0 = 不可见（不进池）。
 
 using System;
 using System.Collections.Generic;
@@ -43,10 +36,8 @@ namespace VbeComplete
 
         /// <summary>
         /// 隐式变量出现过的过程集合（ScopeKey；空串 = 模块级）。
-        /// ★v155（对齐 PY 的 scope="proc"）：VBA 里未声明变量的作用域就是首次出现的那个
-        ///   过程 —— A 里 `num = 1`、B 里也写 `num` 是两个变量，提示过去就是教用户写错。
-        /// ★v161：值是**过程集合**而不是单个过程。只记第一次出现的那个，第二个过程就再也
-        ///   看不见它（用户报的 getTitle2 里打 di 提示不出 dic）。
+        /// ★未声明变量的作用域就是它出现过的那些过程 —— A 里 `num = 1`、B 里也写 `num`
+        ///   是两个变量，跨过程提示就是教用户写错。所以值是**集合**，不是单个过程。
         /// </summary>
         public readonly Dictionary<string, HashSet<string>> FreeIdentProc =
             new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
@@ -125,9 +116,8 @@ namespace VbeComplete
 
         /// <summary>
         /// 本模块自己的全部模块级成员（含 Private），给 `Me.` 用。
-        /// ★v150：`Me.` 后面 Private 完全合法，拿 Exported() 去填是错的 —— 那份名单是
-        ///   "别的模块看得见什么"，正好把 Private 滤掉，于是收不到自己的私有过程。
-        /// ★不收过程局部和 `type:` 伪键。
+        /// ★不能用 Exported() —— 那是"别的模块看得见什么"，正好把 Private 滤掉。
+        /// 不收过程局部和 `type:` 伪键。
         /// </summary>
         public Dictionary<string, KeyValuePair<string, int>> Members()
         {
@@ -293,14 +283,10 @@ namespace VbeComplete
             bool typePrivate = false;
             bool typeIsEnum = false;
 
-            // ★v178：结构判据必须看**逻辑语句**，不能只看物理行。
-            //   用户报"`if di` 不提示 dic1/dic2"，根因就在这儿：
-            //       Private Function getFormula(ByVal ws As Worksheet, ByVal col As Long, _
-            //                                   ByVal dic1 As Object, ByVal dic2 As Object) As String
-            //   形参跨了续行符 `_`，而 `ReProcHead` 只吃一行 ⇒ 第一行的 `(` 配不到 `)`，
-            //   **整条形参表一个都没收下来**（连第一行的 ws / col 都丢了，ws 只是碰巧
-            //   因为 `ws.Cells` 像宿主对象才从"全量标识符"那条路混进来）。
-            //   有 Option Explicit 时这条路被堵死 ⇒ dic1 / dic2 从此不进池子，打 di 只剩内建。
+            // ★结构判据必须看**逻辑语句**，不能只看物理行：形参表跨续行符 `_` 时，
+            //   `ReProcHead` 只吃一行 ⇒ 第一行的 `(` 配不到第二行的 `)`，**整条形参表一个
+            //   都收不下来**（连第一行的参数也丢）。有 Option Explicit 时没有任何兜底，
+            //   那些名字永远不进池子。
             SplitLogical(lines, out _, out string[] logical, out bool[] isContLine);
 
             for (int ln = 1; ln <= n; ln++)
@@ -766,8 +752,7 @@ namespace VbeComplete
 
         /// <summary>
         /// 像不像"宿主给的对象"？只认一条语法证据：**后面紧跟点号**（`CommandButton1.Caption`）。
-        /// ★v156：去掉了"前面是 Set"那条 —— `Set x = ...` 的 x 是被赋值的变量，Option Explicit
-        ///   模块里没 Dim 就是编译错误，放行等于教用户写错代码。
+        /// ★不认"前面是 Set" —— `Set x = ...` 的 x 是被赋值的变量，没 Dim 就是编译错误。
         /// 不做类型推断，拿不准按普通自由标识符处理。
         /// </summary>
         private static bool LooksLikeHostObject(string code, Match m)
@@ -835,15 +820,12 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 把物理行拆成"逻辑语句"（VBA 的行尾续行符 `_` 把一条语句摊到多行）。
-        /// 三个数组都是 **1-based**，与 <c>ln</c> 对齐（0 号空着）：
+        /// 把物理行拆成"逻辑语句"（行尾续行符 `_` 把一条语句摊到多行）。三个数组 1-based：
         ///   physical[i] —— 第 i 行自己的代码（注释/字符串已挖空）；
         ///   logical[i]  —— 从第 i 行开始的整条语句（续行已接上，`_` 换成空格）；
-        ///   isCont[i]   —— 第 i 行只是上一行的续行（结构判据要跳过它，否则同一条
-        ///                  语句会被当成两条，`ByVal dic1 As Object` 这种半截行还会
-        ///                  被 ReModuleBare 之类误认成模块级声明）。
-        /// ★v178：`ReProcHead` 只吃一行，跨续行的形参表会整条丢光（用户报的
-        ///   "if 后面打 di 不提示 dic1"）。所有"按行首关键字判类型"的地方都得走这里。
+        ///   isCont[i]   —— 第 i 行只是上一行的续行，结构判据必须跳过它
+        ///                  （否则 `ByVal dic1 As Object` 这种半截行会被误认成模块级声明）。
+        /// ★所有"按行首关键字判类型"的地方都得走 logical，不能吃 physical。
         /// </summary>
         private static readonly bool NoContFix =
             Environment.GetEnvironmentVariable("VBECOMPLETE_NO_CONT_FIX") == "1";

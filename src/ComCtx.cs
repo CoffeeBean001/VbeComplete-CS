@@ -1,10 +1,6 @@
-// COM 接入层：拿到正在运行的 VBE 对象并缓存。
-//
-// 不用 Microsoft.Office.Interop.*：那套绑定具体 Office 版本，装 WPS / 只有 Word / 换版本
-// 都会在编译期绑死。这里全部走 IDispatch 后期绑定（dynamic），与 PY 的 comtypes 同路。
-// ★三条硬规矩：① 只有 UI 线程（STA）能调，钩子线程一次都不许碰；② 宿主不在时立刻退让并
-//   退避，绝不反复试（宿主忙时失败调用会阻塞到超时，"卡死"就是这么来的）；③ 缓存代理对象，
-//   每次用前探活，探活失败立刻丢弃。
+// COM 接入层：拿到运行中的 VBE 并缓存（全走 IDispatch 后期绑定，不绑 Office 版本）。
+// ★三条硬规矩：只有 UI 线程（STA）能调；宿主不在就退避、绝不反复试（失败调用会阻塞
+//   到超时，"卡死"就是这么来的）；缓存代理每次用前探活，探活失败立刻丢弃。
 
 using System;
 using System.Collections.Generic;
@@ -42,12 +38,9 @@ namespace VbeComplete
 
         // ------------------------------------------------------------------
         // 宿主探测
-        //
-        // ★WPS 12 把文字/表格/演示全塞进同一个 wps.exe —— et.exe / wpp.exe 只是转发器，
-        //   把文档交给 wps.exe 后自己立刻退出（所以"按进程名 et 找表格"永远不成立）。
-        //   而且 WPS 表格实例在 ROT 里同时注册成 KET.Application 和 Excel.Application。
-        //   ⇒ 不猜"一个"ProgID，改成**候选链**：按前台进程名决定先试谁，谁真的有实例、
-        //     且 VBE 拿得到，就用谁。先试 KET 是为了避免"Excel 和 WPS 同时开着时连错宿主"。
+        // ★WPS 12 的文字/表格/演示全在同一个 wps.exe（et.exe / wpp.exe 只是转发器），且 WPS
+        //   表格在 ROT 里同时注册成 KET.Application 与 Excel.Application。⇒ 不猜单个 ProgID，
+        //   改用**候选链**：按前台进程名决定先试谁，先试 KET，免得多宿主同时开着时连错。
         // ------------------------------------------------------------------
 
         private static string ForegroundProcess()
@@ -70,9 +63,8 @@ namespace VbeComplete
 
         /// <summary>
         /// 连到的 Application 是不是"前台那个宿主"。
-        /// ★Excel 和 WPS 同时开着时，ROT 里两个 Application 都在，光按候选顺序试会连错 ——
-        ///   连错的后果是补全读的是另一个工程的代码（甚至把候选写进另一个宿主）。
-        ///   用 Application.Hwnd 的进程号跟前台窗口的进程号比，最省事也最准。
+        /// ★Excel 与 WPS 同时开着时 ROT 里两个都在，按候选顺序试会连错 —— 后果是读另一个
+        ///   工程的代码（甚至把候选写进另一个宿主）。比 Application.Hwnd 的进程号最准。
         /// </summary>
         private static bool HostPidMatches(object app, uint fgPid)
         {
@@ -130,13 +122,6 @@ namespace VbeComplete
 
         public static void NoteHost(string progid) => _lastOk = progid;
 
-        /// <summary>兼容旧调用：猜一个"最可能"的 ProgID（日志 / 探针用）。</summary>
-        public static string GuessProgId()
-        {
-            var list = HostCandidates();
-            return list.Count > 0 ? list[0] : "Excel.Application";
-        }
-
         private static object _app;
         private static object _vbe;
         private static DateTime _lastVerify = DateTime.MinValue;
@@ -153,13 +138,9 @@ namespace VbeComplete
 
         // ------------------------------------------------------------------
         // WPS 的引用不能常驻
-        //
-        // ★实测：只要客户端进程活着并持有 WPS 的 Application 引用，用户关 WPS 时窗口就再也
-        //   退不掉（进程还在、Responding=True，等 25 秒也不动）；把客户端杀掉或让进程退出，
-        //   立刻 1 秒关掉。Office 不在乎这个，WPS 在乎。
-        //   ⇒ WPS 宿主上改成"每轮用完就释放"：PollOnce 开头 Begin()、结尾 End()，
-        //     End 时 FinalReleaseComObject。代价是每轮重新 GetActiveObject（ROT 查找，
-        //     本地操作，微秒级），换来 WPS 能正常关闭。
+        // ★持有 WPS 的 Application 引用时，用户关 WPS 窗口退不掉（等 25 秒也不动）；
+        //   杀掉客户端立刻 1 秒关。⇒ 每轮用完就释放：Begin / End + FinalReleaseComObject，
+        //   代价是每轮重新 GetActiveObject（ROT 查找，微秒级）。Office 不在乎这个。
         // ------------------------------------------------------------------
         private static bool _wpsHost;
         private static int _depth;
@@ -172,10 +153,9 @@ namespace VbeComplete
         public static void Begin() => _depth++;
 
         /// <summary>
-        /// 结束一次 COM 使用期。typing=true 表示"用户正在打字"：这时不能释放 ——
-        /// 每 80ms 重建一次连接，耗时会盖过快照的 800ms 保鲜期，回车补结构那条链路
-        /// 直接失灵（WPS 真机上验到 snap=null）。停手就释放。
-        /// ★连续打字超过 2 秒也强制断一次：避免用户"边打字边点关闭"时引用一直挂着。
+        /// 结束一次 COM 使用期。typing=true（用户正在打字）时不释放 —— 每 80ms 重建连接的
+        /// 耗时会盖过快照的 800ms 保鲜期，回车补结构直接失灵。停手就释放。
+        /// ★连续打字超过 2 秒强制断一次，避免"边打字边点关闭"时引用一直挂着。
         /// </summary>
         public static void End(bool typing = false)
         {

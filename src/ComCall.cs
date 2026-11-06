@@ -1,10 +1,6 @@
-// 直接调 IDispatch::Invoke —— 只为了那几个"有 ByRef 出参"的 VBA 方法。
-//
-// ★为什么非写这一层：`CodePane.GetSelection(...)` 四个参数全是 ByRef Long，C# 的 dynamic
-//   后期绑定不支持带出参的调用（实测报 "Error while invoking GetSelection."）；而
-//   `CodePane.Selection` 属性在 IDispatch 上根本查不到。⇒ 只能自己拼 DISPPARAMS，
-//   递四个 VT_BYREF|VT_I4 的 VARIANT。
-//   只支持本项目实际用到的形状（全 byref Long 出参、无入参），不做通用 COM 框架。
+// 直接调 IDispatch::Invoke，只为了那几个带 ByRef 出参的 VBA 方法
+// （`CodePane.GetSelection` 四个 ByRef Long，dynamic 后期绑定调不了）。
+// 只支持本项目用到的形状（全 byref Long 出参、无入参），不做通用 COM 框架。
 
 using System;
 using System.Runtime.InteropServices;

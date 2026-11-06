@@ -237,12 +237,9 @@ namespace VbeComplete
             Ok("decl-follow/普通语句没有", Rules.DeclKeywordFollow("x = foo", 7) == null);
             Ok("decl-follow/粘着不算", Rules.DeclKeywordFollow("Private.Fu", 9) == null);
 
-            // ★v171：锚点必须是**这条语句的头**，不能光看"前一个词"。
-            //   行首孤零零一个 `Preserve` 不是 `ReDim` 的续行，以前照样按"这里只能跟
-            //   数组名"过滤，把 `ReDim` 自己也滤掉了（用户报："preserve 后面不会提示
-            //   redim 了"，截图里敲 `re` 只剩一个 result）。
-            // ★v173：用户接着报"应该只提示 redim 才对吧" —— 对，这个位置除了 `ReDim`
-            //   什么都不合法，所以是 KeywordsOnly（连名字一起剔），不是 KeywordsAndNames。
+            // ★锚点必须是**这条语句的头**，不能只看前一个词：行首孤零零的 `Preserve`
+            //   不是 `ReDim` 的续行，按"这里只能跟数组名"处理会把 `ReDim` 自己滤掉。
+            // ★这个位置除了 `ReDim` 什么都不合法，所以是 KeywordsOnly（连名字一起剔）。
             Eq("decl-follow/行首 Preserve 只给 ReDim",
                 string.Join(",", Rules.DeclKeywordFollow("    Preserve re", 14)
                                  ?? Array.Empty<string>()), "ReDim");
@@ -602,12 +599,10 @@ End Type
             var longN = new Candidate { Name = "abcdef", ScopeKind = 3, HitKind = 3, Pos = 0, Span = 8 };
             Ok("sort/名字短的在前", Engine.Cmp(shortN, longN) < 0);
 
-            // ---- 启动脚本契约（v131a）----
-            // "双击窗口一闪、项目没启动"出过两次，两次都在 .bat 上：
-            //   v129：echo 文本里一个裸右括号就让 cmd 丢弃整个 if 块并退出 255；
-            //   v131a：LF-only 换行让 goto 标签和多行 if 块失效；
-            //   还有更根本的一条：start 之后既不验证也不提示，程序真没起来用户也看不到。
-            // 这些是【文件形态】问题，只能查字节，别用源码字符串护栏（注释会喂饱它）。
+            // ---- 启动脚本契约 ----
+            // "双击一闪、项目没启动"两次都出在 .bat 上：echo 里的裸右括号会让 cmd 丢弃
+            // 整个 if 块；LF-only 换行会让 goto / 多行 if 失效。这些是**文件形态**问题，
+            // 只能查字节，别用源码字符串护栏。
             var root = Settings.Home;
             var bats = Directory.GetFiles(root, "*.bat", SearchOption.AllDirectories)
                 .Where(p => !p.Contains(@"\obj\") && !p.Contains(@"\bin\"))
@@ -651,9 +646,7 @@ End Type
 
         // ------------------------------------------------------------------
         // 编辑手感（块结构 / 缩进 / 自动配对 / 退格接管）
-        // ------------------------------------------------------------------
-        // 模糊匹配：这一层的每个断言都对应 Python 版里一条真实修过的 bug，
-        // 改算法前先看一眼 —— 里面有一条是"贪心会漏判"的经典反例。
+        // 每个断言都对应一条真实修过的 bug；模糊匹配里有一条"贪心会漏判"的经典反例。
         // ------------------------------------------------------------------
         private static void TestFuzzy()
         {
@@ -752,10 +745,9 @@ Global f
 ";
 
         /// <summary>
-        /// 形参表 / `Dim` 跨续行符 `_`（v178，用户截图里的原文）。
-        /// ★以前结构判据**只看物理行**：`ReProcHead` 在第一行拿到 `(`，却配不到第二行的
-        ///   `)`，整条参数表一条都没收下来。有 Option Explicit 时"用过但没声明"那条路
-        ///   也被堵死 ⇒ 打 `di` 只剩内建（Dir / Dim / ReDim …），用户报的就是这个。
+        /// 形参表 / `Dim` 跨续行符 `_`。
+        /// ★结构判据只看物理行时，第一行的 `(` 配不到第二行的 `)`，整条参数表一条都收不下来；
+        ///   有 Option Explicit 时"用过但没声明"也被堵死 ⇒ 那些名字永远不进池。
         /// </summary>
         private const string ContinuationSample = @"Option Explicit
 Private Function getFormula(ByVal ws As Worksheet, ByVal col As Long, _
@@ -1175,11 +1167,9 @@ End Sub
         }
 
         /// <summary>
-        /// v153：无 Option Explicit 时，只被当**函数调用**过的名字（`Range("d2")`
-        /// / `InputBox("x")`）不能算"自动声明的变量"。
-        /// <para>用户报的现象：Worksheet 模块里打 `ra`，第一条是 Excel 的 `Range`
-        /// —— 它其实只是自己代码里 `Range("d2")` 调用过一次的宿主函数，被全量
-        /// 标识符收进池子后拿着工程名档位排到了 `Rate` / `Randomize` 前面。</para>
+        /// 无 Option Explicit 时，只被当**函数调用**过的名字（`Range("d2")` / `InputBox("x")`）
+        /// 不能算"自动声明的变量"：否则打 `ra` 第一条会是 Excel 的 `Range`，把 `Rate`
+        /// / `Randomize` 顶下去。
         /// </summary>
         private static void TestFreeIdents()
         {
@@ -1780,10 +1770,9 @@ End Sub
         }
 
         // ------------------------------------------------------------------
-        // 自动弹出的总判据（v141）：**行号变了就不能弹**
-        // 起因：用户报"有时候鼠标单击到某个变量名，它会自动弹提示词框"。
-        // 单击另一行上的变量时，快照的"行号 + 行文本"全变了，和"敲了一个字"
-        // 长得一模一样；拦不住它的正是"最近 1.2 秒按过键"那条（打完字顺手点一下）。
+        // 自动弹出的总判据：**行号变了就不能弹**
+        // 单击另一行上的变量时"行号 + 行文本"全变，和"敲了一个字"长得一样，"最近按过键"
+        // 那条拦不住（打完字顺手点一下）。
         // ------------------------------------------------------------------
         private static void TestAutoTrigger()
         {
@@ -1812,10 +1801,8 @@ End Sub
         }
 
         // ------------------------------------------------------------------
-        // 开机自启："这条注册表值是不是我们这份 exe"（v162）
-        // ★只是纯判断，不读写注册表（真登记走 --startuptest）。
-        //   起因：老版本写的值名是 VbeComplete，本版是 VbeComplete-CS，
-        //   只按自己的名字删 ⇒ 用户关了自启，开机照样被拉起来。
+        // 开机自启："这条注册表值是不是我们这份 exe"（纯判断，真登记走 --startuptest）
+        // ★历史值名（`VbeComplete`）也要认，只按当前名字删会让用户关了自启照样被拉起来。
         // ------------------------------------------------------------------
         private static void TestAutoStart()
         {

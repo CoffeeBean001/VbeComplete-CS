@@ -1,9 +1,6 @@
-// 极薄的 SQLite 封装：只 P/Invoke 系统自带的 winsqlite3.dll，不引任何 NuGet。
-//
-// ★不装 Microsoft.Data.Sqlite：那会把一坨原生二进制塞进产物，而本程序的承诺是"一个 exe
-//   双击就能跑"；Win10 起 System32 自带 winsqlite3.dll，导出标准 C API。
-// ★只负责"把 SQL 跑掉、把列读回来"，不认识任何业务表（三个 .db 都建在它上面）。
-// ★写出去的必须是真·SQLite 文件 —— 用户会拿 DB Browser 之类去编辑词库。
+// 极薄 SQLite 封装：P/Invoke 系统自带的 winsqlite3.dll，不引任何 NuGet
+// （承诺"一个 exe 双击就能跑"，不往产物里塞原生二进制）。
+// ★只负责跑 SQL / 读列，不认识业务表；写出去的必须是真·SQLite 文件（用户要用 DB Browser 编辑）。
 
 using System;
 using System.Collections.Generic;
@@ -223,13 +220,6 @@ namespace VbeComplete
             }
             catch (Exception e) { _lastError = e.Message; }
             return rows;
-        }
-
-        public List<string> QueryOneColumn(string sql, params object[] args)
-        {
-            var list = new List<string>();
-            foreach (var r in Query(sql, 0, args)) list.Add(r.Length > 0 ? r[0] : "");
-            return list;
         }
 
         /// <summary>单值查询（COUNT(*) 之类）；出错或没行返回 def。</summary>

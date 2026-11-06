@@ -1,14 +1,8 @@
-// 词库：两个**由用户自己维护**的 SQLite 库（keywords-cs.db / functions-cs.db）。
-// ★为什么分两个库：用户口径"关键字和函数是两类东西"，改一个不该动到另一个；每个库只有
-//   1~4 列，拿 DB Browser for SQLite 之类打开就能当表格改。
-// ★绝不与 Python 版共用文件（那是另一个项目），文件名带 `-cs` 后缀。
-// ★枚举一律不收（用户原话："vba里的枚举太多了，不要作为提示词"）。
-// ★启动时一次性全量读进内存，之后每个按键都是纯内存匹配；改词库要重启才生效 —— 刻意把
-//   "文件被别人改了"这种不确定性挡在运行期之外。
-// 表结构（首次运行创建并灌种子；表非空就不再灌，尊重用户的删除）：
-//   keywords (word, wants_space, enabled) / functions(word, kind, wants_parens, enabled)
-//   wants_space / wants_parens 决定补完跟什么：关键字多数要空格（`Dim `），函数默认补括号，
-//   类型名（String / Long）绝不能补括号；enabled = 0 = "知道但别提示我"。
+// 词库：两个由用户自己维护的 SQLite 库（keywords-cs.db / functions-cs.db，绝不与 PY 版共用）。
+// 表结构：keywords(word, wants_space, enabled) / functions(word, kind, wants_parens, enabled)。
+//   wants_space 决定关键字补完跟空格（`Dim `），wants_parens 决定函数补括号 —— 类型名
+//   （String / Long）绝不补；enabled = 0 = "知道但别提示我"。
+// ★启动时一次性全量读进内存，之后每个按键都是纯内存匹配；表非空就不再灌种子（尊重用户的删除）。
 
 using System;
 using System.Collections.Generic;
@@ -120,13 +114,9 @@ namespace VbeComplete
                         bool ws = r.Length < 2 || r[1] != "0";
                         outp.Add(new KeyValuePair<string, bool>(w, ws));
                     }
-                    // ★v151：判据从"启用行数 > 0"改成"表里到底有没有行"。
-                    //   原来的写法把"用户把整张表 enabled 全设成 0"（词库说明里
-                    //   明确教的用法：不想删就置 0）判成"库加载失败"，于是退回
-                    //   内置种子 —— 用户精心禁用的词全部原地复活，日志还写着
-                    //   "内置种子"，看起来像库坏了。
-                    //   真失败（库损坏 / 被锁）会让 LastError 有内容，那种情况才
-                    //   该回落到种子，保证程序仍然可用。
+                    // ★判据是"表里到底有没有行"，不是"启用行数 > 0"：用户把整张表
+                    //   enabled 全设成 0 是词库说明里教的用法，按"启用数"判会当成库加载
+                    //   失败而灌回种子 —— 精心禁用的词全部复活。真失败看 LastError 有没有内容。
                     long total = db.Scalar("SELECT COUNT(*) FROM keywords");
                     return total > 0 || string.IsNullOrEmpty(db.LastError());
                 }
@@ -167,10 +157,8 @@ namespace VbeComplete
 
         /// <summary>
         /// 首次建库时灌关键字种子。返回 false = 没灌成（调用方回落内置种子）。
-        /// <para>★v151：以前 BEGIN / 每一条 INSERT / COMMIT 的返回值全丢掉，日志
-        /// 照写"灌入 N 条"。只要有一条写失败（库被别的客户端锁着、磁盘满、
-        /// 文件只读），表里就是残缺的 0~N 条，而"表非空就不再灌"这条规矩让
-        /// 它**永远**补不回来 —— 词库永久缺字，日志却显示成功。</para>
+        /// ★BEGIN / 每条 INSERT / COMMIT 的返回值必须检查：只要有一条写失败，表里就是残缺的
+        ///   0~N 条，而"表非空就不再灌"会让它**永远**补不回来（词库永久缺字，日志却写成功）。
         /// </summary>
         private static bool SeedKeywords(SqliteDb db)
         {
@@ -272,10 +260,9 @@ namespace VbeComplete
     }
 
     /// <summary>
-    /// "这个关键字补完之后要不要跟空格"的种子判据（只在首次灌种子时用，之后以库里的
-    /// wants_space 列为准）。
-    /// ★直接沿用 BuiltinTables 那份人工校准过的清单，别自己再推一套"看它是不是完整值"的
-    ///   规则 —— 两套判据早晚打架。
+    /// "这个关键字补完之后要不要跟空格"（只在首次灌种子时用，之后以库里的 wants_space 为准）。
+    /// ★直接沿用 BuiltinTables 那份人工校准过的清单，别再推一套"看它是不是完整值"的规则
+    ///   —— 两套判据早晚打架。
     /// </summary>
     internal static class KeywordSeeds
     {

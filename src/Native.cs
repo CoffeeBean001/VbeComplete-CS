@@ -121,7 +121,6 @@ namespace VbeComplete
         public static extern short GetAsyncKeyState(int vKey);
 
         public static bool Down(int vk) => (GetAsyncKeyState(vk) & 0x8000) != 0;
-        public static bool Toggled(int vk) => (GetAsyncKeyState(vk) & 0x0001) != 0;
 
         // ---- 窗口 / 进程 ----
         [DllImport("user32.dll")]
@@ -344,13 +343,9 @@ namespace VbeComplete
         public static extern IntPtr GetParent(IntPtr hWnd);
 
         // ---- VBE 自己的提示窗（成员列表 / 参数信息）----
-        //
-        // ★为什么要知道它们在哪儿：VBE 的参数信息窗就画在光标正下方，我们的候选窗
-        //   默认也在那儿（光标底边 +2px）。两窗一重叠，形参签名正好被候选列表压住
-        //   —— 用户要的是"把候选窗下移到签名提示的下方"。
-        //
-        // ★判据只认类名 + 可见 + 尺寸正常：句柄值会被 Windows 回收复用，只凭
-        //   "还记得这个句柄"就相信它，一旦复用就会出现"永远以为 VBE 在弹提示"。
+        // ★要做的是"让位"：VBE 的形参签名画在光标下方，我们的候选窗也在那儿。
+        // ★判据只认类名 + 可见 + 尺寸正常：句柄会被 Windows 回收复用，只凭"还记得这个
+        //   句柄"就相信它，复用之后会"永远以为 VBE 在弹提示"。
         private static readonly string[] VbePopupClasses = { "NameListWndClass", "PopupTipWndClass" };
 
         private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
@@ -394,20 +389,15 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// 当前可见的 VBE 提示窗屏幕矩形。拿不到就返回空数组 ——
-        /// **宁可重叠（可接受），也不因为探测失败把窗挪到奇怪的角落**。
-        /// 缓存 150ms：枚举顶层窗口约 1.75ms，每轮轮询都做不可取；
-        /// 但也不能太久 —— VBE 的成员列表弹出来之后我们要尽快让位。
+        /// 当前可见的 VBE 提示窗屏幕矩形。拿不到返回空数组 ——
+        /// 宁可重叠，也不因为探测失败把窗挪到奇怪的角落。
+        /// 缓存 150ms：枚举顶层窗口约 1.75ms，每轮都做不可取，但太久会让位不及时。
         /// </summary>
         public static RECT[] VbePopupRects()
         {
             long now = Environment.TickCount64;
-            // ★v139：原来这里写的是 `_popupRectsAt = long.MinValue`，配上
-            //   `now - _popupRectsAt < 150` —— 减法**溢出**成负数，永远小于 150，
-            //   于是每次都当成"缓存还新鲜"，`_popupRectsCache` 一直是初始的空数组。
-            //   后果不是"少让位一次"，而是让位判据**从头到尾没生效过**：
-            //   VbeMemberListVisible() 永远 false、避让 VBE 参数窗永远不挪。
-            //   改用显式的 _hasPopupCache 标记，不再拿哨兵值做算术。
+            // ★不能用哨兵值做算术：`long.MinValue` 配上 `now - x < 150` 会**溢出**成负数，
+            //   于是缓存永远"新鲜"，让位判据从头到尾没生效过。用显式的 _hasPopupCache。
             if (_hasPopupCache && now - _popupRectsAt < 150) return _popupRectsCache;
 
             var found = new List<RECT>(4);
@@ -582,13 +572,11 @@ namespace VbeComplete
         }
 
         // ------------------------------------------------------------------
-        // 输入法：中文标点 / 全角时，标点不能被我们"翻成"半角
-        //
-        // 用户报"输入中文双括号/双引号会被自动变成英文的"：自动配对只看虚拟键 + Shift、
-        // 不看输入法状态 —— 中文标点档下 Shift+9 敲出来的是 `（`，我们却一律插半角 `()`。
+        // 输入法：中文标点档下 Shift+9 敲的是 `（`，自动配对不能一律插半角。
         // 跨进程拿不到 ImmGetContext，只能 ImmGetDefaultIMEWnd + SendMessageTimeout
-        // (WM_IME_CONTROL / IMC_GETCONVERSIONMODE)。★必须带 SMTO_ABORTIFHUNG：目标窗口卡死
-        // 时立刻返回，绝不能让钩子线程被钉住（低级键盘钩子超时会被系统悄悄摘掉）。
+        // (WM_IME_CONTROL / IMC_GETCONVERSIONMODE)。
+        // ★必须带 SMTO_ABORTIFHUNG：目标卡死时要立刻返回，绝不能让钩子线程被钉住
+        //   （低级键盘钩子超时会被系统悄悄摘掉）。
         // ------------------------------------------------------------------
         private const uint WM_IME_CONTROL = 0x0283;
         private const int IMC_GETCONVERSIONMODE = 0x0001;
@@ -637,9 +625,8 @@ namespace VbeComplete
 
         /// <summary>
         /// 输入法现在是不是"英数/半角"状态（<c>IME_CMODE_NATIVE</c> 没置位）。
-        /// ★只给真机探针用：打字类用例在中文模式下，每个字母都会被拿去组字，
-        ///   文本根本落不进文档 —— 那不是程序坏了，是环境不对，探针必须先说清楚。
-        ///   问不到（没有输入法 / 系统不答）按 true 处理，别让环境探测拖死用例。
+        /// ★只给真机探针用：中文模式下每个字母都会被拿去组字，文本根本落不进文档。
+        /// 问不到按 true 处理，别让环境探测拖死用例。
         /// </summary>
         public static bool ImeAlphanumeric(IntPtr hwnd)
         {
@@ -650,11 +637,9 @@ namespace VbeComplete
 
         /// <summary>
         /// 把窗口所属输入法切到"英数"档（只清 <c>IME_CMODE_NATIVE</c>，别的位不动）。
-        /// ★只给真机探针用：探针要"逐字符打字"才能验回车接管，中文模式下字母会被
-        ///   拿去组字（敲出来是 `Fori= 1 To3`），用例必然失败且原因假象为"程序坏了"。
-        ///   走的是 IME 窗口的 <c>WM_IME_CONTROL / IMC_SETCONVERSIONMODE</c>，
-        ///   与读取同一个通道、同样带 SMTO_ABORTIFHUNG —— 目标卡死也不会钉住我们。
-        ///   返回切完之后的模式（-1 = 没问到）。
+        /// ★只给真机探针用：中文模式下逐字符打字会变成 `Fori= 1 To3`，用例必然失败且
+        ///   看起来像"程序坏了"。与读取同一个通道，同样带 SMTO_ABORTIFHUNG。
+        /// 返回切完之后的模式（-1 = 没问到）。
         /// </summary>
         public static int ImeSetAlphanumeric(IntPtr hwnd)
         {
@@ -691,9 +676,8 @@ namespace VbeComplete
 
         /// <summary>
         /// 这个键敲出来的是不是需要自动配对的符号 —— 返回半角字符，否则 '\0'。
-        /// 刻意去问系统"这个 vk 在当前键盘布局下的基础字符"（MapVirtualKey mode 2），
-        /// 而不是写死 vk 常量：布局不同也不会配错。★mode 0 返回的是扫描码不是字符，
-        /// 别换成它（Python 版踩过）。
+        /// ★问系统"这个 vk 在当前布局下的基础字符"（MapVirtualKey mode 2），别写死 vk 常量，
+        ///   也别换成 mode 0（那返回的是扫描码）。
         /// </summary>
         public static char PairCharForKey(int vk, bool shift)
         {
