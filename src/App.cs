@@ -63,6 +63,17 @@ namespace VbeComplete
         // ★v179：最近一次 Ctrl+S 的时刻。VBE 保存时会顺手把当前行格式化，
         //   这是比"数空格"更硬的前兆 —— 刚按过保存，空白怎么变都是它干的。
         private long _lastSaveTs;
+        /// <summary>
+        /// ★v185：Ctrl+S 那一瞬间"保存前那一行 + 光标列"。
+        ///   保存期间 VBE 可能让代码窗短暂失焦，轮询会把 _lastSnap / _hookSnap 一起清空；
+        ///   也可能在用户敲完最后一字后先跑到格式化后的新行 —— 两种情况都让
+        ///   "只差空白"这条判据拿不到旧行 ⇒ 光标不动 + 弹一屏假候选（"又复现"）。
+        ///   钩子线程不许碰 COM，只能读轮询留给它的 _hookSnap。
+        /// </summary>
+        private Snapshot _saveSnap;
+        private long _saveSnapTs;
+        /// <summary>v185 的口子：关掉"用 Ctrl+S 前快照当旧行"（--fmtprobe A/B 用）。</summary>
+        private readonly bool NoSaveSnap = Settings.Flag("NO_SAVE_SNAP", false);
 
         // ---- 探针专用：0 = 注入键一律不理（= 生产行为），-1 = 全放行，其它 = 只放行这一个 vk ----
         // 钩子必须跳过 LLKHF_INJECTED（否则自己补的空格/括号会自己触发自己），而
@@ -102,6 +113,42 @@ namespace VbeComplete
             // 和"宿主把这一行重排了"（Unicode 注入没有 VK，钩子里根本没有这一次按键）。
             if (blank) _lastBlankTs = _lastKeyTs;
         }
+        /// <summary>按 Ctrl+S 时记下"保存前那一行"，供重排判定当旧行锚。</summary>
+        private void NoteSave()
+        {
+            long now = Environment.TickCount64;
+            _lastSaveTs = now;
+            _saveSnapTs = now;
+            // 失焦时 _hookSnap 可能是 null；保留上一份，别把锚抹掉
+            var s = _hookSnap;
+            if (s != null) _saveSnap = s;
+        }
+
+        /// <summary>
+        /// 探针专用：模拟"按下 Ctrl+S 那一刻"记下保存前那一行。
+        /// ★必须在摆出格式化后的新行**之前**调，否则存进去的已经是新行。
+        /// </summary>
+        internal void ProbeNoteSaveForTest() { NoteSave(); }
+        /// <summary>探针专用：模拟保存期间短暂失焦（轮询把 _lastSnap 清空）。</summary>
+        internal void ProbeClearLastSnapForTest() { _lastSnap = null; }
+        /// <summary>
+        /// 探针专用：确定性造出 v185 那个"新文本 + 旧光标列"的落后快照 ——
+        /// 把保存前快照的光标列人为挪后几格，并强制重排走 _saveSnap 这条锚。
+        /// --fmtprobe 用它给 NO_RESPACE_ANCHOR 做 A/B（否则这层修复验不到）。
+        /// </summary>
+        internal void ProbeStaleSaveForTest(int backCols)
+        {
+            NoteSave();
+            var s = _saveSnap;
+            if (s == null || backCols <= 0) return;
+            _saveSnap = new Snapshot
+            {
+                Line = s.Line, Text = s.Text, Module = s.Module,
+                CaretCol = Math.Max(1, s.CaretCol - backCols)
+            };
+            _lastSnap = null;
+        }
+
         internal void RunOnUi(Action a) { try { _disp.Invoke(a); } catch { } }
         internal void RequestExit() { try { _disp.BeginInvoke((Action)ExitThread); } catch { } }
 
@@ -154,6 +201,11 @@ namespace VbeComplete
         /// 探针得能证明"把这段关掉就复现了用户报的现象"，否则绿了也不知道绿的是什么。
         /// </summary>
         private readonly bool NoRespacedFix = Settings.Flag("NO_RESPACED_FIX", false);
+        /// <summary>
+        /// v185 的口子：让重排搬光标继续拿"上一轮快照的光标列"当锚（旧行为）。
+        /// 只为 --fmtprobe 的 A/B 对照存在 —— 修与不修必须在这条探针上分得开。
+        /// </summary>
+        private readonly bool NoRespaceAnchor = Settings.Flag("NO_RESPACE_ANCHOR", false);
         private const long KeyTriggerWindowMs = 1200;
         /// <summary>
         /// "最近这么久没按过空白键"才认"空白是怎么变的不是用户干的"（见 PollOnce 里的
@@ -628,7 +680,7 @@ namespace VbeComplete
                 _lastBlankTs = Environment.TickCount64;
                 _lastTextTs = Environment.TickCount64;
             }
-            if (ctrl && vk == Native.VK_S) _lastSaveTs = Environment.TickCount64;
+            if (ctrl && vk == Native.VK_S) NoteSave();
 
             // ---- 数"按了可能写字的键、文档却没变"的次数 ----
             // 那就是输入法正在组字的信号（拼音被吃掉、还没上屏）。组字状态下
@@ -1177,6 +1229,24 @@ namespace VbeComplete
                     // 上一轮的快照（下面要拿它的文本/光标列算"这一行被重排了没有"）
                     Snapshot prev = _lastSnap;
 
+                    // ★v185：保存那一刻钩子留了一份"保存前那一行"。轮询的 _lastSnap
+                    //   可能被保存期间的失焦清空，也可能已经跑到了格式化后的新行 ——
+                    //   两者都让重排判据拿不到旧行，光标不动还弹一屏假候选。
+                    //   只在"这份快照确实更像旧行"时才替换：去掉空白与新行一致、
+                    //   空白更少，而当前 prev 不是这样的旧行。
+                    if (!NoRespacedFix && !NoSaveSnap && _saveSnap != null &&
+                        Environment.TickCount64 - _saveSnapTs <= SaveWindowMs &&
+                        Rules.SameCodeIgnoringSpace(snap.Text, _saveSnap.Text) &&
+                        Rules.SpaceCount(snap.Text) > Rules.SpaceCount(_saveSnap.Text) &&
+                        (prev == null ||
+                         !Rules.SameCodeIgnoringSpace(snap.Text, prev.Text) ||
+                         Rules.SpaceCount(snap.Text) <= Rules.SpaceCount(prev.Text)))
+                    {
+                        prev = _saveSnap;
+                        Log.Write("宿主重排：L{0} 用 Ctrl+S 前的快照当旧行（轮询快照已失效）",
+                            snap.Line);
+                    }
+
                     // 换模块 = 不是打字，只是切了代码窗，不该弹
                     bool modSwitched = !string.Equals(snap.Module, _lastModName, StringComparison.OrdinalIgnoreCase)
                                        && _lastSnap != null;
@@ -1212,13 +1282,23 @@ namespace VbeComplete
                         bool hostRespaced = saveRecent || (dSpace != 0 && !blankKeyRecent);
                         if (hostRespaced)
                         {
-                            int oldCaret = Rules.CharColFromDisp(prev.Text ?? "", prev.CaretCol);
+                            // ★v185：锚要用 VBE 保留下来的"原选区列号"（snap.CaretCol），
+                            //   不是上一轮轮询快照的列。敲完最后一个字符立刻 Ctrl+S 时，
+                            //   Snapshot 非原子会让 prev 停在"新文本 + 旧光标列"，
+                            //   落后一格（中文全角落后两格）⇒ 光标被搬到倒数第二个字符
+                            //   后面，用户报的"又复现 / 中文更明显"就是它。
+                            int oldDisp = NoRespaceAnchor
+                                ? prev.CaretCol
+                                : Rules.RespaceOldDisp(prev.Text ?? "", prev.CaretCol, snap.CaretCol);
+                            int oldCaret = Rules.CharColFromDisp(prev.Text ?? "", oldDisp);
                             int want = Rules.RemapCaretOverSpaces(prev.Text ?? "", oldCaret, snap.Text ?? "");
                             int now = Rules.CharColFromDisp(snap.Text ?? "", snap.CaretCol);
                             if (want > 0 && want != now && _be.SetCaret(snap.Line, want))
                             {
-                                Log.Write("宿主重排：L{0} 光标 {1}->{2}（行内空白被重排，不弹）",
-                                    snap.Line, now, want);
+                                // 一次 Ctrl+S 只搬一次，别让这个锚在 1.2s 窗口里反复生效
+                                _saveSnap = null;
+                                Log.Write("宿主重排：L{0} 光标 {1}->{2}（prevCol={3} snapCol={4} 锚={5}，不弹）",
+                                    snap.Line, now, want, prev.CaretCol, snap.CaretCol, oldDisp);
                                 var fixedSnap = _be.Snapshot();
                                 if (fixedSnap != null)
                                 {

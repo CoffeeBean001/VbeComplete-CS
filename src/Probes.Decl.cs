@@ -399,9 +399,20 @@ namespace VbeComplete
             //   期望：不弹候选（那是假词），光标搬回行尾（= `1` 后面，第 14 列）。
             //   ★`=` 两侧也必须没有空格：只差 `+1` 那一段的话，光标落在 `+` 后面、取词
             //     是空的，老代码本来就不会弹 —— 那样测不到"假词弹窗"这一半。
-            const string header = "    n";
-            const string typed = "=n+1";
-            const string formatted = "    n = n + 1";
+            // ★v185：用例表。以前这里只有 `n=n+1` 一条 ASCII 用例，中文标识符
+            //   （变量名 / 自定义函数名）格式化后的光标落点一条都没测过 —— 用户报的
+            //  正是「中文变量名或自定义函数名时，格式化后光标也错位」。
+            //  formatted 是宿主 Ctrl+S 之后那行的样子，由探针摆出来（不真按 Ctrl+S，
+            //  避免把用户的工作簿写脏）。
+            var cases = new (string label, string header, string typed, string formatted, int stale)[]
+            {
+                ("ASCII n=n+1", "    n", "=n+1", "    n = n + 1", 0),
+                // stale=2：确定性造出"中文全角落后两格"的旧光标列，给
+                //   NO_RESPACE_ANCHOR 的 A/B 用（否则这层修复在真机上验不到）。
+                ("中文变量名/快照落后两格", "    变量", "=变量+1", "    变量 = 变量 + 1", 2),
+                ("中文函数名", "    x", "=求和(1,2)", "    x = 求和(1, 2)", 0),
+                ("中文变量+中文函数", "    结果", "=计算值(1,2)", "    结果 = 计算值(1, 2)", 0),
+            };
 
             var driver = new Thread(() =>
             {
@@ -415,7 +426,7 @@ namespace VbeComplete
                         app.RunOnUi(() =>
                         {
                             Native.ForceForeground(Native.FindWindow("wndclass_desked_gsk", null));
-                            be.SetCaret(at + 1, header.Length + 1);
+                            be.SetCaret(at + 1, cases[0].header.Length + 1);
                             be.InvalidateSnapshot();
                         });
                         Thread.Sleep(250);
@@ -435,9 +446,13 @@ namespace VbeComplete
                                           "（快照/重排判据仍是真的）");
                     }
 
-                    RebuildScaffold(app, be, at, header, "    Dim n As Long");
+                    foreach (var c in cases)
+                    {
+                    // 上一组可能留着假候选窗：ESC 只收窗、不改文本
+                    SendKeys(app, Native.VK_ESCAPE);
+                    RebuildScaffold(app, be, at, c.header, "    Dim n As Long");
                     Thread.Sleep(350);
-                    bool ok1 = TypeTyping(app, typed, 55, out string how);
+                    bool ok1 = TypeTyping(app, c.typed, 55, out string how);
 
                     // ★500ms 是算出来的，不是随手写的：
                     //   >400ms —— 让钩子那边"最近按过的编辑键"过期，否则会被当成"用户在敲空格"；
@@ -450,30 +465,74 @@ namespace VbeComplete
                     int rawCol = s0?.CaretCol ?? 0;
                     int rawCharCol = Rules.CharColFromDisp(rawText, rawCol);
                     lock (gate)
-                        sb.AppendLine("  敲完 -> 行=[" + rawText + "] 显示列=" + rawCol +
+                        sb.AppendLine("  " + c.label + " 敲完 -> 行=[" + rawText + "] 显示列=" + rawCol +
                                       " 字符列=" + rawCharCol + " via=" + how);
                     bool typOk = ok1 && string.Equals(Rules.Rstrip(rawText),
-                        Rules.Rstrip(header + typed), StringComparison.Ordinal);
+                        Rules.Rstrip(c.header + c.typed), StringComparison.Ordinal);
 
-                    // 摆成"保存之后"的样子：文本 = 格式化后的，光标 = 原来的列号
-                    // （真机上 Ctrl+S 干的就是这两件事：重排 + 光标按原列号留着）
+                    // ★v185：在摆出"格式化后"的新行**之前**补记 Ctrl+S —— 真实钩子里
+                    //   这一刻存下的正是"保存前那一行"，是重排判据的旧行锚。
+                    app.RunOnUi(() =>
+                    {
+                        if (c.stale > 0) app.ProbeStaleSaveForTest(c.stale);
+                        else app.ProbeNoteSaveForTest();
+                    });
+
+                    // 摆成"保存之后"的样子：文本 = 格式化后的，光标 = 原来的**显示列号**。
+                    // ★真机 Ctrl+S 是"重排行 + 选区列号原样保留"。中文行不能把旧行的
+                    //   字符列直接喂给 SetCaret —— 那样会按宽字符重算一遍，等于偷偷
+                    //   把坑填平；必须先在新行上按全角宽度反算出等价字符列。
+                    int want = c.formatted.Length + 1;      // `1` 后面 = 行尾（字符列）
+                    int wantDisp = Rules.DispCol(c.formatted, c.formatted.Length);
+                    int placedCol = 0;
+                    // ★摆法：先把"原显示列"按新行的全角宽度反算成字符列，再交给
+                    //   SetCaret（它内部两次 SetSelection，能压住 ReplaceLine 之后 VBE
+                    //   自己把选区推到行尾的那一下）。直接 SetSelectionRange 一次调用
+                    //   会被覆盖 —— ASCII 那条就偶发"摆完已经在行尾"，等于空验。
+                    int placeCharCol = Rules.CharColFromDisp(c.formatted, Math.Max(1, rawCol));
                     app.RunOnUi(() =>
                     {
                         be.ForceReloadModule();
-                        be.ReplaceLineRaw(at + 1, formatted);
-                        be.SetCaret(at + 1, Math.Max(1, rawCharCol));
+                        be.ReplaceLineRaw(at + 1, c.formatted);
                     });
+                    // ReplaceLine 之后 VBE 可能把选区推到行尾，重摆并读回确认
+                    for (int attempt = 0; attempt < 3; attempt++)
+                    {
+                        app.RunOnUi(() =>
+                        {
+                            be.SetCaret(at + 1, placeCharCol);
+                            be.TryGetSelection(out int sl0, out int sc0, out int el0, out int ec0);
+                            placedCol = ec0;
+                        });
+                        if (placedCol == Math.Max(1, rawCol)) break;
+                        Thread.Sleep(40);
+                    }
+                    lock (gate)
+                        sb.AppendLine("      摆后显示列=" + placedCol + "（原列 " + rawCol +
+                                      "；行尾应为 " + wantDisp + "）——错位必须先造出来");
+                    // ★VBE 偶尔会把选区推到行尾 —— 那就没造出"光标留在原列号"的错位，
+                    //   这一条再 PASS 也是空验。前置不满足必须喊 SKIP。
+                    if (placedCol != Math.Max(1, rawCol) || placedCol == wantDisp)
+                    {
+                        lock (gate) sb.AppendLine("  SKIP  " + c.label +
+                            "：没能摆回原列（" + placedCol + "/" + rawCol + "），这条没验到");
+                        continue;
+                    }
+
                     // 再"按一下无关的键" —— 真机上这一下就是 Ctrl+S 本身。
                     // ★为什么非按不可：App 的快照有 1 秒保鲜期（SNAP_MAX_AGE），而保存之后
                     //   **光标列没变**（正是这个 bug），缓存整条命中 ⇒ 不按键就看不见新文本。
                     SendKeys(app, Native.VK_SHIFT);
 
-                    // ★v180：采样必须**早**。用户按下保存后几十毫秒就接着打字，光标得当场
-                    //   搬好；以前这里 `Sleep(900)` 再采样一次，恰好让那 1 秒保鲜期过期 ——
-                    //   修与不修都绿，等于没测（真机上"又复现"就是这么漏出去的）。
-                    //   400ms 采样仍在保鲜期内：只有"刚按过键就不吃缓存"能把新行读回来。
-                    int want = formatted.Length + 1;      // `1` 后面 = 行尾
-                    int caret = -1;
+                    // ★v185：按键**之后**再模拟"保存期间失焦清空轮询快照"。放在按键前
+                    //   会被 SendKeys 那 120ms 里的轮询重新填上，下一轮 changed 仍是
+                    //   false，整段判据不进 —— 看着像"又复现"，其实是探针自己的竞态。
+                    //   这样下一轮 changed 必定成立，同时顺带验到 _saveSnap 兜底。
+                    app.RunOnUi(() => app.ProbeClearLastSnapForTest());
+
+                    // ★v180：采样必须**早**。400ms 仍在保鲜期内：只有"刚按过键就不吃缓存"
+                    //   能把新行读回来；修与不修在这一档必须分得开。
+                    int caret = -1, caretDisp = 0;
                     bool shown = false;
                     string text = "";
                     var sw = Stopwatch.StartNew();
@@ -483,24 +542,106 @@ namespace VbeComplete
                         bool pv = false;
                         app.RunOnUi(() => { s1 = be.Snapshot(); pv = app.PopupVisible; });
                         text = s1?.Text ?? "";
-                        caret = s1 == null ? -1 : Rules.CharColFromDisp(text, s1.CaretCol);
+                        caretDisp = s1?.CaretCol ?? 0;
+                        caret = s1 == null ? -1 : Rules.CharColFromDisp(text, caretDisp);
                         shown = pv;
-                        if (caret == want && !shown) break;
+                        if (caret == want && caretDisp == wantDisp && !shown) break;
                         Thread.Sleep(20);
                     }
-                    bool pass = typOk && !shown && caret == want &&
-                                string.Equals(Rules.Rstrip(text), Rules.Rstrip(formatted),
+                    bool pass = typOk && !shown && caret == want && caretDisp == wantDisp &&
+                                string.Equals(Rules.Rstrip(text), Rules.Rstrip(c.formatted),
                                     StringComparison.Ordinal);
-                    check("保存重排后：不弹窗 + 光标当场回到行尾", pass,
-                        "弹=" + shown + " 行=[" + text + "] 光标字符列=" + caret +
-                        "（期望 " + want + "，等 " + sw.ElapsedMilliseconds + "ms） 敲入=" + typOk);
+                    check(c.label + "：不弹窗 + 光标当场回到行尾", pass,
+                        "弹=" + shown + " 行=[" + text + "] 光标字符列=" + caret + "/" + want +
+                        " 显示列=" + caretDisp + "/" + wantDisp +
+                        "（等 " + sw.ElapsedMilliseconds + "ms） 敲入=" + typOk);
                     // ⚠️ 这里只断言光标：**弹窗那一半测不出来** —— 重排只动空白，
                     //    App 会走"只差空白"那条直接 return，本来就不弹；用户看到的弹窗是
                     //    "他在这一秒里又敲了一个字"之后的事。光标搬对了，那半个问题就没了。
 
-                    if (!string.Equals(Rules.Rstrip(text), Rules.Rstrip(formatted),
+                    if (!string.Equals(Rules.Rstrip(text), Rules.Rstrip(c.formatted),
                             StringComparison.Ordinal))
                         lock (gate) sb.AppendLine("  ⚠️ 行文本与期望不符，本条的结论仅供参考");
+                    }
+
+                    // ★v185：真按一次 Ctrl+S 的端到端用例。
+                    //   上面四条是"摆出来"的保存后状态，只验了 App 看见重排之后搬不搬；
+                    //   用户报的是**真按 Ctrl+S**：保存时 VBE 要编译、可能短暂失焦、格式化
+                    //   还可能迟到 —— App 的 _lastSnap 一旦被清空，整条重排判据就不进。
+                    //   这一路只有真按才测得到（旧探针四条全绿却仍复现，就是漏了这里）。
+                    //   ★采样只读 TryGetSelection + LineAt（真 COM），绝不碰 be.Snapshot
+                    //     的缓存 —— 探针主动清缓存等于替 App 把 bug 抹掉。
+                    foreach (var c in new[] { cases[0], cases[1] })
+                    {
+                        SendKeys(app, Native.VK_ESCAPE);
+                        RebuildScaffold(app, be, at, c.header, "    Dim n As Long");
+                        Thread.Sleep(350);
+                        bool typedOk = TypeTyping(app, c.typed, 55, out string how2);
+                        string before = "";
+                        app.RunOnUi(() => { before = be.LineAt(at + 1) ?? ""; });
+                        if (!typedOk || !string.Equals(Rules.Rstrip(before),
+                                Rules.Rstrip(c.header + c.typed), StringComparison.Ordinal))
+                        {
+                            lock (gate) sb.AppendLine("  SKIP  真 Ctrl+S / " + c.label +
+                                "：行没摆好（[" + before + "]），这一条一条都没验");
+                            continue;
+                        }
+
+                        // ★零延迟：用户是"敲完最后一个字符立刻按 Ctrl+S"。中间多等一轮
+                        //   轮询就会把落后的那份 _lastSnap 补上，恰好把 bug 抹掉 ——
+                        //   旧探针四条全绿却仍复现，栽的就是这个时间差。
+                        SendCombo(app, Native.VK_S, ctrl: true);
+
+                        string last = "", finalText = "";
+                        int finalDisp = 0, finalChar = 0;
+                        bool everShown = false, hostFormatted = false;
+                        var trace = new StringBuilder();
+                        var sw2 = Stopwatch.StartNew();
+                        while (sw2.ElapsedMilliseconds < 3000)
+                        {
+                            int sl2 = 0, ec2 = 0;
+                            string t = "";
+                            bool pv = false, foc = false;
+                            app.RunOnUi(() =>
+                            {
+                                be.TryGetSelection(out sl2, out int sc2, out int el2, out ec2);
+                                t = be.LineAt(Math.Max(1, sl2)) ?? "";
+                                pv = app.PopupVisible;
+                                foc = app.CodePaneFocused;
+                            });
+                            int cc = Rules.CharColFromDisp(t, ec2);
+                            string key = "[" + t + "] d" + ec2 + " c" + cc +
+                                         " pop=" + pv + " focus=" + foc;
+                            if (key != last)
+                            {
+                                trace.Append(" ").Append(sw2.ElapsedMilliseconds).Append("ms:").Append(key);
+                                last = key;
+                            }
+                            if (pv) everShown = true;
+                            if (Rules.SpaceCount(t) > Rules.SpaceCount(c.header + c.typed))
+                                hostFormatted = true;
+                            finalText = t; finalDisp = ec2; finalChar = cc;
+                            Thread.Sleep(60);
+                        }
+                        lock (gate) sb.AppendLine("  真 Ctrl+S / " + c.label + " 轨迹:" + trace);
+                        if (!hostFormatted)
+                        {
+                            // 前置条件不满足要自己喊出来，不能带着假前提判 FAIL
+                            lock (gate) sb.AppendLine("  SKIP  真 Ctrl+S / " + c.label +
+                                "：宿主这次没格式化该行（空白数没变），这条没验到");
+                            continue;
+                        }
+                        int endDisp = Rules.DispCol(finalText, finalText.Length);
+                        check("真 Ctrl+S / " + c.label + "：宿主格式化后光标回行尾且不弹窗",
+                            finalDisp == endDisp && !everShown,
+                            "行=[" + finalText + "] 光标显示列=" + finalDisp + "/" + endDisp +
+                            " 字符列=" + finalChar + " 曾弹=" + everShown + " via=" + how2);
+                    }
+
+                    // ★真按过 Ctrl+S ⇒ 工作簿已落盘（里面含临时块）。删块后再保存一次，
+                    //   把磁盘内容也还原，绝不把探针垃圾留在用户文件里。
+                    app.RunOnUi(() => { be.ForceReloadModule(); CleanupScratch(be); be.ForceReloadModule(); });
+                    SendCombo(app, Native.VK_S, ctrl: true);
                 }
                 catch (Exception e)
                 {

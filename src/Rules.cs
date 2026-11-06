@@ -589,6 +589,24 @@ namespace VbeComplete
         }
 
         /// <summary>
+        /// 宿主重排空白后，反算"保存前光标在旧行的哪个显示列"。
+        /// ★v185：不能拿 prev.CaretCol 当锚 —— 敲完最后一个字符立刻 Ctrl+S 时，
+        ///   Snapshot 非原子（先读文本、后读光标，见 v181 typingRace），上一次轮询
+        ///   可能停在"新文本 + 旧光标列"，比真值落后一格（中文全角落后两格）。
+        ///   用那个列去数非空白字符，光标会被搬到倒数第二/三个字符后面 —— 用户
+        ///   看到的就是"保存后光标跑到 n 后面、还弹一屏假候选"，而且时好时坏。
+        ///   VBE 重排时**只保留原选区列号**，所以 snapDisp 才是保存前的真值；
+        ///   仅当它落在旧行范围内才采用（VBE 真把光标挪到别处时别误用）。
+        /// </summary>
+        public static int RespaceOldDisp(string oldText, int prevDisp, int snapDisp)
+        {
+            oldText = oldText ?? "";
+            int endDisp = DispCol(oldText, oldText.Length);
+            if (snapDisp >= 1 && snapDisp <= endDisp) return snapDisp;
+            return prevDisp;
+        }
+
+        /// <summary>
         /// 把光标从"旧文本第 <paramref name="oldCharCol"/> 个字符之前"搬到新文本的等价位置，
         /// 返回 1-based 字符列。锚是**非空白字符的序号**（重排只动空白，这个序号是稳的）。
         /// ★真机：敲完 `n=n+1` 按 Ctrl+S，VBE 会把行格式化成 `    n = n + 1`，但光标只按原

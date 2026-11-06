@@ -324,6 +324,30 @@ namespace VbeComplete
             // 这里就是"人在敲空格"和"宿主重排"的区分依据：重排一次会加好几个空格
             Eq("respace/重排加的空格数", Rules.SpaceCount("    n = n + 1") - Rules.SpaceCount("    n=n+1"), 4);
 
+            // ★v185：敲完最后一个字符立刻 Ctrl+S，Snapshot 非原子会让 prev 停在
+            //   "新文本 + 旧光标列"（落后一格；中文全角落后两格）。拿它当锚，
+            //   光标会被搬到 `1` 前面 —— 真机 fmtprobe 实测 12/14，与此式完全对上。
+            const string oldAscii = "    n=n+1", newAscii = "    n = n + 1";
+            Eq("respace/锚：prev 落后一格时改用 snapCol", Rules.RespaceOldDisp(oldAscii, 9, 10), 10);
+            Eq("respace/锚：旧锚把光标搬到 1 前面",
+                Rules.RemapCaretOverSpaces(oldAscii, Rules.CharColFromDisp(oldAscii, 9), newAscii), 12);
+            Eq("respace/锚：修正后仍回行尾",
+                Rules.RemapCaretOverSpaces(oldAscii,
+                    Rules.CharColFromDisp(oldAscii, Rules.RespaceOldDisp(oldAscii, 9, 10)), newAscii), 14);
+            const string oldWide = "    变量=变量+1", newWide = "    变量 = 变量 + 1";
+            Eq("respace/中文：旧行行尾显示列按全角算", Rules.DispCol(oldWide, oldWide.Length), 16);
+            Eq("respace/中文：锚用 snapCol 不用落后的 prevCol",
+                Rules.RespaceOldDisp(oldWide, 14, 16), 16);
+            Eq("respace/中文：旧锚把光标搬错",
+                Rules.RemapCaretOverSpaces(oldWide, Rules.CharColFromDisp(oldWide, 14), newWide), 12);
+            Eq("respace/中文：修正后光标回到行尾",
+                Rules.RemapCaretOverSpaces(oldWide,
+                    Rules.CharColFromDisp(oldWide, Rules.RespaceOldDisp(oldWide, 14, 16)), newWide),
+                newWide.Length + 1);
+            // VBE 真把光标挪到新行行尾（超出旧行范围）时不许拿它当锚
+            Eq("respace/锚：snapCol 超出旧行范围则回退 prevCol",
+                Rules.RespaceOldDisp(oldAscii, 10, 14), 10);
+
             // ★v169：`Then` / `Else` 也是语句边界（单行 If）—— 声明起点是 Then 之后，不是行首。
             //   ★v170 之后这个位置（ReDim）本来就不再拦了，所以边界这条改用 `Dim` 钉住。
             Ok("decl-position/单行 If 里 ReDim Preserve 后照弹（v170）",
