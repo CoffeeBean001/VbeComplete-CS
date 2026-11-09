@@ -379,6 +379,20 @@ namespace VbeComplete
                 "    For i\n" +
                 "End Sub\n";
 
+            // ★v187：用户报"输入 m / i / s 都不提示"的现场原文（单字母**隐式**变量）。
+            const string modShort =
+                "Sub 合并()\n" +
+                "    Set dic = CreateObject(\"scripting.dictionary\")\n" +
+                "    For i = 2 To Cells(Cells.Rows.Count, \"a\").End(xlUp).Row\n" +
+                "        s = CStr(Cells(i, \"a\"))\n" +
+                "        m = Val(Cells(i, \"b\"))\n" +
+                "        If m > 0 Then\n" +
+                "            dic(s) = dic(s) + m\n" +
+                "        End If\n" +
+                "    Next\n" +
+                "\n" +
+                "End Sub\n";
+
             // ★v178：形参表跨续行符（用户截图里的原文）。两份：不带 / 带 Option Explicit。
             //   带 Option Explicit 的那份正是 bug 现场 —— 形参一条都收不到，"用过但没声明"
             //   那条路又被 Option Explicit 堵死，于是打 di 只剩内建（Dir / Dim / ReDim …）。
@@ -448,6 +462,8 @@ namespace VbeComplete
                 .Add("modDim", 1, modDim)
                 .Add("modHdrPri", 1, modHdrPri)
                 .Add("modHdrPub", 1, modHdrPub)
+                // v187：单字母隐式变量的现场
+                .Add("modShort", 1, modShort)
                 // v183：窗体。控件名只存在于设计器数据里，真机由 Designer 灌进来，
                 //   这里直接摆（验的是"灌进来之后该在哪个模块可见"）。
                 .AddForm("UserForm1",
@@ -621,6 +637,21 @@ namespace VbeComplete
             //   用户报"写了 for i，这里的 i 为什么不提示，单个字符的变量应该会提示自身"。
             sprobe("For 后给单字母变量（For i|）", "模块5", 5,
                 "    For i", 10, true, new[] { "i" }, null);
+
+            // ---- 1h. v187：**隐式**的单字母变量也要提示（用户报"输入 m / i / s 都不提示"）----
+            //   现场是截图里那个 `Sub 合并()`：`i` / `s` / `m` / `p` 全是没写 Dim 的隐式变量。
+            //   旧版在 Scope 里"单字母 ASCII 一律 continue"，它们连池子都进不去；
+            //   而 `Dim i&` 走 Decls 那条路 —— 所以上面 v176 那条一直是绿的，差别就在这里。
+            sprobe("隐式单字母变量能提示（m| -> m）", "modShort", 10,
+                "    m", 6, true, new[] { "m" }, null);
+            sprobe("隐式单字母变量能提示（i| -> i）", "modShort", 10,
+                "    i", 6, true, new[] { "i" }, null);
+            sprobe("隐式单字母变量能提示（s| -> s）", "modShort", 10,
+                "    s", 6, true, new[] { "s" }, null);
+            // 反例：收进来之后不许"外溢" —— 两个字符的输入本来就匹配不上一个字符的名字，
+            //   这条留着挡"为了修上面三条把匹配判据一起放宽"的改法。
+            sprobe("两个字符的输入不把单字母塞进来（mm| 不冒 m）", "modShort", 10,
+                "    mm", 7, null, null, new[] { "m" });
 
             // ---- 1f. v178：跨续行符的声明（形参表 / Dim）----
             //   用户报："这个 if 后面也不会提示变量名，不能提示 dic1、dic2，应该跟上面的

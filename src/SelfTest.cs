@@ -1350,6 +1350,25 @@ End Sub
             Ok("explicit/声明过的 Set 目标仍在 Decls",
                 msSet.Decls.Any(d => d.Name == "b"), string.Join(",", msSet.FreeIdents));
 
+            // ---- v187：单字母的**隐式**变量也要进池 ----
+            //   用户报"输入 m / i / s 都不提示"。这几个是没写 Dim 的隐式变量，旧版
+            //   在这里按"单字母 ASCII 一律 continue"筛掉；同样单字母、但写成
+            //   `Dim i&` 的却一直能提示（走 Decls）—— 两条路的差别就是这条用例。
+            const string shortIds = "Sub 合并()\r\n" +
+                                    "    For i = 2 To 10\r\n" +
+                                    "        s = CStr(i)\r\n" +
+                                    "        m = Val(s)\r\n" +
+                                    "    Next\r\n" +
+                                    "End Sub\r\n";
+            var msS = Scope.Analyze("M", shortIds);
+            Ok("free/单字母隐式变量照收（i / s / m）",
+                msS.FreeIdents.Contains("i") && msS.FreeIdents.Contains("s") &&
+                msS.FreeIdents.Contains("m"), string.Join(",", msS.FreeIdents));
+            // 非字母的单字符（`_`）不是名字，照旧挡掉
+            var msU = Scope.Analyze("M", "Sub T()\r\n    _ = 1\r\nEnd Sub\r\n");
+            Ok("free/非字母单字符不进池（_）", !msU.FreeIdents.Contains("_"),
+                string.Join(",", msU.FreeIdents));
+
             // ---- v161：同名隐式变量在**两个过程里各有一份**，各自都要可见 ----
             //   （用户报的 getTitle / getTitle2 里都有 `Set dic = ...`，
             //     旧实现只记第一次出现的过程，getTitle2 里就提示不出 dic）

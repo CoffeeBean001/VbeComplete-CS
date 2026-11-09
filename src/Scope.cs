@@ -166,6 +166,12 @@ namespace VbeComplete
         /// </summary>
         private static readonly bool HonorExplicit = Settings.Flag("IMPLICIT_HONOR_EXPLICIT", true);
 
+        /// <summary>
+        /// A/B 开关：=1 时退回"单字母 ASCII 隐式名字一律不进池"的老行为（v186 及以前）。
+        /// 留着是为了能一句 `NO_SHORT_IDENT=1 --pooldump` 复现用户的"打 m 不提示"。
+        /// </summary>
+        private static readonly bool NoShortIdent = Settings.Flag("NO_SHORT_IDENT", false);
+
         // ★v133：标识符必须认 Unicode 字母 —— VBA 里 `学生 = Split(...)` / `总分()`
         //   是完全合法的，而旧正则只认 [A-Za-z_]，于是中文变量名从来没进过候选池，
         //   用户看到的就是"中文名一律不提示"。\p{L} 覆盖汉字/假名/谚文等，
@@ -613,9 +619,19 @@ namespace VbeComplete
                             declaredHere = true;
                     }
                     if (declaredHere) continue;
-                    // 单字母（且是 ASCII）噪音太大 —— `i` `n` 这种在候选里没意义。
-                    // ★汉字单字不在此列：`和` / `总` 是正经名字，不能按字母数筛掉。
-                    if (w.Length < 2 && w[0] < 0x80) continue;
+                    // ★v187：单字母的 ASCII 名字**照收**（旧版在这里一律 continue）。
+                    //   旧口径是"`i` `n` 这种在候选里没意义"，但噪音早就在 Engine 那条
+                    //   "单字母只认前缀/精确"（fh.Kind < 3 直接 continue）里挡掉了：
+                    //   两个字符以上的输入根本匹配不上一个字符的名字，单字符输入又只剩
+                    //   前缀/精确命中 —— 收进来最多在用户真打了那个字母时多一条，
+                    //   而且精确命中排第一。不收的代价却是用户自己的循环变量 / 累加变量
+                    //   一个都提示不出来（用户报：写 `m`/`i`/`s` 都没提示，因为这几个
+                    //   是隐式变量，只能走这条路；`Dim m As Long` 走 Decls 反倒一直能提示）。
+                    //   ★仍然挡掉"非字母的单字符"（`_` 之类）—— 那不是名字，是占位符。
+                    //   ★汉字单字本来就不在此列：`和` / `总` 是正经名字。
+                    //   A/B：NO_SHORT_IDENT=1 退回 v186 的老行为。
+                    if (w.Length < 2 && w[0] < 0x80 && (NoShortIdent || !char.IsLetter(w[0])))
+                        continue;
 
                     bool host = LooksLikeHostObject(code, m);
 
