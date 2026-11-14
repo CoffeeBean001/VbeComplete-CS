@@ -137,6 +137,29 @@ namespace VbeComplete
         /// <summary>执行一条带 N 个文本参数的写语句，返回是否真的改到了行。</summary>
         public bool Write(string sql, params object[] args)
         {
+            bool changed;
+            return Step(sql, args, out changed) && changed;
+        }
+
+        /// <summary>
+        /// 执行一条带参数的写语句，只问"SQL 成不成"，**不看**改了几行。
+        /// ★`Write` 把这两件事并成了一个 bool，遇上 `INSERT OR IGNORE` 撞主键
+        ///   （`sqlite3_changes()` = 0，但完全正常）就会把成功当成失败。
+        ///   词库种子里的 `String` / `Date` **既是类型又是函数**，靠"类型先插、
+        ///   函数后插 + IGNORE"让类型赢 —— 第二遍插入被忽略，旧代码判失败 →
+        ///   整个灌种子事务 ROLLBACK → functions-cs.db 永远 0 行，而设置界面的
+        ///   「函数与类型」直接读那个库，于是一片空白（候选却是好的，因为内存里
+        ///   退回了内置种子）。凡是"插入可能被忽略"的地方都必须用这个。
+        /// </summary>
+        public bool Run(string sql, params object[] args)
+        {
+            bool changed;
+            return Step(sql, args, out changed);
+        }
+
+        private bool Step(string sql, object[] args, out bool changed)
+        {
+            changed = false;
             if (_db == IntPtr.Zero) return false;
             IntPtr stmt;
             try
@@ -156,7 +179,8 @@ namespace VbeComplete
                         _lastError = "SQL 执行失败：" + ErrMsg();
                         return false;
                     }
-                    return sqlite3_changes(_db) > 0;
+                    changed = sqlite3_changes(_db) > 0;
+                    return true;
                 }
                 finally { sqlite3_finalize(stmt); }
             }

@@ -642,9 +642,19 @@ End Type
             Eq("classify/变量", eng.Classify("mCount"), "var");
 
             // 排序：工程内的名字必须排在内建前面
-            var a = new Candidate { Name = "Main", ScopeKind = 3, Pos = 0, Span = 2, Kind = "func" };
-            var b = new Candidate { Name = "MsgBox", ScopeKind = 2, Pos = 0, Span = 2, Kind = "func" };
+            var a = new Candidate { Name = "Main", IsOwn = true, ScopeKind = 3, Pos = 0, Span = 2, Kind = "func" };
+            var b = new Candidate { Name = "MsgBox", IsBuiltin = true, ScopeKind = 2, Pos = 0, Span = 2, Kind = "func" };
             Ok("sort/工程名优先于内建", Engine.Cmp(a, b) < 0);
+
+            // ★v187：分组是**第一**判据 —— 自定义名哪怕命中得很散，也要压过精确命中的内建。
+            var ownLoose = new Candidate { Name = "msgBoxTitleText", IsOwn = true, HitKind = 0, Pos = 4, Span = 12, ScopeKind = 2 };
+            var builtinExact = new Candidate { Name = "MsgBox", IsBuiltin = true, HitKind = 4, Pos = 0, Span = 6, ScopeKind = 2 };
+            Ok("sort/自定义名永远在内建前", Engine.Cmp(ownLoose, builtinExact) < 0);
+
+            // ★v187：内建那一组只按字符串从小到大（不看命中质量、不看作用域）
+            var biW = new Candidate { Name = "With", IsBuiltin = true, HitKind = 4, Pos = 0, Span = 4, ScopeKind = 6 };
+            var biE = new Candidate { Name = "Wend", IsBuiltin = true, HitKind = 1, Pos = 1, Span = 3, ScopeKind = 2 };
+            Ok("sort/内建按字符串从小到大", Engine.Cmp(biE, biW) < 0);
 
             var c1 = new Candidate { Name = "abc", ScopeKind = 3, Pos = 0, Span = 1 };
             var c2 = new Candidate { Name = "abc", ScopeKind = 3, Pos = 1, Span = 1 };
@@ -655,10 +665,11 @@ End Type
             Ok("sort/最近使用优先", Engine.Cmp(r1, r2) < 0);
 
             // ★命中质量必须排在作用域**前面**：打 `msgbox` 时，一个工程内的
-            //   长名字只是"松散命中"，绝不能因为它"工程内"就顶掉精确命中的 MsgBox。
-            var loose = new Candidate { Name = "MsgBoxLocalHelper", ScopeKind = 4, HitKind = 0, Pos = 3, Span = 9 };
-            var exact = new Candidate { Name = "MsgBox", ScopeKind = 2, HitKind = 3, Pos = 0, Span = 6 };
-            Ok("sort/命中质量优先于作用域", Engine.Cmp(exact, loose) < 0);
+            //   长名字只是"松散命中"，绝不能因为它"工程内"就顶掉精确命中的同类。
+            //   （与内建的比较已由"分组"接管，这里只看同一组内部。）
+            var loose = new Candidate { Name = "MiscBoxHelper", IsOwn = true, ScopeKind = 4, HitKind = 0, Pos = 3, Span = 9 };
+            var exact = new Candidate { Name = "MsgBoxLocal", IsOwn = true, ScopeKind = 2, HitKind = 3, Pos = 0, Span = 6 };
+            Ok("sort/同组内命中质量优先于作用域", Engine.Cmp(exact, loose) < 0);
 
             // 名字短的在前（旧代码写反了：长度降序 = 长的在前）
             var shortN = new Candidate { Name = "ab", ScopeKind = 3, HitKind = 3, Pos = 0, Span = 2 };

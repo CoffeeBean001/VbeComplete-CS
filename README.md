@@ -29,8 +29,10 @@ pane**, and its message loop costs nothing when idle.
   of the name.
 - **Chinese identifiers just work**: `Sub 汇总()` / `Dim 学生 As String` enter the pool, highlight
   per character, and the caret lands in the right place after `Tab` (verified live).
-- **IDEA-style ordering**: match quality > first hit position > hit span > scope proximity
-  (current-procedure locals > current module > other modules' Public) > recently used > shorter name.
+- **Two-tier ordering**: names you declared yourself (variables / constants / functions / types /
+  form controls) always come first, ordered IDEA-style (match quality > first hit position > hit span
+  > scope proximity > recently used > shorter name). VBA built-ins from the word banks (keywords /
+  functions / types) follow, sorted alphabetically.
 - **Scope filtering**: a `Dim tmp` inside `Sub A` never shows up inside `Sub B`, and other modules'
   `Private` members never leak in — while other modules' `Public` procedures still autocomplete.
 - **`Option Explicit` is honoured**: in a module that declares it, names you never `Dim`'d stay out

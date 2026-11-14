@@ -1,7 +1,8 @@
 // 候选引擎：攒池子、匹配、排序、决定弹不弹、选完之后补什么。
 // ★不引用 WinForms（窗口靠回调接进来），所以"弹不弹 / 排第几 / 补什么"都能离线测。
-// ★排序键顺序对齐 Python 版（用户在真机上调出来的）：命中质量 > 位置 > 跨度 > 作用域 >
-//   最近使用 > 内建 > 名字长度。⚠️ 别把"作用域"提前，它会顶掉匹配更好的候选。
+// ★排序分两层（v187 起）：先分组 —— 你自己的名字（变量 / 常量 / 函数 / 类型）永远在前，
+//   词库里的内建（vba 关键字 / 函数 / 类型）在后且按字母序；组内再按原来那套
+//   "命中质量 > 位置 > 跨度 > 作用域 > 最近使用 > 名字长度"排。
 
 using System;
 using System.Collections.Generic;
@@ -20,6 +21,13 @@ namespace VbeComplete
         public int ScopeKind;      // 4 本过程局部 / 3 本模块 / 2 别的模块 Public
         public int RecentRank;     // 最近使用次数
         public bool IsBuiltin;
+        /// <summary>
+        /// ★v187：属于"你自己这边"的名字（变量 / 常量 / 过程 / 类型 / 窗体控件）。
+        /// 候选分两组，这一组**永远**排在内建前面 —— 即使内建的匹配质量更好。
+        /// 与 <see cref="IsBuiltin"/> 不是取反关系：`Dim Left As Long` 之后的 `Left`
+        /// 既是内建名，也是你的变量，那种要算"你自己的"。
+        /// </summary>
+        public bool IsOwn;
     }
 
     internal sealed class Engine
@@ -476,6 +484,13 @@ namespace VbeComplete
                     HitKind = fh.Kind,
                     ScopeKind = rank,
                     IsBuiltin = isBuiltin,
+                    // ★v187：分组。内建名一旦是你自己声明的（`Dim Left As Long` 之后的
+                    //   `Left`、某个窗体控件叫 `Date`），它就是"你的名字"，不该跟着词库
+                    //   去后面按字母序排。memberPool 是 `xx.` 之后的成员名单，全算自己的。
+                    IsOwn = memberPool != null ||
+                            !isBuiltin ||
+                            _poolScoped.Contains(name) ||
+                            _typeNames.Contains(name),
                     RecentRank = Recent != null ? Recent.Rank(name) : 0,
                 };
                 c.Kind = Classify(c.Name);
@@ -643,21 +658,40 @@ namespace VbeComplete
         }
 
         /// <summary>
-        /// ★排序键（全部"越大越靠前"，与 Python 版逐项对齐）：
-        ///   命中质量(kind) > 首个命中位置 > 命中跨度
-        ///     > 作用域就近 > 最近使用 > 你的名字(非内建) > 名字长度(短在前)
+        /// ★排序键（全部"越大越靠前"）：
+        ///   ①分组：你自己的名字（变量 / 常量 / 函数 / 类型）永远在前
+        ///   ②内建那一组只按字符串从小到大（关键字 / 函数 / 类型混在一起）
+        ///   ③组内：命中质量(kind) > 首个命中位置 > 命中跨度
+        ///           > 作用域就近 > 最近使用 > 名字长度(短在前)
+        /// ★②是用户口径：内建是同一层级的公共词汇，字母序最好找，不该按"命中得像不像"
+        ///   把它们打乱（`for` 后面应该稳定是 For / Format / FormatCurrency 这个次序）。
+        /// ⚠️别把作用域提前，它会顶掉匹配更好的候选。
         /// </summary>
         public static int Cmp(Candidate a, Candidate b)
         {
+            // ① 分组：自定义 vs 内建
+            int ga = GroupOf(a), gb = GroupOf(b);
+            if (ga != gb) return ga.CompareTo(gb);
+            // ② 内建组：字符串从小到大
+            if (ga == 1)
+                return string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
+            // ③ 自定义组：还是老那套相关性排序
             int c = b.HitKind.CompareTo(a.HitKind); if (c != 0) return c;
             c = a.Pos.CompareTo(b.Pos); if (c != 0) return c;
             c = a.Span.CompareTo(b.Span); if (c != 0) return c;
             c = b.ScopeKind.CompareTo(a.ScopeKind); if (c != 0) return c;
             c = b.RecentRank.CompareTo(a.RecentRank); if (c != 0) return c;
-            c = a.IsBuiltin.CompareTo(b.IsBuiltin); if (c != 0) return c;
             c = a.Name.Length.CompareTo(b.Name.Length); if (c != 0) return c;
             return string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
         }
+
+        /// <summary>
+        /// 0 = 你自己的名字（默认），1 = 词库里的内建。
+        /// ★默认值必须是 0：没标 IsBuiltin 的 Candidate（自检、预览图）落在"自定义"组里，
+        ///   走的就是原来那套相关性排序，不会因为忘设标记而被字母序打乱。
+        /// </summary>
+        private static int GroupOf(Candidate x)
+            => x.IsOwn ? 0 : (x.IsBuiltin ? 1 : 0);
 
         /// <summary>
         /// 图标档位。判据只有这一处：工程过程 > 工程类型 > 词库函数 > 词库类型 >

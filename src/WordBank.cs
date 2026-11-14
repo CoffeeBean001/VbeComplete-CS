@@ -53,6 +53,14 @@ namespace VbeComplete
                                                   : WordLibrary.FunctionSchema;
                     if (!db.Exec(ddl)) { err = db.LastError(); return list; }
 
+                    // ★v187：空表先灌种子再读。设置界面是**直接读库**的，而库空了以前
+                    //   只会照原样显示一张空表 —— 用户看到「函数与类型」一片空白，候选里
+                    //   内建函数却照常能补（内存里退回了内置种子），两个事实互相矛盾。
+                    //   灌种子的判据与 Load 完全一致（整表 0 行），所以"用户把词全删了"
+                    //   在两边是同一个结论，不会一边保留一边复活。
+                    if (!WordLibrary.SeedIfEmpty(db, bank == Keywords))
+                        err = "词库是空的，灌种子也没成功：" + db.LastError();
+
                     string sql = bank == Keywords
                         ? "SELECT word, wants_space, enabled FROM keywords ORDER BY word"
                         : "SELECT word, kind, wants_parens, enabled FROM functions ORDER BY word";

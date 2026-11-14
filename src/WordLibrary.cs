@@ -100,7 +100,7 @@ namespace VbeComplete
                 {
                     if (!db.Open(KeywordPath())) { LastError = db.LastError(); return false; }
                     if (!db.Exec(KeywordSchema)) { LastError = db.LastError(); return false; }
-                    if (db.Scalar("SELECT COUNT(*) FROM keywords") == 0 && !SeedKeywords(db))
+                    if (!SeedIfEmpty(db, true))
                     {
                         LastError = "keywords 库首次灌种子失败：" + db.LastError();
                         return false;
@@ -132,7 +132,7 @@ namespace VbeComplete
                 {
                     if (!db.Open(FunctionPath())) { LastError = db.LastError(); return false; }
                     if (!db.Exec(FunctionSchema)) { LastError = db.LastError(); return false; }
-                    if (db.Scalar("SELECT COUNT(*) FROM functions") == 0 && !SeedFunctions(db))
+                    if (!SeedIfEmpty(db, false))
                     {
                         LastError = "functions 库首次灌种子失败：" + db.LastError();
                         return false;
@@ -156,15 +156,38 @@ namespace VbeComplete
         }
 
         /// <summary>
+        /// 整张表 0 行就灌种子（调用方必须先建表）。返回 false = 灌了没成。
+        /// ★"0 行"是唯一判据，与 Load 的老语义一致：用户把整表删空 = 库坏了，不是精心删的。
+        /// ★设置界面也走这里 —— 列表里看到的必须和引擎实际载入的一致，否则又会出现
+        ///   "候选里有 MsgBox、词库里一条函数都没有"这种自相矛盾的画面。
+        /// ★灌完再数一次：种子事务里只要有一条被判失败就会整段 ROLLBACK，光看返回值
+        ///   还不够，得确认数据真的在表里。
+        /// </summary>
+        internal static bool SeedIfEmpty(SqliteDb db, bool keywords)
+        {
+            if (db == null) return false;
+            string table = keywords ? "keywords" : "functions";
+            if (db.Scalar("SELECT COUNT(*) FROM " + table) > 0) return true;
+            if (!(keywords ? SeedKeywords(db) : SeedFunctions(db)))
+                Log.Write("{0} 灌种子失败：{1}", table, db.LastError());
+            long after = db.Scalar("SELECT COUNT(*) FROM " + table);
+            if (after > 0) return true;
+            Log.Write("{0} 灌种子后仍是 0 行：{1}", table, db.LastError());
+            return false;
+        }
+
+        /// <summary>
         /// 首次建库时灌关键字种子。返回 false = 没灌成（调用方回落内置种子）。
         /// ★BEGIN / 每条 INSERT / COMMIT 的返回值必须检查：只要有一条写失败，表里就是残缺的
         ///   0~N 条，而"表非空就不再灌"会让它**永远**补不回来（词库永久缺字，日志却写成功）。
+        /// ★用 `Run` 而不是 `Write`：`INSERT OR IGNORE` 撞主键时 changes=0 但**不是**失败
+        ///   （函数库里 `String` / `Date` 双身份就是这么处理的），拿 `Write` 判会误杀整个事务。
         /// </summary>
         private static bool SeedKeywords(SqliteDb db)
         {
             if (!db.Exec("BEGIN")) return false;
             foreach (var w in BuiltinTables.Keywords)
-                if (!db.Write("INSERT OR IGNORE INTO keywords (word, wants_space, enabled) VALUES (?, ?, 1)",
+                if (!db.Run("INSERT OR IGNORE INTO keywords (word, wants_space, enabled) VALUES (?, ?, 1)",
                         w, KeywordSeeds.WantsSpace(w)))
                 {
                     db.Exec("ROLLBACK");
@@ -181,7 +204,11 @@ namespace VbeComplete
             return true;
         }
 
-        /// <summary>灌函数/类型种子；类型在前（理由见下面注释）。返回 false = 没灌成。</summary>
+        /// <summary>
+        /// 灌函数/类型种子；类型在前（理由见下面注释）。返回 false = 没灌成。
+        /// ★每条都用 `Run`（只看 SQL 成不成）：`String` / `Date` 已经在类型那轮插进去了，
+        ///   函数这轮的 `INSERT OR IGNORE` 一定是 0 行 —— 这不是失败，恰恰是"类型优先"生效了。
+        /// </summary>
         private static bool SeedFunctions(SqliteDb db)
         {
             if (!db.Exec("BEGIN")) return false;
@@ -191,7 +218,7 @@ namespace VbeComplete
             //   `Dim x As String` 后面绝不会被补上一对括号 —— 那正是最容易写错的地方。
             //   反过来的顺序会让它们变成 kind='function'，一按 Tab 就得到 `String()`。
             foreach (var w in BuiltinTables.TypeNames)
-                if (!db.Write("INSERT OR IGNORE INTO functions (word, kind, wants_parens, enabled) " +
+                if (!db.Run("INSERT OR IGNORE INTO functions (word, kind, wants_parens, enabled) " +
                               "VALUES (?, 'type', 0, 1)", w))
                 {
                     db.Exec("ROLLBACK");
@@ -199,7 +226,7 @@ namespace VbeComplete
                     return false;
                 }
             foreach (var w in BuiltinTables.Functions)
-                if (!db.Write("INSERT OR IGNORE INTO functions (word, kind, wants_parens, enabled) " +
+                if (!db.Run("INSERT OR IGNORE INTO functions (word, kind, wants_parens, enabled) " +
                               "VALUES (?, 'function', 1, 1)", w))
                 {
                     db.Exec("ROLLBACK");
@@ -212,7 +239,7 @@ namespace VbeComplete
                 Log.Write("functions 灌种子提交失败：{0}", db.LastError());
                 return false;
             }
-            Log.Write("functions 库首次创建：灌入 {0} 条函数 + {1} 条类型",
+            Log.Write("functions 库首次创建：灌入 {0} 条函数 + {1} 条类型种子",
                 BuiltinTables.Functions.Length, BuiltinTables.TypeNames.Length);
             return true;
         }

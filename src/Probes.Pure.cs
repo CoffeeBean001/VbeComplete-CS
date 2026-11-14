@@ -134,6 +134,21 @@ namespace VbeComplete
                 check("第一次运行自动建库", File.Exists(tmpKw) && File.Exists(tmpFn), "");
                 check("关键字灌了种子", lib.KeywordCount >= 70, "count=" + lib.KeywordCount);
                 check("函数灌了种子", lib.FunctionCount >= 150, "count=" + lib.FunctionCount);
+
+                // ★v187：种子必须**真的落进库里**，不能只有内存里那份。
+                //   `String` / `Date` 既是类型又是函数，靠 INSERT OR IGNORE 让"类型先赢"；
+                //   旧代码把"被忽略（changes=0）"当成 SQL 失败，于是整个灌种子事务 ROLLBACK，
+                //   functions-cs.db 永远 0 行 —— 设置界面「函数与类型」一片空白，
+                //   而候选里内建函数照常能补（内存退回了内置种子）。
+                var fnRows = WordBank.All(WordBank.Functions, out string fnErr);
+                check("函数库种子真的落库（不是只在内存里）", fnRows.Count >= 150,
+                    "rows=" + fnRows.Count + " err=" + fnErr);
+                check("双身份名字按类型落库（String / Date）",
+                    fnRows.Any(x => x.Word == "String" && x.IsType) &&
+                    fnRows.Any(x => x.Word == "Date" && x.IsType), "");
+                check("13 条类型全在库里",
+                    fnRows.Count(x => x.IsType) == BuiltinTables.TypeNames.Length,
+                    "types=" + fnRows.Count(x => x.IsType));
                 check("能查到 Dim", VbaBuiltins.IsKeyword("Dim"), "");
                 check("能查到 MsgBox", VbaBuiltins.IsBuiltinFunction("MsgBox"), "");
                 check("能查到 String（类型）", VbaBuiltins.IsBuiltinType("String"), "");

@@ -55,7 +55,9 @@ namespace VbeComplete
                         Hits = fh.Positions,
                         HitKind = fh.Kind,
                         ScopeKind = 3,
-                        IsBuiltin = VbaBuiltins.IsKeyword(n),
+                        IsBuiltin = VbaBuiltins.IsBuiltin(n),
+                        // v187：预览图的排序必须和真机一致 —— 自定义名在前、内建按字母序
+                        IsOwn = !VbaBuiltins.IsBuiltin(n),
                     });
                 }
                 cands.Sort(Engine.Cmp);
