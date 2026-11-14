@@ -1,8 +1,10 @@
 // 候选引擎：攒池子、匹配、排序、决定弹不弹、选完之后补什么。
 // ★不引用 WinForms（窗口靠回调接进来），所以"弹不弹 / 排第几 / 补什么"都能离线测。
-// ★排序分两层（v187 起）：先分组 —— 你自己的名字（变量 / 常量 / 函数 / 类型）永远在前，
-//   词库里的内建（vba 关键字 / 函数 / 类型）在后且按字母序；组内再按原来那套
-//   "命中质量 > 位置 > 跨度 > 作用域 > 最近使用 > 名字长度"排。
+// ★排序口径（v189 起）对齐现代编辑器，**不再按"自定义 / 内建"一刀切分组**：
+//   主判据是匹配质量（VSCode fuzzyScore 那套逐字符给分：命中 / 连续 / 词首 / 大小写），
+//   次判据是作用域就近与最近使用（IDEA 的 locality / usage），最后才看名字长短与字母序。
+//   v188 那版把内建整组按字母序排，打 `msg` 时 `IsMissing` 会跑到 `MsgBox` 前面 ——
+//   这正是"不好用"的根源：字母序不该压过"像不像"。
 
 using System;
 using System.Collections.Generic;
@@ -18,12 +20,17 @@ namespace VbeComplete
         public int Span;           // 命中跨度（越小越好）
         public int[] Hits;         // 逐字符命中的下标（UI 高亮用；空 = 全都算命中）
         public int HitKind;        // 4 完全相等 / 3 前缀 / 2 词首缩略 / 1 连续块 / 0 分散
+        public int Run;            // 最长连续命中段长度
+        public int WordStarts;     // 命中里落在词边界上的个数（驼峰 / 下划线后）
+        public int CaseHits;       // 命中里大小写与输入一致的个数
         public int ScopeKind;      // 4 本过程局部 / 3 本模块 / 2 别的模块 Public
         public int RecentRank;     // 最近使用次数
         public bool IsBuiltin;
         /// <summary>
-        /// ★v187：属于"你自己这边"的名字（变量 / 常量 / 过程 / 类型 / 窗体控件）。
-        /// 候选分两组，这一组**永远**排在内建前面 —— 即使内建的匹配质量更好。
+        /// 属于"你自己这边"的名字（变量 / 常量 / 过程 / 类型 / 窗体控件）。
+        /// ★v189：不再是排序的**分组开关**，只作为 locality 的一个加成 ——
+        ///   同等的匹配质量下，你自己的名字排在内建前；但如果内建匹配得明显更好
+        ///   （`msgbox` 之下的 `MsgBox` vs 你的 `msgBoxTitleText`），内建就该在前。
         /// 与 <see cref="IsBuiltin"/> 不是取反关系：`Dim Left As Long` 之后的 `Left`
         /// 既是内建名，也是你的变量，那种要算"你自己的"。
         /// </summary>
@@ -482,9 +489,12 @@ namespace VbeComplete
                     Span = fh.Span,
                     Hits = fh.Positions,
                     HitKind = fh.Kind,
+                    Run = fh.Run,
+                    WordStarts = fh.WordStarts,
+                    CaseHits = fh.CaseHits,
                     ScopeKind = rank,
                     IsBuiltin = isBuiltin,
-                    // ★v187：分组。内建名一旦是你自己声明的（`Dim Left As Long` 之后的
+                    // ★v187：内建名一旦是你自己声明的（`Dim Left As Long` 之后的
                     //   `Left`、某个窗体控件叫 `Date`），它就是"你的名字"，不该跟着词库
                     //   去后面按字母序排。memberPool 是 `xx.` 之后的成员名单，全算自己的。
                     IsOwn = memberPool != null ||
@@ -657,41 +667,67 @@ namespace VbeComplete
             return false;
         }
 
+        // ---- 权重照抄 VSCode fuzzyScore 的原值（src/vs/base/common/filters.ts）----
+        private const int SC_MATCH = 16;         // 每个命中字符
+        private const int SC_CONSECUTIVE = 29;   // 每多一个连续命中
+        private const int SC_WORD_START = 23;    // 命中落在词首（驼峰 / 下划线后 / 首字母）
+        private const int SC_CASE = 23;          // 命中大小写与输入完全一致
+        private const int SC_GAP_LEADING = 5;    // 首字符之前的空位，每个字符
+        private const int SC_GAP_INNER = 1;      // 命中之间的空位，每个字符
+
         /// <summary>
-        /// ★排序键（全部"越大越靠前"）：
-        ///   ①分组：你自己的名字（变量 / 常量 / 函数 / 类型）永远在前
-        ///   ②内建那一组只按字符串从小到大（关键字 / 函数 / 类型混在一起）
-        ///   ③组内：命中质量(kind) > 首个命中位置 > 命中跨度
-        ///           > 作用域就近 > 最近使用 > 名字长度(短在前)
-        /// ★②是用户口径：内建是同一层级的公共词汇，字母序最好找，不该按"命中得像不像"
-        ///   把它们打乱（`for` 后面应该稳定是 For / Format / FormatCurrency 这个次序）。
-        /// ⚠️别把作用域提前，它会顶掉匹配更好的候选。
+        /// 匹配质量分（越大越好），对应 VSCode 的 fuzzyScore —— **只看"打得像不像"**，
+        /// 完全不含作用域 / 最近使用 / 名字长度。各项含义与 VSCode 一致：
+        ///   命中 +16、连续 +29、落词首 +23、大小写一致 +23，扣前置空位(-5/字)与中间空隙(-1/字)。
+        /// ★例：打 `msg` → `MsgBox` 得 175，`IsMissing`（松散子序列）只有 101。
+        /// </summary>
+        public static int FuzzyScore(Candidate c)
+        {
+            if (c == null) return 0;
+            int q = c.Hits != null ? c.Hits.Length : 0;
+            if (q == 0) return 0;   // 空输入（Ctrl+Space 全列）：不比匹配质量
+            return q * SC_MATCH
+                 + Math.Max(0, c.Run - 1) * SC_CONSECUTIVE
+                 + c.WordStarts * SC_WORD_START
+                 + c.CaseHits * SC_CASE
+                 - c.Pos * SC_GAP_LEADING
+                 - Math.Max(0, c.Span - q) * SC_GAP_INNER;
+        }
+
+        /// <summary>
+        /// IDEA 的 locality：离光标越近的名字越该冒头（本过程局部 4 > 本模块 3 >
+        /// 别的模块 Public 2 > 词库内建 0）。
+        /// ★内建词不属于任何作用域，恒为 0 —— 但 `Dim Left As Long` 之后的 `Left`
+        ///   虽然同名于内建，却是你自己的变量（IsOwn），要按它所在的档位算。
+        /// </summary>
+        private static int Locality(Candidate c)
+        {
+            if (c.IsBuiltin && !c.IsOwn) return 0;
+            return c.ScopeKind <= 0 ? 2 : Math.Min(c.ScopeKind, 4);
+        }
+
+        /// <summary>
+        /// 排序：照 IntelliJ 的 CompletionSorterImpl（relevance → prefix degree →
+        /// locality → name）分级比较，**不是加权求和** —— 求和会把"匹配质量"的差距
+        /// 抹成小数，让作用域偷偷顶掉更像的候选。分级比较的意思很直白：
+        ///   ① 命中档次（完全相等 > 前缀 > 词首缩略 > 连续块 > 松散子序列）
+        ///   ② 同档次内看 VSCode 的逐字符分（连续 / 词首 / 大小写 / 位置 / 空隙）
+        ///   ③ 还平手才看作用域就近（IDEA locality）—— "你自己的名字优先"落在这一层
+        ///   ④ 最近使用
+        ///   ⑤ 名字短的在前
+        ///   ⑥ 字母序（保证结果稳定、可复现）
+        /// ★所以 v188 那个"内建一律按字母序"的毛病没了：打 `msg` 时 `MsgBox` 是前缀
+        ///   命中，`IsMissing` 只是松散命中，档次一档就把它压下去了。
         /// </summary>
         public static int Cmp(Candidate a, Candidate b)
         {
-            // ① 分组：自定义 vs 内建
-            int ga = GroupOf(a), gb = GroupOf(b);
-            if (ga != gb) return ga.CompareTo(gb);
-            // ② 内建组：字符串从小到大
-            if (ga == 1)
-                return string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
-            // ③ 自定义组：还是老那套相关性排序
             int c = b.HitKind.CompareTo(a.HitKind); if (c != 0) return c;
-            c = a.Pos.CompareTo(b.Pos); if (c != 0) return c;
-            c = a.Span.CompareTo(b.Span); if (c != 0) return c;
-            c = b.ScopeKind.CompareTo(a.ScopeKind); if (c != 0) return c;
+            c = FuzzyScore(b).CompareTo(FuzzyScore(a)); if (c != 0) return c;
+            c = Locality(b).CompareTo(Locality(a)); if (c != 0) return c;
             c = b.RecentRank.CompareTo(a.RecentRank); if (c != 0) return c;
             c = a.Name.Length.CompareTo(b.Name.Length); if (c != 0) return c;
             return string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
         }
-
-        /// <summary>
-        /// 0 = 你自己的名字（默认），1 = 词库里的内建。
-        /// ★默认值必须是 0：没标 IsBuiltin 的 Candidate（自检、预览图）落在"自定义"组里，
-        ///   走的就是原来那套相关性排序，不会因为忘设标记而被字母序打乱。
-        /// </summary>
-        private static int GroupOf(Candidate x)
-            => x.IsOwn ? 0 : (x.IsBuiltin ? 1 : 0);
 
         /// <summary>
         /// 图标档位。判据只有这一处：工程过程 > 工程类型 > 词库函数 > 词库类型 >

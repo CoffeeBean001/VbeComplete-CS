@@ -29,10 +29,14 @@ pane**, and its message loop costs nothing when idle.
   of the name.
 - **Chinese identifiers just work**: `Sub 汇总()` / `Dim 学生 As String` enter the pool, highlight
   per character, and the caret lands in the right place after `Tab` (verified live).
-- **Two-tier ordering**: names you declared yourself (variables / constants / functions / types /
-  form controls) always come first, ordered IDEA-style (match quality > first hit position > hit span
-  > scope proximity > recently used > shorter name). VBA built-ins from the word banks (keywords /
-  functions / types) follow, sorted alphabetically.
+- **Ordering follows IDEA / VSCode** (no more "own vs built-in" grouping), compared in six tiers:
+  ① match tier (exact > prefix > word-initial > contiguous block > scattered subsequence)
+  ② within a tier, VSCode `fuzzyScore`'s per-character score (consecutive +29 / word start +23 /
+  case match +23 / earlier first hit is better / gap penalties)
+  ③ scope proximity (locals > this module > other modules' Public > word banks)
+  ④ recently used　⑤ shorter name　⑥ alphabetical.
+  So typing `msg` puts `MsgBox` on top (`IsMissing` is only a scattered match, one tier lower),
+  while your own variables and procedures still surface first at equal match quality.
 - **Scope filtering**: a `Dim tmp` inside `Sub A` never shows up inside `Sub B`, and other modules'
   `Private` members never leak in — while other modules' `Public` procedures still autocomplete.
 - **`Option Explicit` is honoured**: in a module that declares it, names you never `Dim`'d stay out

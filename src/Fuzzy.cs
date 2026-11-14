@@ -16,6 +16,18 @@ namespace VbeComplete
         public int First;     // 首个命中下标
         public int Span;      // 首尾跨度（-1 表示只有一个字符）
         public int Run;       // 最长连续段长度（判断"是不是真在打这个名字"用）
+        /// <summary>
+        /// 命中字符里落在词边界（首字母 / 下划线后 / 驼峰处）的**个数**。
+        /// ★给排序打分用：VSCode fuzzyScore 的 START_OF_WORD_MATCH，一个 +23。
+        ///   与 Kind 不同 —— Kind 是"全部都在词首才算缩略"，这里是逐字符计数，
+        ///   所以 `ds → dataSheet` 拿 2，`dl → dataLabel` 也拿 2，可以细比。
+        /// </summary>
+        public int WordStarts;
+        /// <summary>
+        /// 命中的字符里，大小写与输入**完全一致**的个数（VSCode UPPER_CASE_MATCH）。
+        /// ★打 `MsgB` 时 `MsgBox` 拿满、`msgBox` 拿不满 —— 大小写本身就是用户的意图。
+        /// </summary>
+        public int CaseHits;
     }
 
     internal static class Fuzzy
@@ -123,6 +135,7 @@ namespace VbeComplete
             {
                 hit.Positions = Array.Empty<int>();
                 hit.Kind = 0; hit.First = 0; hit.Span = 0; hit.Run = 0;
+                hit.WordStarts = 0; hit.CaseHits = 0;
                 return true;
             }
 
@@ -174,6 +187,18 @@ namespace VbeComplete
             hit.First = positions[0];
             hit.Span = positions[positions.Length - 1] - positions[0] + 1;
             hit.Run = LongestRun(positions);
+
+            // 打分用的两个计数（逐字符，不做"全有全无"的判定）
+            int ws = 0, cs = 0;
+            for (int i = 0; i < positions.Length; i++)
+            {
+                int p = positions[i];
+                if (bounds.Contains(p)) ws++;
+                // positions[i] 对应 query 的第 i 个字符 —— 比的是**原始大小写**
+                if (name[p] == query[i]) cs++;
+            }
+            hit.WordStarts = ws;
+            hit.CaseHits = cs;
             return true;
         }
     }

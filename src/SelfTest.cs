@@ -641,40 +641,65 @@ End Type
             Eq("classify/关键字", eng.Classify("Public"), "kw");
             Eq("classify/变量", eng.Classify("mCount"), "var");
 
-            // 排序：工程内的名字必须排在内建前面
-            var a = new Candidate { Name = "Main", IsOwn = true, ScopeKind = 3, Pos = 0, Span = 2, Kind = "func" };
-            var b = new Candidate { Name = "MsgBox", IsBuiltin = true, ScopeKind = 2, Pos = 0, Span = 2, Kind = "func" };
-            Ok("sort/工程名优先于内建", Engine.Cmp(a, b) < 0);
+            // ---- 排序口径（v189，对齐 IntelliJ / VSCode）----
+            // 分级比较：命中档次 > VSCode 逐字符分 > 作用域就近 > 最近使用 > 长度 > 字母序。
+            // 用真实匹配结果造候选，免得手填 Hits 把 FuzzyScore 算错。
+            Func<string, string, bool, int, Candidate> mk = (nm, q, builtin, scope) =>
+            {
+                FuzzyHit fh;
+                Fuzzy.Match(nm, q, out fh);
+                return new Candidate
+                {
+                    Name = nm,
+                    Pos = fh.First,
+                    Span = fh.Span,
+                    Hits = fh.Positions,
+                    HitKind = fh.Kind,
+                    Run = fh.Run,
+                    WordStarts = fh.WordStarts,
+                    CaseHits = fh.CaseHits,
+                    ScopeKind = scope,
+                    IsBuiltin = builtin,
+                    IsOwn = !builtin,
+                };
+            };
 
-            // ★v187：分组是**第一**判据 —— 自定义名哪怕命中得很散，也要压过精确命中的内建。
-            var ownLoose = new Candidate { Name = "msgBoxTitleText", IsOwn = true, HitKind = 0, Pos = 4, Span = 12, ScopeKind = 2 };
-            var builtinExact = new Candidate { Name = "MsgBox", IsBuiltin = true, HitKind = 4, Pos = 0, Span = 6, ScopeKind = 2 };
-            Ok("sort/自定义名永远在内建前", Engine.Cmp(ownLoose, builtinExact) < 0);
+            // ★核心回归：**内建之间也得看匹配质量**。v188 那版把内建整组按字母序排，
+            //   打 `msg` 时 `IsMissing` 会跑到 `MsgBox` 前面 —— 用户说的"不好用"就是它。
+            Ok("sort/内建之间看匹配质量（MsgBox 压过 IsMissing）",
+                Engine.Cmp(mk("MsgBox", "msg", true, 2), mk("IsMissing", "msg", true, 2)) < 0);
 
-            // ★v187：内建那一组只按字符串从小到大（不看命中质量、不看作用域）
-            var biW = new Candidate { Name = "With", IsBuiltin = true, HitKind = 4, Pos = 0, Span = 4, ScopeKind = 6 };
-            var biE = new Candidate { Name = "Wend", IsBuiltin = true, HitKind = 1, Pos = 1, Span = 3, ScopeKind = 2 };
-            Ok("sort/内建按字符串从小到大", Engine.Cmp(biE, biW) < 0);
+            // 完全相等 > 前缀（IDEA relevance 的第一档）
+            Ok("sort/完全相等压过前缀",
+                Engine.Cmp(mk("For", "for", true, 2), mk("Format", "for", true, 2)) < 0);
 
-            var c1 = new Candidate { Name = "abc", ScopeKind = 3, Pos = 0, Span = 1 };
-            var c2 = new Candidate { Name = "abc", ScopeKind = 3, Pos = 1, Span = 1 };
-            Ok("sort/命中位置靠前优先", Engine.Cmp(c1, c2) < 0);
+            // ★匹配质量压过作用域：打全 `msgbox` 时，精确命中的内建该排第一，
+            //   哪怕那个自定义变量是"本过程局部"。这条正是 v188 做反了的。
+            Ok("sort/精确命中压过更近的作用域",
+                Engine.Cmp(mk("MsgBox", "msgbox", true, 2),
+                           mk("msgBoxTitleText", "msgbox", false, 4)) < 0);
 
-            var r1 = new Candidate { Name = "a", ScopeKind = 3, Pos = 0, Span = 1, RecentRank = 5 };
-            var r2 = new Candidate { Name = "b", ScopeKind = 3, Pos = 0, Span = 1, RecentRank = 1 };
+            // ★同等档次下，你自己的名字优先（IDEA locality）—— v188 的诉求没丢，
+            //   只是从"第一判据"降到了"第三层"。
+            Ok("sort/同档次下自己的名字优先",
+                Engine.Cmp(mk("msgText", "msg", false, 4), mk("MsgBox", "msg", true, 2)) < 0);
+
+            // 同样命中，本过程局部 > 本模块
+            Ok("sort/同档次下近的作用域优先",
+                Engine.Cmp(mk("msgLocal", "msg", false, 4), mk("msgModule", "msg", false, 3)) < 0);
+
+            // 最近使用（IDEA usage statistics）
+            var r1 = mk("alpha", "al", false, 3); r1.RecentRank = 5;
+            var r2 = mk("alphb", "al", false, 3); r2.RecentRank = 1;
             Ok("sort/最近使用优先", Engine.Cmp(r1, r2) < 0);
 
-            // ★命中质量必须排在作用域**前面**：打 `msgbox` 时，一个工程内的
-            //   长名字只是"松散命中"，绝不能因为它"工程内"就顶掉精确命中的同类。
-            //   （与内建的比较已由"分组"接管，这里只看同一组内部。）
-            var loose = new Candidate { Name = "MiscBoxHelper", IsOwn = true, ScopeKind = 4, HitKind = 0, Pos = 3, Span = 9 };
-            var exact = new Candidate { Name = "MsgBoxLocal", IsOwn = true, ScopeKind = 2, HitKind = 3, Pos = 0, Span = 6 };
-            Ok("sort/同组内命中质量优先于作用域", Engine.Cmp(exact, loose) < 0);
+            // 名字短的在前
+            Ok("sort/名字短的在前",
+                Engine.Cmp(mk("ab", "ab", false, 3), mk("abcdef", "ab", false, 3)) < 0);
 
-            // 名字短的在前（旧代码写反了：长度降序 = 长的在前）
-            var shortN = new Candidate { Name = "ab", ScopeKind = 3, HitKind = 3, Pos = 0, Span = 2 };
-            var longN = new Candidate { Name = "abcdef", ScopeKind = 3, HitKind = 3, Pos = 0, Span = 8 };
-            Ok("sort/名字短的在前", Engine.Cmp(shortN, longN) < 0);
+            // 全平手时按字母序，保证结果稳定可复现
+            Ok("sort/全平手按字母序",
+                Engine.Cmp(mk("ab", "a", false, 3), mk("ac", "a", false, 3)) < 0);
 
             // ---- 启动脚本契约 ----
             // "双击一闪、项目没启动"两次都出在 .bat 上：echo 里的裸右括号会让 cmd 丢弃
