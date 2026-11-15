@@ -164,6 +164,26 @@ namespace VbeComplete
             Ok("member-position/字符串里的点不是", !Rules.InMemberPosition("s = \"a.b\"", 10));
             Ok("member-position/返回点号下标", Rules.MemberDotCol("student.na", 10) == 7);
 
+            // ★v193（用户报 `arr=` 之后候选窗不收）：终结标识符的键 = 词写完了。
+            //   钩子里只有 VK、没有字符，所以这里钉的就是"哪些 VK 两种 shift 状态都终结"。
+            Ok("ends-word/等号收窗", Rules.EndsWordKey(0xBB, false));
+            Ok("ends-word/加号也收窗", Rules.EndsWordKey(0xBB, true));
+            Ok("ends-word/逗号", Rules.EndsWordKey(0xBC, false));
+            Ok("ends-word/分号", Rules.EndsWordKey(0xBA, false));
+            Ok("ends-word/左括号(shift+9)", Rules.EndsWordKey(0x39, true));
+            Ok("ends-word/双引号", Rules.EndsWordKey(0xDE, true));
+            Ok("ends-word/左方括号", Rules.EndsWordKey(0xDB, false));
+            // 反例：这几个必须**不**收，否则正常打字会被打断
+            Ok("ends-word/减号不收(shift 是下划线)", !Rules.EndsWordKey(0xBD, false));
+            Ok("ends-word/点号不收(留给成员判据)", !Rules.EndsWordKey(0xBE, false));
+            Ok("ends-word/字母不收", !Rules.EndsWordKey(0x41, false));
+            Ok("ends-word/数字不收", !Rules.EndsWordKey(0x31, false));
+            Ok("ends-word/Shift+数字才收", Rules.EndsWordKey(0x31, true));
+            Ok("ends-word/退格不收", !Rules.EndsWordKey(0x08, false));
+            // 词终结之后取词必须为空 —— 这正是轮询侧那条兜底判据用的口径
+            Ok("ends-word/arr= 光标在等号后无词", Rules.WordBefore("arr=", 5, out _).Length == 0);
+            Ok("ends-word/MsgBox( 之后无词", Rules.WordBefore("MsgBox(", 8, out _).Length == 0);
+
             Ok("decl-position/Dim 名字", Rules.InDeclarationPosition("Dim cus", 8));
             // ★v133：`As` 后面一律不弹（用户明确要求）—— 那里只可能是类型名
             Ok("decl-position/As 后不弹", Rules.InDeclarationPosition("Dim x As Inte", 13));

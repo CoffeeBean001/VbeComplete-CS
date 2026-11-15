@@ -824,6 +824,37 @@ namespace VbeComplete
             => MemberDotCol(line, caretCol) >= 0;
 
         /// <summary>
+        /// 这个键打出来的字符会不会**终结**光标前那个标识符（`arr=` / `MsgBox(` / `f 1,`）。
+        /// 成立 ⇒ 候选窗该收：词已经写完了，还挂着一屏对 `arr` 的候选没有任何意义
+        /// （VBE 自己的列表也是这一下收的）。只收窗、不吞键，字符照常落进文档。
+        /// ★v193 用户报的就是这条：`arr=` 之后候选窗不走。根因不在"该不该收"的判据，
+        ///   而在**快照非原子**（VBE 先落文本、后挪光标）——那一轮读到"新文本 + 旧光标"，
+        ///   取词照旧取到 `arr`；下一轮文本不再变、走不到 Trigger，窗口就永远挂着。
+        ///   所以这里是"第二条路"：钩子拿到键就知道词终结了，不必等 COM 读回文本。
+        /// ★只有 VK、没有实际字符，所以只挑**两种 shift 状态都是终结符**的键：
+        ///   `;:` `=+` `,<` `/?` `` `~ `` `[{|` `]{` `'"`，以及 Shift+数字（`!#$%&*()`）。
+        ///   **故意排除**：`-`/`_`（Shift 是下划线，还在词里）、`.`（点号有单独的
+        ///   成员判据 Rules.MemberDotCol，抢过来会让 MEMBER_POPUP=1 少弹一屏）。
+        /// </summary>
+        public static bool EndsWordKey(int vk, bool shift)
+        {
+            switch (vk)
+            {
+                case 0xBA:   // ; :
+                case 0xBB:   // = +
+                case 0xBC:   // , <
+                case 0xBF:   // / ?
+                case 0xC0:   // ` ~
+                case 0xDB:   // [ {
+                case 0xDD:   // ] }
+                case 0xDE:   // ' "
+                    return true;
+            }
+            // Shift+数字 = ! @ # $ % ^ & * ( ) —— 全是终结符（类型后缀 / 拼接 / 括号）
+            return shift && vk >= 0x30 && vk <= 0x39;
+        }
+
+        /// <summary>
         /// 光标是不是在 `对象.|` 或 `对象.前|` 这种位置。成立时 root = 点号前的标识符。
         /// 只认"点号前是简单标识符"（`Me` / `c` / `m_arr`）—— `Range("A1").` 要真求值，不在这一层猜。
         /// </summary>

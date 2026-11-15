@@ -909,5 +909,232 @@ namespace VbeComplete
             }
             return allOk ? 0 : 1;
         }
+
+        /// <summary>
+        /// v193 用户报的 bug：`arr=` 敲完之后候选窗**不收**。
+        /// 一回合：摆 `    ar`（光标在行尾）→ 敲 `r`（候选窗该弹）→ 敲 `=`（该收）→ 采样。
+        ///
+        /// 根因（写在这里省得下次再查一遍）：快照非原子 —— VBE 先落文本再挪光标。
+        ///   `=` 落地那一轮读到的是"新文本 `    arr=` + 旧光标（还在 `arr` 后面）"，
+        ///   取词照旧取到 `arr`，候选窗对着 `arr` 又画了一遍（看起来毫无变化）；
+        ///   下一轮文本不变、只有光标前进 ⇒ 被 typingRace 当"刚敲完字"放过，
+        ///   而文本再也不会变 ⇒ 再也走不到 Trigger ⇒ 窗口一直挂着。
+        ///
+        /// 两条修法，这里验的是**权威那条**：
+        ///   ① 轮询侧：typingRace 时按当前真实光标再问一次"前面还有词吗"，空了就收；
+        ///   ② 钩子侧：Rules.EndsWordKey 命中就在钩子里当场收（省掉一次轮询）。
+        /// ★Unicode 注入没有 VK ⇒ 钩子看不到这一键 ⇒ ②在这里天然不参与。
+        ///   这不是漏测：真人打字时 ② 只是"提前 50ms"，判据本身还得靠 ①。
+        /// ★A/B：`NO_END_WORD=1` 把两条都关回去，本探针应判"复现"（窗口仍然挂着）
+        ///   —— 证明"关掉就复现用户现象"，否则这次"绿"没有意义。
+        /// </summary>
+        private static int EqProbe()
+        {
+            var sb = new StringBuilder();
+            var be = new VbeBackend();
+            int baseCount = be.LineCount();
+            if (baseCount <= 0)
+            {
+                sb.AppendLine("SKIP：没有代码模块");
+                File.WriteAllText(Path.Combine(Settings.Home, "eqprobe.log"), sb.ToString(), Encoding.UTF8);
+                return 3;
+            }
+
+            string orig = be.ModuleText();
+            int at = baseCount + 1;
+            bool ab = Settings.Flag("NO_END_WORD", false);
+
+            sb.AppendLine("=== eq probe (`arr=` 之后候选窗该收) ===");
+            sb.AppendLine("mode = " + (ab ? "A/B：NO_END_WORD=1（两条修法都关掉，预期复现）" : "默认（两条修法都开）"));
+            sb.AppendLine("module lines = " + baseCount);
+
+            var app = new App();
+            var gate = new object();
+            var hidMs = new List<double>();      // 敲完 `=` 到候选窗消失，花了多久
+            int rounds = 0, stuck = 0, skipped = 0;
+            string note = "";
+            int imeMode0 = -1;
+            bool imeUsedShift = false;
+
+            be.FocusVbe();
+            app.Start();
+            Thread.Sleep(1200);
+
+            var driver = new Thread(() =>
+            {
+                try
+                {
+                    bool focused = false;
+                    for (int i = 0; i < 40 && !focused; i++)
+                    {
+                        app.RunOnUi(() =>
+                        {
+                            Native.ForceForeground(Native.FindWindow("wndclass_desked_gsk", null));
+                            be.SetCaret(at + 1, 7);
+                            be.InvalidateSnapshot();
+                        });
+                        Thread.Sleep(250);
+                        focused = app.CodePaneFocused;
+                    }
+                    if (!focused) { lock (gate) note = "SKIP：焦点抢不到代码窗"; return; }
+
+                    if (!PrepareImeForTyping(s => { }, out imeMode0, out imeUsedShift))
+                    {
+                        lock (gate) note = "SKIP：输入法切不到英文档，敲不进去";
+                        return;
+                    }
+
+                    for (int k = 0; k < 6; k++)
+                    {
+                        // ── ① 真敲 `arr`：候选窗必须弹出来（没弹说明这轮根本没验到） ──
+                        RebuildScaffold(app, be, at, "    ar");
+                        Thread.Sleep(300);
+                        TypeTyping(app, "r", 40, out _);
+                        bool pop = false;
+                        var swW = Stopwatch.StartNew();
+                        while (swW.ElapsedMilliseconds < 600)
+                        {
+                            if (app.PopupVisible) { pop = true; break; }
+                            Thread.Sleep(10);
+                        }
+                        if (!pop)
+                        {
+                            string l0 = ReadLines(app, be, at, 3)[1] ?? "";
+                            lock (gate)
+                            {
+                                skipped++;
+                                sb.AppendLine("  [SKIP] 第 " + (k + 1) + " 回合：敲 `r` 之后候选窗就没弹" +
+                                              "（行=[" + l0 + "]，焦点/输入法被抢）");
+                            }
+                            Thread.Sleep(150);
+                            continue;
+                        }
+
+                        // ── ② 摆出那个**窄缝状态**：文本里已经有 `=`，光标却还停在 `arr` 后面 ──
+                        //   这不是造假：VBE 先落文本、后挪光标，真打字时这个中间态就在屏幕上演过
+                        //   一帧，只是宽度只有几毫秒。摆出来是为了把这条判据变成**确定性**的，
+                        //   否则"能不能撞上"全看机器快慢（第一次改成真敲，6 回合一次都没撞上，
+                        //   等于白跑）。两次 COM 都塞进同一个 RunOnUi：轮询也在 UI 线程上跑，
+                        //   不可能插在中间把状态"修好"。
+                        app.RunOnUi(() =>
+                        {
+                            be.ForceReloadModule();
+                            be.DeleteLines(at + 1, 1);
+                            be.InsertLines(at + 1, "    arr=");
+                            be.SetCaret(at + 1, 8);        // 显示列 8 = `arr` 后面，`=` 前面
+                            be.InvalidateSnapshot();
+                            app.NoteInjectedTyping();      // ★必须在这里补记：SetCaret 自己就要几十毫秒，
+                                                           //   等回到探针线程再记，TypingRaceMs(250ms) 的窗已经过了
+                        });
+                        Thread.Sleep(220);                 // 让轮询按这个状态判一次（弹窗仍是 `arr` 那屏）
+
+                        // ── ③ 光标追上文本（`=` 后面）→ 这就是鼠标/方向键之外唯一该收的时刻 ──
+                        app.RunOnUi(() =>
+                        {
+                            be.SetCaret(at + 1, 9);
+                            be.InvalidateSnapshot();
+                            app.NoteInjectedTyping();      // 同上：只为了让 typingRace 的时间窗成立
+                        });
+
+                        double ms = -1;
+                        var sw = Stopwatch.StartNew();
+                        while (sw.ElapsedMilliseconds < 900)
+                        {
+                            if (!app.PopupVisible) { ms = sw.Elapsed.TotalMilliseconds; break; }
+                            Thread.Sleep(5);
+                        }
+                        string line2 = ReadLines(app, be, at, 3)[1] ?? "";
+
+                        lock (gate)
+                        {
+                            rounds++;
+                            if (ms >= 0)
+                            {
+                                hidMs.Add(ms);
+                                sb.AppendLine("  [PASS] 第 " + (k + 1) + " 回合：光标追上 `=` 之后 " +
+                                    ms.ToString("F0") + "ms 收窗（行=[" + line2 + "]）");
+                            }
+                            else
+                            {
+                                stuck++;
+                                sb.AppendLine("  [FAIL] 第 " + (k + 1) +
+                                    " 回合：900ms 窗口还挂着（行=[" + line2 + "]）");
+                            }
+                        }
+                        Thread.Sleep(150);
+                    }
+                }
+                catch (Exception e) { lock (gate) note = "EXCEPTION " + e.Message; }
+                finally
+                {
+                    // 输入法原样还回去（与 perfprobe 同一套收尾）
+                    try { Native.ImeRestore(Native.FocusedVbeWindow(), imeMode0); } catch { }
+                    if (imeUsedShift && !Native.ImeNativeOn(Native.FocusedVbeWindow()))
+                        Native.SendVk(Native.VK_SHIFT);
+                    app.RequestExit();
+                }
+            });
+            driver.IsBackground = true;
+            driver.Start();
+            // ★RunOnUi 走 Control.Invoke，主线程必须真跑消息泵 —— 少了这一句，
+            //   driver 里第一个 RunOnUi 就永久阻塞（第一版就是这么挂住 300 秒的）。
+            try { Application.Run(app); }
+            catch (Exception e) { sb.AppendLine("消息泵异常：" + e.Message); }
+            driver.Join(5000);
+
+            // 脚手架必删：这段往用户的真模块里写过行，留着就是脏数据
+            bool restored = false;
+            try
+            {
+                be.ForceReloadModule();
+                int tailCnt = be.LineCount();
+                if (tailCnt >= at) be.DeleteLines(at, tailCnt - at + 1);
+                be.ForceReloadModule();
+                int removed = CleanupScratch(be);
+                be.ForceReloadModule();
+                restored = string.Equals(be.ModuleText(), orig, StringComparison.Ordinal);
+                sb.AppendLine("restored = " + restored + "（清掉 " + removed + " 处脚手架）");
+            }
+            catch (Exception e) { sb.AppendLine("cleanup 异常：" + e.Message); }
+
+            bool ok;
+            string verdict;
+            if (!string.IsNullOrEmpty(note) && rounds == 0)
+            {
+                verdict = note;
+                ok = false;
+            }
+            else if (ab)
+            {
+                // A/B：开关关掉时必须**复现**用户现象（至少一回合窗口挂着）
+                ok = stuck > 0;
+                verdict = "A/B 判定：" + (ok ? "已复现" : "没复现 —— 这条 A/B 没证明任何事") +
+                          "（复现 " + stuck + "/" + rounds + " 回合）";
+            }
+            else
+            {
+                ok = stuck == 0 && rounds > 0;
+                string stat = hidMs.Count > 0
+                    ? "中位 " + Med(hidMs).ToString("F0") + "ms / 最慢 " + hidMs.Max().ToString("F0") + "ms"
+                    : "—";
+                verdict = "RESULT: " + (ok ? "PASS" : "FAIL") + "（" + rounds + " 回合收到，" +
+                          stuck + " 回合挂着；收窗耗时 " + stat + "）";
+            }
+
+            sb.AppendLine("skipped = " + skipped + "（敲 `r` 没弹，前置不满足）");
+            sb.AppendLine(verdict);
+            if (!restored) ok = false;
+            File.WriteAllText(Path.Combine(Settings.Home, "eqprobe.log"), sb.ToString(),
+                new UTF8Encoding(false));
+            return ok && restored ? 0 : 1;
+        }
+
+        private static double Med(List<double> v)
+        {
+            if (v == null || v.Count == 0) return 0;
+            var s = new List<double>(v);
+            s.Sort();
+            return s[s.Count / 2];
+        }
     }
 }

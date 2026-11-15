@@ -815,7 +815,12 @@ namespace VbeComplete
                 //   轮询比的是 Rstrip 之后的文本（行尾空白刻意不算文档变化），于是
                 //   `Set ` 与 `Set` 一字不差 ⇒ 走不到 Trigger，列表就一直挂着
                 //   （用户报的 "set + 空格不收"）。这里只收窗、不吞键。
-                if (vk == Native.VK_SPACE)
+                // ★v193：不只是空格 —— 任何**终结标识符**的符号都一样要收
+                //   （`arr=` / `MsgBox(` / `f 1,`）。用户报的 `arr=` 之后窗口不走，
+                //   靠轮询那条路也行，但要等下一次轮询（50ms）而且会被"快照非原子"
+                //   绕一圈；钩子里当场就知道词写完了，没有任何理由再等。
+                //   判据只此一处：Rules.EndsWordKey。
+                if (vk == Native.VK_SPACE || (!NoEndWord && Rules.EndsWordKey(vk, shift)))
                 {
                     Post(() => _eng.Hide());
                     return Native.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
@@ -1480,12 +1485,30 @@ namespace VbeComplete
                     int step = _lastSnap == null ? 0 : snap.CaretCol - _lastSnap.CaretCol;
                     bool typingRace = Environment.TickCount64 - _lastTextTs <= TypingRaceMs &&
                                       step >= 1 && step <= 4;
-                    if (!typingRace &&
-                        (_lastSnap == null || _lastSnap.CaretCol != snap.CaretCol))
+                    // ★v193：这一跳如果正是"把词终结掉"的那个字符（`arr=` / `MsgBox(` / `f 1,`），
+                    //   快照非原子的另一半就露出来了：上一轮读到"新文本 + 旧光标"，取词照旧
+                    //   取到 `arr`（候选窗重新对着 `arr` 画了一遍，看起来毫无变化），这一轮
+                    //   文本没变、只有光标前进 ⇒ 被当成 typingRace 放过；而文本再也不会变，
+                    //   Trigger 再也走不到，窗口就一直挂着不走（用户报的 `arr=` 不收）。
+                    //   所以 typingRace 不能无条件放过：按**当前真实光标**再问一次
+                    //   "前面还有词吗"——空了就是词已经写完，收窗。判据纯文本、零 COM。
+                    if (typingRace && !NoEndWord)
+                    {
+                        int colNow = Rules.CharColFromDisp(snap.Text ?? "", snap.CaretCol);
+                        if (Rules.WordBefore(snap.Text ?? "", colNow, out _).Length == 0)
+                        {
+                            Log.Write("收起候选窗：光标前已无词（L{0} 第 {1} 列，词被符号终结）",
+                                snap.Line, colNow);
+                            _eng.Hide();
+                        }
+                    }
+                    else if (!typingRace &&
+                             (_lastSnap == null || _lastSnap.CaretCol != snap.CaretCol))
                     {
                         if (_popupVisible)
-                            Log.Write("收起候选窗：光标在行内移动（列 {0}->{1}），不是打字",
-                                _lastSnap == null ? -1 : _lastSnap.CaretCol, snap.CaretCol);
+                            Log.Write("收起候选窗：光标在行内移动（列 {0}->{1}，step={2}，{3}ms 前记过打字），不是打字",
+                                _lastSnap == null ? -1 : _lastSnap.CaretCol, snap.CaretCol, step,
+                                Environment.TickCount64 - _lastTextTs);
                         _eng.Hide();
                     }
                     _lastSnap = snap;      // 让比较基准前进，别每轮都判成"动了"
@@ -1518,6 +1541,9 @@ namespace VbeComplete
         /// <summary>这一键的文本已经落进文档、该判的都判完了（钩子每来一个新键就复位）。</summary>
         private volatile bool _keyHandled;
         private bool _hiRes;                       // 当前是否已经 timeBeginPeriod(1)
+        // ★v193 A/B：1 = 退回旧行为（符号键不收窗、轮询也不做"词已终结"兜底），
+        //   用来确定性复现"`arr=` 之后候选窗不走"。两处都读这一个字段。
+        private static readonly bool NoEndWord = Settings.Flag("NO_END_WORD", false);
         private int _wakeGen;                      // 只在 UI 线程读写：唤醒的"代"，新的顶掉旧的
         private static readonly bool NoWakeBusy = Settings.Flag("NO_WAKE_BUSY", false);
         // 诊断：最近一次唤醒里"等了多少 / 每轮轮询各花多少"，形如 p0/d1.2/p3.4
