@@ -315,6 +315,9 @@ namespace VbeComplete
                 {
                     joined = driver.Join(4000);
                     be.ForceReloadModule();
+                    // ★v190：先等宿主把 COM 交回来 —— "真 Ctrl+S" 那两条会弹出宿主自己的
+                    //   模态框（未保存的工作簿 / .xlsx 里的 VB 项目），那几秒里删行是静默失败的。
+                    WaitModuleReadable(be);
                     // ★v174：先把 `at` 之后的尾巴清干净 —— 模块级用例写在 `Sub` 外面，
                     //   CleanupScratch 只认 `Sub VbcEnter() … End Sub`，清不掉它。
                     int tailCnt = be.LineCount();
@@ -324,6 +327,18 @@ namespace VbeComplete
                     be.ForceReloadModule();
                     string now = be.ModuleText();
                     bool restored = string.Equals(now, orig, StringComparison.Ordinal);
+                    if (!restored)
+                    {
+                        // 再给一次机会：刚才是宿主忙，现在重删一遍（垃圾绝不许留）
+                        WaitModuleReadable(be);
+                        int tail2 = be.LineCount();
+                        if (tail2 >= at) be.DeleteLines(at, tail2 - at + 1);
+                        be.ForceReloadModule();
+                        removed += CleanupScratch(be);
+                        be.ForceReloadModule();
+                        now = be.ModuleText();
+                        restored = string.Equals(now, orig, StringComparison.Ordinal);
+                    }
                     if (!restored) allOk = false;
                     lock (gate)
                     {
@@ -670,10 +685,24 @@ namespace VbeComplete
                 {
                     joined = driver.Join(4000);
                     be.ForceReloadModule();
+                    // ★v190：同上 —— 真 Ctrl+S 之后宿主可能正弹着"无法保存 VB 项目"，
+                    //   这几秒里 LineCount 是 -1，删行会静默失败、把脚手架留在用户模块里。
+                    WaitModuleReadable(be);
                     int removed = CleanupScratch(be);
                     be.ForceReloadModule();
                     string now = be.ModuleText();
                     bool restored = string.Equals(now, orig, StringComparison.Ordinal);
+                    if (!restored)
+                    {
+                        WaitModuleReadable(be);
+                        int tail2 = be.LineCount();
+                        if (tail2 >= at) be.DeleteLines(at, tail2 - at + 1);
+                        be.ForceReloadModule();
+                        removed += CleanupScratch(be);
+                        be.ForceReloadModule();
+                        now = be.ModuleText();
+                        restored = string.Equals(now, orig, StringComparison.Ordinal);
+                    }
                     if (!restored) allOk = false;
                     lock (gate)
                     {

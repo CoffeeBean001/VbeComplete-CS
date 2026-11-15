@@ -82,6 +82,7 @@ namespace VbeComplete
                     case "--fmtprobe":    return FmtProbe();
                     case "--formprobe":   return FormProbe();
                     case "--hdrprobe":    return HdrProbe();
+                    case "--perfprobe":   return PerfProbe();
                     case "--snipetest":   return SnippetTest();
                     case "--dbtest":      return DbTest();
                     case "--dump":        return DumpModule();
@@ -128,6 +129,7 @@ namespace VbeComplete
                     "  --declprobe   真机逐字符敲声明位置（Private Fu / ReDim Preserve res），看弹不弹\r\n" +
                     "  --fmtprobe    真机验证「宿主重排空白后光标落在哪儿」（模拟 Ctrl+S 保存的格式化）\r\n" +
                     "  --formprobe   真机验证「窗体代码里提示控件名」（只读，不改模块）\r\n" +
+                    "  --perfprobe   候选弹窗各段耗时（CPU 合成工程 + 真机 + 端到端按键延迟）\r\n" +
                     "  --startuptest 图标 + 开机自启的登记/回滚（会短暂改注册表，随后还原）\r\n" +
                     "  --trusttest   AccessVBOM 现状（只读；VBECOMPLETE_TRUST_WRITE=1/0 才真写）\r\n" +
                     "  --settings    正常启动，并直接打开设置窗口\r\n";

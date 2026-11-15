@@ -14,6 +14,25 @@ namespace VbeComplete
     internal static partial class Program
     {
         /// <summary>
+        /// 等宿主把 COM 交回来再动模块。
+        /// ★为什么必须有：宿主在弹模态框（`无法保存 VB 项目`）/ 正在保存的那几秒里，
+        ///   每个 COM 调用都是 RPC_E_CALL_REJECTED，`LineCount()` 返回 -1 —— 这时删行
+        ///   会**静默失败**，探针的脚手架就留在用户的模块里了（fmtprobe 在"从没保存过的
+        ///   工作簿"上真按 Ctrl+S 时就这么漏过一次，restored=False 且多出 4 行）。
+        /// </summary>
+        private static bool WaitModuleReadable(VbeBackend be, int timeoutMs = 5000)
+        {
+            var sw = Stopwatch.StartNew();
+            while (sw.ElapsedMilliseconds < timeoutMs)
+            {
+                if (be.LineCount() >= 0) return true;
+                Thread.Sleep(120);
+                be.ForceReloadModule();
+            }
+            return be.LineCount() >= 0;
+        }
+
+        /// <summary>
         /// 删掉探针留下的 `Sub VbcEnter()` … `End Sub` 块（成功跑完要删、上一次
         /// 中途炸掉也要删 —— 探针绝不能把垃圾留在用户的模块里）。
         /// </summary>
@@ -24,6 +43,13 @@ namespace VbeComplete
             {
                 be.ForceReloadModule();
                 int cnt = be.LineCount();
+                if (cnt < 0)
+                {
+                    // 宿主忙（模态框 / 保存中）：等它一下，等不到就老实退出
+                    if (!WaitModuleReadable(be)) return removed;
+                    cnt = be.LineCount();
+                    if (cnt < 0) return removed;
+                }
                 int head = -1, tail = -1;
                 for (int i = cnt; i >= 1; i--)
                 {

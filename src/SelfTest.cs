@@ -648,7 +648,7 @@ End Type
             {
                 FuzzyHit fh;
                 Fuzzy.Match(nm, q, out fh);
-                return new Candidate
+                var cand = new Candidate
                 {
                     Name = nm,
                     Pos = fh.First,
@@ -662,6 +662,10 @@ End Type
                     IsBuiltin = builtin,
                     IsOwn = !builtin,
                 };
+                // ★v190：排序分是构造时算一次的字段 —— 手搭候选必须补这一步，
+                //   否则全部为 0，下面那几条排序断言会变成"谁都没分"的空验。
+                cand.Score = Engine.FuzzyScore(cand);
+                return cand;
             };
 
             // ★核心回归：**内建之间也得看匹配质量**。v188 那版把内建整组按字母序排，

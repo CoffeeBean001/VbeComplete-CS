@@ -27,6 +27,12 @@ namespace VbeComplete
         public int RecentRank;     // 最近使用次数
         public bool IsBuiltin;
         /// <summary>
+        /// 匹配质量分（VSCode fuzzyScore 那套），**构造时算一次**。
+        /// ★v190：以前是 Cmp 里现算 —— 一次排序要比较 n·log n 次，每次都把
+        ///   两边重算一遍，纯属白烧 CPU。
+        /// </summary>
+        public int Score;
+        /// <summary>
         /// 属于"你自己这边"的名字（变量 / 常量 / 过程 / 类型 / 窗体控件）。
         /// ★v189：不再是排序的**分组开关**，只作为 locality 的一个加成 ——
         ///   同等的匹配质量下，你自己的名字排在内建前；但如果内建匹配得明显更好
@@ -56,6 +62,13 @@ namespace VbeComplete
         // ★v186 A/B：置 1 就回到"过程头行也算过程体内"的旧判据，用来确定性复现
         //   "函数头前打 pri / pub 不提示 Private / Public"。
         private bool NoProcHeaderFix => Settings.Flag("NO_PROC_HEADER_FIX", false);
+
+        /// <summary>
+        /// ★v190 A/B：置 1 就退回"文本长度一变就重建池子"的老键 —— 也就是每敲一个字母
+        /// 都把整模块重新解析一遍。用来证明"打同一个词时不再重复解析"确实是这条在起作用
+        /// （不是探针自己少跑了几步）。--perfprobe 会两档都量一遍。
+        /// </summary>
+        public bool NoPoolCache = Settings.Flag("NO_POOL_CACHE", false);
 
         // UI 回调
         public Action<IReadOnlyList<Candidate>, int, int> OnShow;   // items, selected, top
@@ -129,9 +142,13 @@ namespace VbeComplete
         // ------------------------------------------------------------------
 
         /// <summary>
-        /// 重建池子。key 带"本模块文本长度 + 全工程签名 + 被挖掉的词"：本模块边打字边
-        /// 重解析（新写的变量立刻能提示），别的模块只在行数变了之后才重解析。
+        /// 重建池子。key 带"全工程签名 + 当前模块挖掉正在输入那个词之后的文本哈希"：
+        /// 本模块边打字边重解析（新写的变量立刻能提示），别的模块只在行数变了之后才重解析。
         /// blank*(1-based) 是正在输入的那个词 —— 解析前挖成空格，池子里就不会出现它自己。
+        /// <para>★v190：key 从"文本长度 + 词的位置"改成**内容哈希（忽略空白与正在输入的那个词）**。
+        /// 以前每敲一个字母长度就变 ⇒ 每键都要把整模块重新解析一遍（200 行 ≈ 2.3ms，
+        /// 上千行的模块更贵）；而打同一个词的过程中（m → ms → msg），挖掉这个词之后的
+        /// 代码其实一字未变 —— 池子当然不用重建。</para>
         /// </summary>
         private void EnsurePool(string moduleName, string moduleText,
             int blankLine = 0, int blankStart = 0, string blankToken = null)
@@ -143,8 +160,16 @@ namespace VbeComplete
                 others = Backend.ProjectScopes(out sig);
             }
 
-            string key = (moduleName ?? "") + "|" + (moduleText == null ? -1 : moduleText.Length) +
-                         "|" + sig + "|" + blankLine + ":" + blankStart + ":" + (blankToken ?? "");
+            // ★键 = 工程签名 + 当前模块"挖掉正在打的词"之后的内容指纹。打同一个词的
+            //   过程中（m → ms → msg）这三样一模一样 ⇒ 池子不重建；一旦词打完/换了位置/
+            //   别处改了代码，键就变。行号与词起点也带上：它们只在"换词"时变，
+            //   带着不放只会多重算一次，绝不会漏算。
+            string key = (moduleName ?? "") + "|" + sig + "|" + blankLine + ":" + blankStart +
+                         "|" + PoolHash(moduleText, blankLine, blankStart, blankToken);
+            // ★v190 A/B：老键（文本长度 + 词的位置）—— 每敲一个字母长度就变，键必变
+            if (NoPoolCache)
+                key = (moduleName ?? "") + "|" + (moduleText == null ? -1 : moduleText.Length) +
+                      "|" + sig + "|" + blankLine + ":" + blankStart + ":" + (blankToken ?? "");
             if (_poolNames.Count > 0 && _poolKey == key) return;
 
             var scopes = new List<ModuleScope>();
@@ -256,6 +281,59 @@ namespace VbeComplete
             _poolNames = names;
             _poolKey = key;
         }
+
+        /// <summary>
+        /// 池子键用的哈希：这段文本"除空白、除正在输入的那个词"之外的内容指纹。
+        /// <para>为什么要忽略空白：VBE 保存时会把一行重排空白（`n=n+1` → `    n = n + 1`），
+        /// 让键跟着变就等于白重建一次；而解析（Scope.Analyze）本来就对缩进不敏感。</para>
+        /// <para>为什么要忽略正在输入的词：那个词在解析前被挖成空格，池子里本来就不该有它；
+        /// 忽略之后 m → ms → msg 三步的键完全一样 ⇒ 只解析一次。</para>
+        /// <para>措词上"要挖的位置"先按 (行, 列) 定位，再核对那一段确实就是这个词
+        /// （与 <see cref="Rules.BlankToken"/> 同一条判据）—— 对不上就不挖，宁可多重算一次，
+        /// 也不能让键漏掉真实代码。</para>
+        /// </summary>
+        private static ulong PoolHash(string text, int blankLine, int blankStart, string blankToken)
+        {
+            const ulong FnvOffset = 14695981039346656037UL;
+            const ulong FnvPrime = 1099511628211UL;
+            ulong h = FnvOffset;
+            if (string.IsNullOrEmpty(text)) return h;
+
+            // ① 找出"正在输入的那个词"在原文里的下标区间（找不到就是 -1..-1）
+            int skipFrom = -1, skipLen = 0;
+            if (blankLine >= 1 && blankStart >= 1 && !string.IsNullOrEmpty(blankToken))
+            {
+                int line = 1, col = 1, idx = -1;
+                for (int i = 0; i < text.Length; i++)
+                {
+                    char ch = text[i];
+                    if (ch == '\r') continue;
+                    if (ch == '\n') { line++; col = 1; continue; }
+                    if (line == blankLine && col == blankStart) { idx = i; break; }
+                    col++;
+                    if (line > blankLine) break;
+                }
+                if (idx >= 0 && idx + blankToken.Length <= text.Length)
+                {
+                    bool same = true;
+                    for (int k = 0; k < blankToken.Length; k++)
+                        if (char.ToLowerInvariant(text[idx + k]) !=
+                            char.ToLowerInvariant(blankToken[k])) { same = false; break; }
+                    if (same) { skipFrom = idx; skipLen = blankToken.Length; }
+                }
+            }
+
+            // ② 单遍 FNV-1a：跳过空白与上面那一段
+            for (int i = 0; i < text.Length; i++)
+            {
+                if (skipFrom >= 0 && i >= skipFrom && i < skipFrom + skipLen) continue;
+                char ch = text[i];
+                if (char.IsWhiteSpace(ch)) continue;
+                h = (h ^ ch) * FnvPrime;
+            }
+            return h;
+        }
+
 
         /// <summary>把每个名字折算成"作用域档位"，key 为小写名。</summary>
         private Dictionary<string, int> BuildRankMap(string curModule, string curProc)
@@ -504,6 +582,7 @@ namespace VbeComplete
                     RecentRank = Recent != null ? Recent.Rank(name) : 0,
                 };
                 c.Kind = Classify(c.Name);
+                c.Score = FuzzyScore(c);      // ★只算一次：Cmp 里比较的是这个字段
                 hits.Add(c);
             }
 
@@ -722,7 +801,7 @@ namespace VbeComplete
         public static int Cmp(Candidate a, Candidate b)
         {
             int c = b.HitKind.CompareTo(a.HitKind); if (c != 0) return c;
-            c = FuzzyScore(b).CompareTo(FuzzyScore(a)); if (c != 0) return c;
+            c = b.Score.CompareTo(a.Score); if (c != 0) return c;
             c = Locality(b).CompareTo(Locality(a)); if (c != 0) return c;
             c = b.RecentRank.CompareTo(a.RecentRank); if (c != 0) return c;
             c = a.Name.Length.CompareTo(b.Name.Length); if (c != 0) return c;

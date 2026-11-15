@@ -4,6 +4,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -80,6 +81,14 @@ namespace VbeComplete
         // --enterprobe 要验的正是这条路径，所以留了这个只对测试键生效的放行口。
         internal static volatile int AcceptInjectedVk;
 
+        // ---- 性能诊断（--perfprobe 读；生产路径只写两个字段，不额外发 COM）----
+        /// <summary>最近一次按键的高精度时标（Stopwatch），只给"按键 → 候选算完"这段计时用。</summary>
+        private long _lastKeyStamp;
+        /// <summary>按键 → 这一轮候选计算跑完，隔了多少毫秒（-1 = 还没采到）。</summary>
+        internal long LastKeyToTriggerMs = -1;
+        /// <summary>Trigger 自己花了多少毫秒（含攒池子 / 匹配 / 排序 / 交给窗口）。</summary>
+        internal long LastTriggerCostMs = -1;
+
         // ---- 探针用的只读视图（生产路径一个都不读） ----
         internal bool CodePaneFocused => _codePaneFocused;
         internal bool PopupVisible => _popupVisible;
@@ -98,6 +107,16 @@ namespace VbeComplete
         internal int PendingKeys => _pendingKeys;
         internal Snapshot HookSnap => _hookSnap;
         internal long HookSnapAgeMs => Environment.TickCount64 - _hookSnapTicks;
+
+        /// <summary>
+        /// 探针专用：把上一次的计时清掉，好让下一次采样认定"这一回"的读数。
+        /// 只动诊断字段，不碰判定。
+        /// </summary>
+        internal void ProbeForgetLastTrigger()
+        {
+            LastKeyToTriggerMs = -1;
+            LastTriggerCostMs = -1;
+        }
 
         /// <summary>
         /// 探针专用：补记"刚敲了一个字"。只给 Unicode 注入用 —— 那种事件没有 VK，
@@ -649,6 +668,7 @@ namespace VbeComplete
             // ★时标打在【这里】：放到别的回调里就晚了（那时钩子已经把事件
             //   post 给监听器，文本可能已经变了）
             _lastKeyTs = Environment.TickCount64;
+            _lastKeyStamp = Stopwatch.GetTimestamp();
 
             bool ctrl = Native.Down(Native.VK_CONTROL);
             bool shift = Native.Down(Native.VK_SHIFT);
@@ -692,6 +712,14 @@ namespace VbeComplete
                 int n = _pendingKeys;
                 if (n < 99) _pendingKeys = n + 1;
                 _pendingAt = Environment.TickCount64;
+                // ★v190：打完字立刻叫醒轮询（见 WakePoll）。以前只能等下一跳（空闲 150ms），
+                //   用户感知就是"候选窗慢半拍"；实测按键→算完中位 69ms，几乎全是等这一跳。
+                RequestFastPoll();
+            }
+            // 退格 / Delete 也要叫醒：删到半个词时候选该跟着变（或该收窗）。
+            else if ((vk == Native.VK_BACK || vk == Native.VK_DELETE) && !ctrl && !alt)
+            {
+                RequestFastPoll();
             }
 
             // ==============================================================
@@ -1312,7 +1340,12 @@ namespace VbeComplete
 
                     if (!modSwitched)
                     {
-                        _eng.InvalidatePool();
+                        // ★v190：这里原来无条件 `_eng.InvalidatePool()`（每敲一个字就把
+                        //   整模块重新解析一遍）。现在池子键本身就是"挖掉在打的词之后的
+                        //   文本指纹"（Engine.PoolHash），文本真变了键自然不同；而在
+                        //   同一个词里多打一个字母时，池子内容压根不该变 —— 那一次
+                        //   重建纯属白费（200 行模块 ≈ 2.3ms/键，越大越贵）。
+                        //   设置改词库那边还有自己的 InvalidatePool()，不受影响。
                         // ★文本变了不等于"用户在打字"：鼠标右键粘贴、拖拽一段
                         //   代码进来、别的程序通过 COM 改了模块，都会走到这里。
                         //   那些场景一律只收起、不弹（Python 版 REQUIRE_KEY_TRIGGER）。
@@ -1342,7 +1375,14 @@ namespace VbeComplete
                             //   收起来，Trigger 再 Show —— 用户每敲一个字都看到候选窗
                             //   "闪一下"。Trigger 内部该收的时候自己会收（打全即收 /
                             //   空结果 / 让位）。
+                            long trigStart = Stopwatch.GetTimestamp();
                             _eng.Trigger(false, snap);
+                            long trigEnd = Stopwatch.GetTimestamp();
+                            LastTriggerCostMs = (long)((trigEnd - trigStart) * 1000.0
+                                / Stopwatch.Frequency);
+                            if (_lastKeyStamp > 0)
+                                LastKeyToTriggerMs = (long)((trigEnd - _lastKeyStamp) * 1000.0
+                                    / Stopwatch.Frequency);
                         }
                     }
                 }
@@ -1387,6 +1427,64 @@ namespace VbeComplete
         {
             if (_timer == null) return;
             if (_timer.Interval != ms) _timer.Interval = ms;
+        }
+
+        // ------------------------------------------------------------------
+        // 打字即时唤醒
+        // ------------------------------------------------------------------
+        // ★v190：轮询本来是 50~300ms 一跳，用户敲完字母要等下一跳才看见候选窗
+        //   （真机实测：按键 → 候选算完，中位 69ms、p95 104ms，其中 CPU 只占 1~3ms）。
+        //   这里只做一件事：**看到会写字的键就提前跑一轮 PollOnce**，判定逻辑一个字没改。
+        private System.Windows.Forms.Timer _fastPoll;
+        private int _fastLeft;                     // 还能补几跳
+        private volatile bool _wakePosted;         // 已经投递过一次唤醒（连续敲字时合并）
+
+        /// <summary>
+        /// 钩子线程调：马上安排一轮轮询。
+        /// ★只置标志 + BeginInvoke，绝不碰任何 WinForms 对象（跨线程建窗必炸）；
+        ///   连续敲字时标志没被消费就不再投，不会把消息队列灌满。
+        /// </summary>
+        private void RequestFastPoll()
+        {
+            if (_wakePosted) return;
+            _wakePosted = true;
+            Post(WakePoll);
+        }
+
+        private void WakePoll()
+        {
+            _wakePosted = false;
+            if (!_running) return;
+            // ① 先立刻跑一轮：钩子早就返回了，宿主多半已经把字落进文档 ——
+            //    这样就不必等定时器那 15ms 的粒度（WinForms Timer 最细也就这个量级）。
+            PollOnce();
+            // ② 上一轮没看到新字（宿主还在处理 WM_CHAR）或者用户又敲了键 ⇒ 再补一跳
+            if (!_running || Environment.TickCount64 - _lastKeyTs >= 150) return;
+            if (_fastPoll == null)
+            {
+                _fastPoll = new System.Windows.Forms.Timer();
+                _fastPoll.Tick += (s, e) => FastPollTick();
+            }
+            // WPS 上单轮 COM 更贵（见 PollOnce 里的间隔档位），补跳也别太密
+            _fastPoll.Interval = ComCtx.IsWpsHost ? 25 : 10;
+            _fastLeft = 2;
+            _fastPoll.Stop();
+            _fastPoll.Start();      // 重启 = 从现在起重新计时，连打时只跑最后一跳
+        }
+
+        private void FastPollTick()
+        {
+            _fastPoll.Stop();
+            if (!_running) return;
+            PollOnce();
+            // 宿主还没把字落进文档（或者又敲了新键）⇒ 再补一跳；都没有就不再打扰。
+            // ★不补的话会有"偶发不弹"：钩子跑在宿主处理 WM_CHAR 之前，10ms 未必够。
+            if (_fastLeft > 0 && Environment.TickCount64 - _lastKeyTs < 150)
+            {
+                _fastLeft--;
+                _fastPoll.Interval = 30;
+                _fastPoll.Start();
+            }
         }
 
         /// <summary>
@@ -1446,6 +1544,7 @@ namespace VbeComplete
             if (Interlocked.Exchange(ref _shutdownDone, 1) != 0) return;
             _running = false;
             try { _timer?.Stop(); _timer?.Dispose(); _timer = null; } catch { }
+            try { _fastPoll?.Stop(); _fastPoll?.Dispose(); _fastPoll = null; } catch { }
             try { _recent.Flush(); } catch { }
             try
             {

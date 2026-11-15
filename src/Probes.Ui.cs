@@ -46,7 +46,7 @@ namespace VbeComplete
                 {
                     FuzzyHit fh;
                     if (!Fuzzy.Match(n, word, out fh)) continue;
-                    cands.Add(new Candidate
+                    var cand = new Candidate
                     {
                         Name = n,
                         Kind = eng.Classify(n),
@@ -54,11 +54,17 @@ namespace VbeComplete
                         Span = fh.Span,
                         Hits = fh.Positions,
                         HitKind = fh.Kind,
+                        Run = fh.Run,
+                        WordStarts = fh.WordStarts,
+                        CaseHits = fh.CaseHits,
                         ScopeKind = 3,
                         IsBuiltin = VbaBuiltins.IsBuiltin(n),
                         // v187：预览图的排序必须和真机一致 —— 自定义名在前、内建按字母序
                         IsOwn = !VbaBuiltins.IsBuiltin(n),
-                    });
+                    };
+                    // v190：排序分在构造时算一次（Cmp 只比字段），预览也得跟上
+                    cand.Score = Engine.FuzzyScore(cand);
+                    cands.Add(cand);
                 }
                 cands.Sort(Engine.Cmp);
 
