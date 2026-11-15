@@ -27,20 +27,24 @@ recent.json
 recent.json.tmp
 
 # ---- 用户数据：代码片段库（Ctrl+Q）----
-# 里面是你自己一条条攒的片段。程序首次运行会自动建库。不进仓库。
-snippets-cs.db
+# 里面是你自己一条条攒的片段。程序首次运行会自动建库。
+# ★v192：三个库（含下面的两个词库）现在**入库**了 —— 仓库里那份就是"出厂内容"，
+#   clone 下来直接能用，不用等首次运行灌种子。
+#   代价要清楚：库是可编辑的（设置界面能增删词条），改过之后 `git status` 会显示
+#   modified，pull 时可能报"本地改动会被覆盖"。真撞上了：
+#     git checkout -- keywords-cs.db    # 丢弃本机改动，接受仓库那份
+#   或者先把自己的库拷出来备份再拉。
+#   SQLite 的临时文件仍然不入库 —— 它们每次运行都在变，进去只会制造噪音。
 snippets-cs.db-journal
 snippets-cs.db-wal
 snippets-cs.db-shm
 
 # ---- 用户数据：两个词库（关键字 / 函数）----
 # 首次运行用内置种子自动生成，之后由你自己编辑；各自独立，与 Python 版无关。
-# 不放进仓库，免得 pull 的时候把用户的词条覆盖掉。
-keywords-cs.db
+# 与片段库一样：仓库里那份是出厂内容，会随仓库走（见上）。
 keywords-cs.db-journal
 keywords-cs.db-wal
 keywords-cs.db-shm
-functions-cs.db
 functions-cs.db-journal
 functions-cs.db-wal
 functions-cs.db-shm
