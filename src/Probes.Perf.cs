@@ -174,7 +174,68 @@ namespace VbeComplete
             sb.AppendLine("  池子必须重建的那一档         " + Stat(tNewWord));
             sb.AppendLine("  其中 Scope.Analyze(当前模块)  " + Stat(tAnalyze));
             sb.AppendLine("  纯 Fuzzy.Match 扫一遍内建库(" + pool.Count + " 条)  " + Stat(tMatch));
+
+            // ---- 大模块：真实工程里一个模块动辄上千行，而 Scope.Analyze 是**按行全量**
+            //      重解析的。每开始一个新词就要重解析一遍 —— 这条是"大工程里打字发涩"的
+            //      唯一嫌疑，必须单独量。
+            sb.AppendLine();
+            sb.AppendLine("---- CPU（大模块：1 个 " + BigLines + " 行的当前模块）----");
+            var big = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["大模块"] = BenchModule(99, BigLines),
+            };
+            var bigBe = new CachedBackend(big, "大模块");
+            var bigEng = new Engine { Backend = bigBe, Recent = null };
+            string bigText = big["大模块"];
+            int bigLines = bigText.Replace("\r\n", "\n").Split('\n').Length;
+            var tBigAnalyze = new List<double>();
+            var tBigNewWord = new List<double>();
+            for (int i = 0; i < 10; i++)
+            {
+                var sw2 = Stopwatch.StartNew();
+                Scope.Analyze("大模块", bigText);
+                sw2.Stop();
+                tBigAnalyze.Add(sw2.Elapsed.TotalMilliseconds);
+
+                // 每敲一个字母都是**新词**（词起点变了）⇒ 池子必须重建
+                string ln = "    y" + (char)('a' + i) + "z = 1";
+                var sn = new Snapshot
+                {
+                    Line = bigLines + 1, Text = ln, Module = "大模块", CaretCol = ln.Length + 1,
+                };
+                bigEng.InvalidatePool();
+                sw2.Restart();
+                bigEng.Trigger(false, sn);
+                sw2.Stop();
+                tBigNewWord.Add(sw2.Elapsed.TotalMilliseconds);
+            }
+            sb.AppendLine("  每开始一个新词（整条 CPU）    " + Stat(tBigNewWord) + "  池子 " + bigEng.PoolCount + " 条");
+            sb.AppendLine("  其中 Scope.Analyze(" + bigLines + " 行)      " + Stat(tBigAnalyze));
+
+            // 再切一刀：Analyze 里"去注释/去字符串"（逐行扫描）和"提取过程/类型"各占多少
+            var bigLinesArr = Parser.SplitLines(bigText);
+            var tCodeOnly = new List<double>();
+            var tProcs = new List<double>();
+            for (int i = 0; i < 10; i++)
+            {
+                var sw3 = Stopwatch.StartNew();
+                for (int j = 0; j < bigLinesArr.Length; j++) Parser.CodeOnly(bigLinesArr[j]);
+                sw3.Stop();
+                tCodeOnly.Add(sw3.Elapsed.TotalMilliseconds);
+
+                sw3.Restart();
+                Parser.ExtractProcedures(bigText);
+                sw3.Stop();
+                tProcs.Add(sw3.Elapsed.TotalMilliseconds);
+            }
+            sb.AppendLine("  其中 逐行 CodeOnly          " + Stat(tCodeOnly));
+            sb.AppendLine("  其中 ExtractProcedures      " + Stat(tProcs));
+            sb.AppendLine("  Analyze 分段：切行 " + Scope.ProfSplitMs + " / 声明 " + Scope.ProfDeclMs +
+                          " / 用法 " + Scope.ProfUsageMs + " / 写入 " + Scope.ProfWrittenMs +
+                          " / 裸名 " + Scope.ProfFreeMs + " ms");
         }
+
+        private const int BigLines = 2000;
 
         /// <summary>中位数 / p95 / 均值，一行写完。</summary>
         private static string Stat(List<double> xs)
@@ -271,6 +332,7 @@ namespace VbeComplete
         // 打字前切到的输入法档位（只为收尾还原；perfprobe 单跑，不做并发保护）
         private static int _imeMode0 = -1;
         private static bool _imeUsedShift;
+        private static long _e2ePollBase;      // 每一轮采样前的 PollCount（算"这一键跑了几轮"）
 
         /// <summary>
         /// 用户感知的就是这一段：手指按下 → 候选窗在屏幕上。
@@ -284,6 +346,11 @@ namespace VbeComplete
             var be = new VbeBackend();
             var gate = new object();
             var samples = new List<double>();
+            var wake = new List<double>();     // 按键 → 轮询开始（纯"等"）
+            var polls = new List<double>();    // 这一次按键一共跑了几轮轮询
+            var traces = new List<string>();   // 每次唤醒的补跳轨迹（p=轮询耗时 d=等待）
+            var trigCost = new List<double>(); // 其中 Trigger 自己（匹配/排序/画窗）花了多少
+            var prof = new List<string>();     // Trigger 内部分段：读文/池/匹配/排序/画窗
             string note = "";
 
             int baseCount = be.LineCount();
@@ -299,6 +366,9 @@ namespace VbeComplete
             //   "轮询多久才轮到这一轮"，端到端那条就永远采不到（第一版漏了这个，白跑一轮）。
             be.FocusVbe();
             app.Start();
+            // 等应用自己的预热走完（候选窗 1.2s、全工程作用域同一次）—— 用户真实打字时
+            // 那一步早付掉了，这里不等的话量到的是"冷启动"，没有代表性。
+            Thread.Sleep(1500);
 
             var driver = new Thread(() =>
             {
@@ -345,7 +415,11 @@ namespace VbeComplete
                         // 摆一行半截词（不带最后一个字符），让"敲最后一下"才有东西可弹
                         RebuildScaffold(app, be, at, "    y = Msg", "    Dim resProbe As Long");
                         Thread.Sleep(320);
-                        app.RunOnUi(() => app.ProbeForgetLastTrigger());
+                        app.RunOnUi(() =>
+                        {
+                            app.ProbeForgetLastTrigger();
+                            _e2ePollBase = app.PollCount;
+                        });
                         SendKeys(app, (int)'B');
                         // 采样只读字段，不投递 UI 动作 —— 投递一次就要 1ms 上下，会糊掉读数
                         var sw = Stopwatch.StartNew();
@@ -358,7 +432,23 @@ namespace VbeComplete
                         }
                         lock (gate)
                         {
-                            if (got >= 0) samples.Add(got);
+                            if (got >= 0)
+                            {
+                                samples.Add(got);
+                                long toPoll = app.LastKeyToPollMs;
+                                if (toPoll >= 0) wake.Add(toPoll);
+                                polls.Add((double)(app.PollCount - _e2ePollBase));
+                                long cost = app.LastTriggerCostMs;
+                                if (cost >= 0) trigCost.Add(cost);
+                                var eg = app.Eng;
+                                if (eg != null && eg.ProfShowMs >= 0)
+                                    prof.Add(eg.ProfTextMs + "/" + eg.ProfPoolMs + "/" +
+                                             eg.ProfMatchMs + "/" + eg.ProfSortMs + "/" +
+                                             eg.ProfShowMs);
+                                // 前三次把"等多久 / 每轮轮询花多久"的轨迹抄下来
+                                if (traces.Count < 3 && app.BurstTrace != null)
+                                    traces.Add(app.BurstTrace);
+                            }
                             else note = "有一次 1200ms 内没等到候选计算（宿主被挤？）";
                         }
                         Thread.Sleep(200);
@@ -396,7 +486,21 @@ namespace VbeComplete
                     lock (gate)
                     {
                         if (samples.Count > 0)
+                        {
                             sb.AppendLine("  按键 → 候选算完（Trigger 跑完）  " + Stat(samples));
+                            if (wake.Count > 0)
+                                sb.AppendLine("  其中：按键 → 轮询开始（纯等）   " + Stat(wake));
+                            if (polls.Count > 0)
+                                sb.AppendLine("  每个键平均跑几轮轮询           " +
+                                    polls.Average().ToString("F2") + " 轮" +
+                                    "（上限 " + polls.Max().ToString("F0") + "）");
+                            if (trigCost.Count > 0)
+                                sb.AppendLine("  其中：Trigger 自己（含画窗）    " + Stat(trigCost));
+                            foreach (var tr in traces)
+                                sb.AppendLine("  轨迹：" + tr);
+                            foreach (var pr in prof)
+                                sb.AppendLine("  分段(读文/池/匹配/排序/画窗 ms)：" + pr);
+                        }
                         else
                             sb.AppendLine("SKIP：一次采样都没拿到。");
                         if (note.Length > 0) sb.AppendLine("  注：" + note);

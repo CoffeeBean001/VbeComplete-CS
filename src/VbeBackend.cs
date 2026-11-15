@@ -64,6 +64,9 @@ namespace VbeComplete
         private int _scopesSig = int.MinValue;
         private DateTime _scopesAt = DateTime.MinValue;
         private readonly double _scopesTtl = Settings.Double("SCOPE_TTL", 2.0);
+        // ★v191：打字中允许"超期使用"多久（见 ProjectScopes）。默认 8 秒 ≈ 4 个 TTL。
+        private readonly double _scopesTypingTtl = Settings.Double("SCOPE_TTL_TYPING", 8.0);
+        private static readonly bool NoScopeDefer = Settings.Flag("NO_SCOPE_DEFER", false);
 
         // ★v183：窗体控件名（模块名 -> 控件名 + 读取时刻）。
         //   过 Designer 接口约 23ms/窗体（PY 版真机实测），所以单独一条短缓存：
@@ -380,6 +383,22 @@ namespace VbeComplete
 
             if (_scopesSig != int.MinValue &&
                 (DateTime.UtcNow - _scopesAt).TotalSeconds < _scopesTtl)
+            {
+                signature = _scopesSig;
+                return _scopesList;
+            }
+
+            // ★v191：TTL 到期正好撞在打字那一刻时，这一轮全工程重算（每个组件一次 COM，
+            //   窗体还要读 Designer，单窗体 ~23ms）会把候选窗怼到 50ms 之后 —— 实测就是这么
+            //   一跳 50ms 的。可是正在打字时**别的模块不可能变**（用户在同一个代码窗里敲），
+            //   当前模块的变化走 ModuleText / PoolHash 那条路，不依赖这里。
+            //   所以：打字中先用旧列表顶着，最多顶 _scopesTypingTtl 秒（免得"手一直没停"
+            //   永远不刷新）；手一停，下一轮马上重算。
+            //   A/B：NO_SCOPE_DEFER=1 回到"到期就重算"。
+            if (_scopesSig != int.MinValue && !NoScopeDefer &&
+                (DateTime.UtcNow - _scopesAt).TotalSeconds < _scopesTypingTtl &&
+                App.LastTypingTs > 0 &&
+                Environment.TickCount64 - App.LastTypingTs < 400)
             {
                 signature = _scopesSig;
                 return _scopesList;

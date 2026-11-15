@@ -137,6 +137,24 @@ namespace VbeComplete
         /// <summary>当前裸名池的条目数（诊断用：池子空了会表现为"什么都不弹"）。</summary>
         public int PoolCount => _poolNames.Count;
 
+        /// <summary>
+        /// 预热：把全工程作用域先算一遍。冷算一次要 19ms（每个组件一次 COM + 解析），
+        /// 落在第一次按键上就是"切到 VBE 后第一次弹特别慢"。空闲时先付掉。
+        /// </summary>
+        public void WarmScopes()
+        {
+            try { Backend?.ProjectScopes(out _); } catch { }
+        }
+
+        // ---- 分段计时（--perfprobe 读；每次 Trigger 覆盖，只写几个 long，不值钱）----
+        // ★v191：端到端那 11ms 里到底是谁花的？50ms 的尾又是谁？没有这几格只能猜。
+        public long ProfTextMs = -1;    // 读当前模块全文
+        public long ProfPoolMs = -1;    // EnsurePool（含 ProjectScopes + Scope.Analyze）
+        public long ProfMatchMs = -1;   // 匹配 + 造候选
+        public long ProfSortMs = -1;    // 排序 + 去重 + 截断
+        public long ProfShowMs = -1;    // 交给窗口（画）
+        private static long MsOf(long ticks) => (long)(ticks * 1000.0 / System.Diagnostics.Stopwatch.Frequency);
+
         // ------------------------------------------------------------------
         // 池子
         // ------------------------------------------------------------------
@@ -380,6 +398,7 @@ namespace VbeComplete
         /// </summary>
         public bool Trigger(bool manual, Snapshot snap = null)
         {
+            ProfTextMs = ProfPoolMs = ProfMatchMs = ProfSortMs = ProfShowMs = -1;
             snap = snap ?? Backend?.Snapshot();
             if (snap == null) { Hide(); return false; }
 
@@ -445,8 +464,11 @@ namespace VbeComplete
                 return false;
             }
 
+            long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
             string text = Backend?.ModuleText();
+            long t1 = System.Diagnostics.Stopwatch.GetTimestamp();
             EnsurePool(snap.Module, text, snap.Line, wordStart, word);
+            long t2 = System.Diagnostics.Stopwatch.GetTimestamp();
 
             // ---- `对象.` 位置（只剩 MEMBER_POPUP=1 和 Ctrl+Space 走得到）----
             // 能定出 `root` 的声明类型就按类型收窄到真成员；定不出来就照旧出
@@ -588,6 +610,7 @@ namespace VbeComplete
 
             if (hits.Count == 0) { Hide(); return false; }
 
+            long t3 = System.Diagnostics.Stopwatch.GetTimestamp();
             hits.Sort(Cmp);
 
             // ★v152（对标 IDEA）：命中太多就截断。池子里光词库就 261 条，打一两个
@@ -624,8 +647,15 @@ namespace VbeComplete
             _ctxModule = snap.Module ?? "";
             _ctxLine = snap.Line;
             _ctxWordStart = wordStart;
+            long t4 = System.Diagnostics.Stopwatch.GetTimestamp();
             Visible = true;
             OnShow?.Invoke(_items, _sel, _top);
+            long t5 = System.Diagnostics.Stopwatch.GetTimestamp();
+            ProfTextMs = MsOf(t1 - t0);
+            ProfPoolMs = MsOf(t2 - t1);
+            ProfMatchMs = MsOf(t3 - t2);
+            ProfSortMs = MsOf(t4 - t3);
+            ProfShowMs = MsOf(t5 - t4);
             return true;
         }
 

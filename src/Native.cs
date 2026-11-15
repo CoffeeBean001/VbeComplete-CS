@@ -84,6 +84,17 @@ namespace VbeComplete
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
         public static extern IntPtr GetModuleHandle(string lpModuleName);
 
+        // ---- 系统定时器精度 ----
+        // ★v191：WinForms Timer 的 Interval 只是"至少这么久"，实际一跳受系统时钟中断
+        //   粒度限制（默认 15.6ms）—— 于是 timer.Interval = 10 也要等 ~15.6ms 才响。
+        //   打字那一小段（见 App.WakePoll）把它提到 1ms，让"补一跳"真的 1~2ms 就到。
+        //   ★必须在用完时 timeEndPeriod 还原：它会抬高整机时钟频率、费电。
+        [DllImport("winmm.dll", EntryPoint = "timeBeginPeriod")]
+        public static extern uint TimeBeginPeriod(uint uMilliseconds);
+
+        [DllImport("winmm.dll", EntryPoint = "timeEndPeriod")]
+        public static extern uint TimeEndPeriod(uint uMilliseconds);
+
         // ---- 消息循环 ----
         [StructLayout(LayoutKind.Sequential)]
         public struct MSG

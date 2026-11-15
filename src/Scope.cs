@@ -222,6 +222,31 @@ namespace VbeComplete
         private static readonly Regex ReEndType = new Regex(
             @"^[ \t]*End[ \t]+(?:Type|Enum)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+        /// <summary>Enum / Type 成员名的行首词（原来每段都 `Regex.Match(seg, "^[ \t]*(" + Id + ")")`
+        /// —— 每次都拼一遍模式串再走正则缓存，Enum 里几十个成员就是几十次）。</summary>
+        private static readonly Regex ReMemberName = new Regex(
+            @"^[ \t]*(" + Id + ")", RegexOptions.Compiled);
+
+        /// <summary>Option / Attribute / #If 这类整行跳过的东西（原来每行都调静态 Regex.IsMatch，
+        /// 每次都要走一遍正则缓存查找，1748 行就是 1748 次）。</summary>
+        private static readonly Regex ReSkipLine = new Regex(
+            @"^[ \t]*(?:Option|Attribute|#)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        /// <summary>
+        /// 行首第一个"词"的小写形式（跳过前置空白）。★v191 性能闸门用：
+        /// 下面每个正则都锚在行首、且开头必然是个关键字，所以"行首词不在候选集里"
+        /// 就**必然不匹配** —— 先在便宜的字符串上判一次，就能省掉大部分正则调用。
+        /// 实测 1748 行的模块：25ms → 见 perfprobe（主循环原来每行 6 个正则）。
+        /// </summary>
+        private static string FirstWordLower(string code)
+        {
+            int i = 0, n = code.Length;
+            while (i < n && (code[i] == ' ' || code[i] == '\t')) i++;
+            int s = i;
+            while (i < n && (char.IsLetterOrDigit(code[i]) || code[i] == '_')) i++;
+            return i == s ? null : code.Substring(s, i - s).ToLowerInvariant();
+        }
+
         private static readonly Regex ReIdent = new Regex(Id, RegexOptions.Compiled);
 
         // ---- v155：与 PY 的 _RE_IMP_ASSIGN / _RE_IMP_FOR / _RE_IMP_FOR_EACH 等价 ----
@@ -283,6 +308,7 @@ namespace VbeComplete
         /// <summary>解析一个模块。text 为 null 时返回一个空壳（绝不返回 null）。</summary>
         public static ModuleScope Analyze(string module, string text)
         {
+            long tA = System.Diagnostics.Stopwatch.GetTimestamp();
             var ms = new ModuleScope { Module = module ?? "" };
             var lines = Parser.SplitLines(text);
             ms.LineCount = lines.Length;
@@ -311,7 +337,8 @@ namespace VbeComplete
             //   `ReProcHead` 只吃一行 ⇒ 第一行的 `(` 配不到第二行的 `)`，**整条形参表一个
             //   都收不下来**（连第一行的参数也丢）。有 Option Explicit 时没有任何兜底，
             //   那些名字永远不进池子。
-            SplitLogical(lines, out _, out string[] logical, out bool[] isContLine);
+            SplitLogical(lines, out string[] physical, out string[] logical, out bool[] isContLine);
+            long tB = System.Diagnostics.Stopwatch.GetTimestamp();
 
             for (int ln = 1; ln <= n; ln++)
             {
@@ -322,24 +349,30 @@ namespace VbeComplete
                     // 空行/整行注释：不结束 Type 块（VBE 允许里面有空行）
                     continue;
                 }
+                // 行首词闸门（见 FirstWordLower）：下面每个正则都锚在行首、开头必是关键字，
+                // "行首词不在候选集里"就必然不匹配 —— 先在便宜的字符串上判一次。
+                string fw = FirstWordLower(code);
 
                 // ---- Type / Enum 块 ----
-                var tm = ReTypeHead.Match(code);
-                if (tm.Success)
+                if (fw == "type" || fw == "enum" || fw == "public" || fw == "private")
                 {
-                    inTypeBlock = true;
-                    typeOwner = tm.Groups[3].Value;
-                    typeIsEnum = tm.Groups[2].Value.Equals("Enum", StringComparison.OrdinalIgnoreCase);
-                    typePrivate = tm.Groups[1].Success &&
-                                  tm.Groups[1].Value.Equals("Private", StringComparison.OrdinalIgnoreCase);
-                    ms.Decls.Add(new Decl
+                    var tm = ReTypeHead.Match(code);
+                    if (tm.Success)
                     {
-                        Name = typeOwner,
-                        Proc = null,
-                        IsPrivate = typePrivate,
-                        KindHint = typeIsEnum ? "enum" : "type",
-                    });
-                    continue;
+                        inTypeBlock = true;
+                        typeOwner = tm.Groups[3].Value;
+                        typeIsEnum = tm.Groups[2].Value.Equals("Enum", StringComparison.OrdinalIgnoreCase);
+                        typePrivate = tm.Groups[1].Success &&
+                                      tm.Groups[1].Value.Equals("Private", StringComparison.OrdinalIgnoreCase);
+                        ms.Decls.Add(new Decl
+                        {
+                            Name = typeOwner,
+                            Proc = null,
+                            IsPrivate = typePrivate,
+                            KindHint = typeIsEnum ? "enum" : "type",
+                        });
+                        continue;
+                    }
                 }
                 if (inTypeBlock)
                 {
@@ -348,7 +381,7 @@ namespace VbeComplete
                     //   Enum 里极常见（`A_ = 1: B_: C_`），只认行首会把 `B_`/`C_` 漏成自由标识符。
                     foreach (string seg in code.Split(':'))
                     {
-                        var mm = Regex.Match(seg, @"^[ \t]*(" + Id + ")");
+                        var mm = ReMemberName.Match(seg);
                         if (!mm.Success) continue;
                         string mem = Clean(mm.Groups[1].Value);
                         if (mem.Length == 0 || VbaBuiltins.IsKeyword(mem)) continue;
@@ -367,6 +400,10 @@ namespace VbeComplete
                 string procKey = owner[ln];
 
                 // ---- 过程头：参数是局部 ----
+                if (fw == "sub" || fw == "function" || fw == "property" || fw == "declare" ||
+                    fw == "public" || fw == "private" || fw == "friend" || fw == "global" ||
+                    fw == "static")
+                {
                 var pm = ReProcHead.Match(code);
                 if (pm.Success)
                 {
@@ -400,12 +437,18 @@ namespace VbeComplete
                         }
                     continue;
                 }
+                }
 
-                if (ReEndProc.IsMatch(code)) continue;
-                if (Regex.IsMatch(code, @"^[ \t]*(?:Option|Attribute|#)", RegexOptions.IgnoreCase))
+                if (fw == "end" && ReEndProc.IsMatch(code)) continue;
+                int k0 = 0;
+                while (k0 < code.Length && (code[k0] == ' ' || code[k0] == '\t')) k0++;
+                bool hashLine = k0 < code.Length && code[k0] == '#';
+                if ((hashLine || fw == "option" || fw == "attribute") && ReSkipLine.IsMatch(code))
                     continue;
 
                 // `Set c = New Cls`：给成员提示留一条类型线索
+                if (fw == "set")
+                {
                 var sn = ReSetNew.Match(code);
                 if (sn.Success)
                 {
@@ -415,6 +458,7 @@ namespace VbeComplete
                         ms.VarTypes[(procKey ?? "") + "|" + vn] = tn;
                     continue;
                 }
+                }
 
                 // ---- 过程内声明 ----
                 // ⚠️ 已知缺口（v178 查过，故意没动）：冒号隔开的第二条声明
@@ -423,18 +467,25 @@ namespace VbeComplete
                 //   嵌套（Type/Enum 块、过程头都在同一层），风险大于收益。
                 if (procKey != null)
                 {
-                    var lm = ReLocalDecl.Match(code);
-                    if (lm.Success)
-                        foreach (var v in DeclTypes(lm.Groups[1].Value))
-                        {
-                            ms.Decls.Add(new Decl { Name = v.Key, Proc = procKey, TypeName = v.Value });
-                            if (v.Value != null) ms.VarTypes[procKey + "|" + v.Key] = v.Value;
-                            localNames.Add(v.Key);
-                        }
+                    if (fw == "dim" || fw == "const" || fw == "redim" ||
+                        fw == "withevents" || fw == "static")
+                    {
+                        var lm = ReLocalDecl.Match(code);
+                        if (lm.Success)
+                            foreach (var v in DeclTypes(lm.Groups[1].Value))
+                            {
+                                ms.Decls.Add(new Decl { Name = v.Key, Proc = procKey, TypeName = v.Value });
+                                if (v.Value != null) ms.VarTypes[procKey + "|" + v.Key] = v.Value;
+                                localNames.Add(v.Key);
+                            }
+                    }
                     continue;
                 }
 
                 // ---- 过程外（模块级）----
+                if (fw == "public" || fw == "private" || fw == "global" ||
+                    fw == "friend" || fw == "dim" || fw == "const" || fw == "withevents")
+                {
                 var dm = ReModuleDim.Match(code);
                 if (dm.Success)
                 {
@@ -461,9 +512,11 @@ namespace VbeComplete
                     }
                     continue;
                 }
+                }
             }
 
             ms.OptionExplicit = Parser.OptionExplicit(text);
+            long tC = System.Diagnostics.Stopwatch.GetTimestamp();
 
             // ---- 全量标识符：只留"没被任何过程声明为局部"的 ----
             // ★v158：声明要**按作用域**排，不能按名字一刀切。真实案例：`查询()` 里
@@ -487,9 +540,11 @@ namespace VbeComplete
             // 只在"从没被当值用过"时才生效：`arr(1) = 5` 的 arr 若别处还有 `arr = Array()` 仍按变量收。
             var callOnly = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var usedAsValue = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var raw in lines)
+            for (int ri = 0; ri < lines.Length; ri++)
             {
-                string c0 = Parser.CodeOnly(raw);
+                // ★v191：CodeOnly 只在 SplitLogical 里算一次（physical[ri+1] 就是它）。
+                //   以前这一段和下面两段各自又算一遍 —— 同一个 2000 行模块被扫了 4 遍。
+                string c0 = physical[ri + 1];
                 if (c0.Length == 0) continue;
                 foreach (Match m0 in ReIdent.Matches(c0))
                 {
@@ -520,15 +575,16 @@ namespace VbeComplete
                     else usedAsValue.Add(w0);
                 }
             }
+            long tD = System.Diagnostics.Stopwatch.GetTimestamp();
 
             // ---- v155（对齐 PY 的 _implicit_names_in_stmt）：先扫"被写入"的名字 ----
             // PY 的隐式变量分两路：写入（赋值目标 / For / For Each）精确，只读用法走宽扫描；
             // 宽扫描靠三张名单压噪音（宿主对象名、枚举前缀 vb*/xl*/mso*、前导词黑名单）。
             // 这里补上同样三道闸，并留一条例外：本模块给这个名字赋过值（`range = 1`）就照收。
             var written = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var raw in lines)
+            for (int wi = 0; wi < lines.Length; wi++)
             {
-                string cw = Parser.CodeOnly(raw);
+                string cw = physical[wi + 1];      // ★v191：复用 SplitLogical 那一遍的结果
                 if (cw.Length == 0) continue;
                 Match mw = ReImpForEach.Match(cw);
                 if (!mw.Success) mw = ReImpFor.Match(cw);
@@ -537,11 +593,12 @@ namespace VbeComplete
                 string nw = Clean(mw.Groups[1].Value);
                 if (nw.Length > 0) written.Add(nw);
             }
+            long tE = System.Diagnostics.Stopwatch.GetTimestamp();
 
             bool inFreeTypeBlock = false;              // Type 块里的成员不能当裸名（只能 p.X 访问）
             for (int ln = 0; ln < lines.Length; ln++)
             {
-                string code = Parser.CodeOnly(lines[ln]);
+                string code = physical[ln + 1];    // ★v191：同上，不再重算 CodeOnly
                 if (code.Length == 0) continue;
                 // `Attribute VB_Name = "模块1"` 只出现在导出/导入的源码里：
                 // 里面的名字不是变量（VBE 的 CodeModule 里看不到这些行）。
@@ -661,8 +718,18 @@ namespace VbeComplete
                     if (firstForName) ms.FreeIdents.Add(w);
                 }
             }
+            ProfSplitMs = MsOf(tB - tA);
+            ProfDeclMs = MsOf(tC - tB);
+            ProfUsageMs = MsOf(tD - tC);
+            ProfWrittenMs = MsOf(tE - tD);
+            ProfFreeMs = MsOf(System.Diagnostics.Stopwatch.GetTimestamp() - tE);
             return ms;
         }
+
+        // ---- 分段计时（--perfprobe 读；每次 Analyze 覆盖，只写几个 long）----
+        public static long ProfSplitMs, ProfDeclMs, ProfUsageMs, ProfWrittenMs, ProfFreeMs;
+        private static long MsOf(long ticks) =>
+            (long)(ticks * 1000.0 / System.Diagnostics.Stopwatch.Frequency);
 
         /// <summary>
         /// 这个标识符是不是"点号后面的成员名"（`wsR.Cells` 里的 `Cells`）？
@@ -683,15 +750,20 @@ namespace VbeComplete
         private static bool IsAfterAs(string code, Match m) => PrevWordIs(code, m, "As");
 
         /// <summary>标识符前面那个词是不是 <paramref name="word"/>（跳过空白）。</summary>
+        /// ★v191：原来每次 `code.Substring(...)` 再比较 —— 一个标识符要问 5 次
+        /// （As / Implements / GoTo / GoSub / Resume / New），2000 行模块就是几万次小串分配。
+        /// 改成原地逐字符比，零分配。
         private static bool PrevWordIs(string code, Match m, string word)
         {
             int p = m.Index - 1;
             while (p >= 0 && (code[p] == ' ' || code[p] == '\t')) p--;
             int e = p;
             while (p >= 0 && (char.IsLetterOrDigit(code[p]) || code[p] == '_')) p--;
-            int len = e - p;
-            if (len != word.Length) return false;
-            return code.Substring(p + 1, len).Equals(word, StringComparison.OrdinalIgnoreCase);
+            if (e - p != word.Length) return false;
+            for (int i = 0; i < word.Length; i++)
+                if (char.ToUpperInvariant(code[p + 1 + i]) != char.ToUpperInvariant(word[i]))
+                    return false;
+            return true;
         }
 
         /// <summary>
@@ -733,8 +805,11 @@ namespace VbeComplete
         {
             int after = m.Index + m.Length;
             while (after < code.Length && (code[after] == ' ' || code[after] == '\t')) after++;
-            return after < code.Length && code[after] == ':' &&
-                   code.Substring(after + 1).Trim().Length == 0;
+            if (after >= code.Length || code[after] != ':') return false;
+            // 冒号后面必须什么都没有（★v191：原来 `Substring(after+1).Trim()` 每次分配一个串）
+            for (int i = after + 1; i < code.Length; i++)
+                if (code[i] != ' ' && code[i] != '\t') return false;
+            return true;
         }
 
         /// <summary>

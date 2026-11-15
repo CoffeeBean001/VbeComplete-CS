@@ -11,6 +11,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace VbeComplete
@@ -38,6 +39,8 @@ namespace VbeComplete
         private volatile bool _popupVisible;
         private long _lastYieldLog;               // "让位"日志限速（每 2 秒最多一条）
         private long _lastJumpLog;                // "跳行不弹"日志限速（每 2 秒最多一条）
+        private bool _focusWarmed;                // 这一趟进代码窗已经预热过全工程作用域
+        private long _warmAt;                     // 上次预热时刻（限速用，见 PollOnce）
         private volatile bool _running = true;
         private volatile Snapshot _hookSnap;      // 最近一次轮询拿到的快照（钩子线程只读）
         private long _popupBeat;                  // 候选窗心跳（UI 线程写，钩子线程只读）
@@ -82,12 +85,33 @@ namespace VbeComplete
         internal static volatile int AcceptInjectedVk;
 
         // ---- 性能诊断（--perfprobe 读；生产路径只写两个字段，不额外发 COM）----
+        /// <summary>
+        /// 最近一次"会写字/删字"的按键时刻（TickCount64）。后端拿它判断"用户正在打字"，
+        /// 据此把全工程作用域的重算推迟到手停之后 —— 那一次重算含窗体 Designer 读取，
+        /// 单窗体 ~23ms，撞在按键上就是候选窗慢半拍（v191 实测单轮轮询 50ms）。
+        /// </summary>
+        internal static long LastTypingTs
+        {
+            get => Volatile.Read(ref _lastTypingTs);
+            set => Volatile.Write(ref _lastTypingTs, value);
+        }
+        private static long _lastTypingTs;
         /// <summary>最近一次按键的高精度时标（Stopwatch），只给"按键 → 候选算完"这段计时用。</summary>
         private long _lastKeyStamp;
         /// <summary>按键 → 这一轮候选计算跑完，隔了多少毫秒（-1 = 还没采到）。</summary>
         internal long LastKeyToTriggerMs = -1;
+        /// <summary>
+        /// 按键 → **第一个**轮询开始（还没读 COM）。和 LastKeyToTriggerMs 一起看，
+        /// 才知道那几毫秒是"等轮询"还是"真在算"。
+        /// ★只记每个键的第一轮：后面还有空闲轮询，跟着写就会记成"等了 110ms"（假数）。
+        /// </summary>
+        internal long LastKeyToPollMs = -1;
+        /// <summary>这个键的第一轮轮询已经记过了（钩子每来一个新键就复位）。</summary>
+        private volatile bool _keyPollSeen;
         /// <summary>Trigger 自己花了多少毫秒（含攒池子 / 匹配 / 排序 / 交给窗口）。</summary>
         internal long LastTriggerCostMs = -1;
+        /// <summary>轮询跑了多少轮（探针按"每键跑了几轮"判断有没有白跑）。</summary>
+        internal long PollCount;
 
         // ---- 探针用的只读视图（生产路径一个都不读） ----
         internal bool CodePaneFocused => _codePaneFocused;
@@ -107,6 +131,8 @@ namespace VbeComplete
         internal int PendingKeys => _pendingKeys;
         internal Snapshot HookSnap => _hookSnap;
         internal long HookSnapAgeMs => Environment.TickCount64 - _hookSnapTicks;
+        /// <summary>探针专用：读引擎的分段计时（Prof* 系列）。</summary>
+        internal Engine Eng => _eng;
 
         /// <summary>
         /// 探针专用：把上一次的计时清掉，好让下一次采样认定"这一回"的读数。
@@ -115,6 +141,7 @@ namespace VbeComplete
         internal void ProbeForgetLastTrigger()
         {
             LastKeyToTriggerMs = -1;
+            LastKeyToPollMs = -1;
             LastTriggerCostMs = -1;
         }
 
@@ -128,6 +155,12 @@ namespace VbeComplete
         {
             _lastKeyTs = Environment.TickCount64;
             _lastTextTs = _lastKeyTs;
+            _lastKeyStamp = Stopwatch.GetTimestamp();   // 让端到端那两段计时也算这一次
+            _keyPollSeen = false;
+            _keyHandled = false;
+            // 后端靠这个判"正在打字"（推迟全工程重算）。注入的字同样是打字，
+            // 不记的话 perfprobe 量到的就不是真机上用户打字的那条路。
+            LastTypingTs = _lastKeyTs;
             // 空白键要单独记：`SameCodeIgnoringSpace` 那条靠它区分"人手敲了个空格"
             // 和"宿主把这一行重排了"（Unicode 注入没有 VK，钩子里根本没有这一次按键）。
             if (blank) _lastBlankTs = _lastKeyTs;
@@ -375,6 +408,20 @@ namespace VbeComplete
                 try { TrayPin.EnsureVisible(); } catch { }
             };
             pin.Start();
+
+            // ★v191 预热候选窗：首次 Show 要 CreateWindowEx + 建字体 + GDI+ 首排 + 首帧，
+            //   真机实测 23ms（之后每帧 1ms）。用户感知就是"切到 VBE 后第一次弹特别慢"。
+            //   1.2 秒后（托盘图标已就绪、用户还没开始打字）在屏幕外放一帧，成本就付掉了。
+            var warm = new System.Windows.Forms.Timer { Interval = 1200 };
+            warm.Tick += (s, e) =>
+            {
+                warm.Stop();
+                warm.Dispose();
+                try { _popup.WarmUp(); } catch (Exception ex) { Log.Write("候选窗预热失败：{0}", ex.Message); }
+                // 顺带把全工程作用域算一次（冷算 19ms，别留给第一次按键）
+                try { _eng.WarmScopes(); } catch { }
+            };
+            warm.Start();
 
             // 启动了就必须让用户看得见。这个程序没有主窗口，图标又默认折叠进
             // Win11 的托盘溢出区 —— 不给提示的话，"双击了没反应"和"已经正常运行"
@@ -669,6 +716,8 @@ namespace VbeComplete
             //   post 给监听器，文本可能已经变了）
             _lastKeyTs = Environment.TickCount64;
             _lastKeyStamp = Stopwatch.GetTimestamp();
+            _keyPollSeen = false;      // 新键 ⇒ 允许再记一次"第一轮轮询"（纯诊断）
+            _keyHandled = false;       // 新键 ⇒ 还没落进文档，允许补跳
 
             bool ctrl = Native.Down(Native.VK_CONTROL);
             bool shift = Native.Down(Native.VK_SHIFT);
@@ -709,6 +758,7 @@ namespace VbeComplete
             if (Editing.IsTextKey(vk) && !ctrl && !alt)
             {
                 _lastTextTs = Environment.TickCount64;
+                LastTypingTs = Environment.TickCount64;     // 给后端判"正在打字"（见 ProjectScopes）
                 int n = _pendingKeys;
                 if (n < 99) _pendingKeys = n + 1;
                 _pendingAt = Environment.TickCount64;
@@ -719,6 +769,7 @@ namespace VbeComplete
             // 退格 / Delete 也要叫醒：删到半个词时候选该跟着变（或该收窗）。
             else if ((vk == Native.VK_BACK || vk == Native.VK_DELETE) && !ctrl && !alt)
             {
+                LastTypingTs = Environment.TickCount64;
                 RequestFastPoll();
             }
 
@@ -1147,6 +1198,17 @@ namespace VbeComplete
         private void PollOnce()
         {
             if (!_running) return;
+            PollCount++;
+            // 性能诊断：只写一个字段，不打日志、不发 COM。
+            // 只在"刚按过键"时记，而且每个键只记第一轮 —— 后面空闲轮询跟着写会把
+            // 这个数刷成"等了 110ms"（v191 第一版就栽在这，读数比总耗时还大）。
+            if (_lastKeyStamp > 0 && !_keyPollSeen &&
+                Environment.TickCount64 - _lastKeyTs <= 300)
+            {
+                _keyPollSeen = true;
+                LastKeyToPollMs = (long)((Stopwatch.GetTimestamp() - _lastKeyStamp) * 1000.0
+                    / Stopwatch.Frequency);
+            }
 
             // 最近使用记录：延迟合并写盘（2 秒最多一次）。之前是"每接受一个候选就
             // 整文件重写一次"，家目录落在 OneDrive / 网络盘上时每次 Tab 都卡一下。
@@ -1167,6 +1229,19 @@ namespace VbeComplete
             {
                 bool focused = InVbeCodePane();
                 _codePaneFocused = focused;
+                // ★v191：刚切回代码窗时顺手预热一次全工程作用域（缓存过期才会真算，19ms）。
+                //   这个时刻用户还在移动鼠标 / 切窗口，19ms 看不出来；留给第一次按键就是"卡一下"。
+                //   ★必须限速：探针 / 用户来回切窗时 _codePaneFocused 会抖，
+                //   每抖一次就吃 20~45ms 的 COM，正好把该跑的那轮轮询挤掉
+                //   （declprobe「打全即收」那条就是这么红的：最后一轮轮询晚了 110ms）。
+                if (focused && !_focusWarmed &&
+                    Environment.TickCount64 - _warmAt > 10000)
+                {
+                    _focusWarmed = true;
+                    _warmAt = Environment.TickCount64;
+                    try { _eng.WarmScopes(); } catch { }
+                }
+                else if (!focused) _focusWarmed = false;
                 // 心跳：只要 UI 线程还活着、轮询还在跑，候选窗的"可用性"就续期一次
                 if (_popupVisible) _popupBeat = Environment.TickCount64;
 
@@ -1288,6 +1363,9 @@ namespace VbeComplete
 
                     _lastSnap = snap;
                     _lastModName = snap.Module;
+                    // 这一键的效果已经看到了（后面弹不弹、收不收都在这一轮判完）
+                    // ⇒ 唤醒那边不用再补跳了。见 WakePoll 的说明。
+                    _keyHandled = true;
 
                     // ★宿主把这一行重排了空白：Ctrl+S 会顺手格式化当前行（`n=n+1` → `    n = n + 1`），
                     //   而光标只按原列号保留，于是跑到第二个 `n` 后面。两件事都要收：
@@ -1435,9 +1513,17 @@ namespace VbeComplete
         // ★v190：轮询本来是 50~300ms 一跳，用户敲完字母要等下一跳才看见候选窗
         //   （真机实测：按键 → 候选算完，中位 69ms、p95 104ms，其中 CPU 只占 1~3ms）。
         //   这里只做一件事：**看到会写字的键就提前跑一轮 PollOnce**，判定逻辑一个字没改。
-        private System.Windows.Forms.Timer _fastPoll;
         private int _fastLeft;                     // 还能补几跳
         private volatile bool _wakePosted;         // 已经投递过一次唤醒（连续敲字时合并）
+        /// <summary>这一键的文本已经落进文档、该判的都判完了（钩子每来一个新键就复位）。</summary>
+        private volatile bool _keyHandled;
+        private bool _hiRes;                       // 当前是否已经 timeBeginPeriod(1)
+        private int _wakeGen;                      // 只在 UI 线程读写：唤醒的"代"，新的顶掉旧的
+        private static readonly bool NoWakeBusy = Settings.Flag("NO_WAKE_BUSY", false);
+        // 诊断：最近一次唤醒里"等了多少 / 每轮轮询各花多少"，形如 p0/d1.2/p3.4
+        private readonly StringBuilder _burstTrace = new StringBuilder();
+        private volatile string _burstText;      // 只读副本（探针线程读这个，避免读到一半被改）
+        internal string BurstTrace => _burstText;
 
         /// <summary>
         /// 钩子线程调：马上安排一轮轮询。
@@ -1451,40 +1537,76 @@ namespace VbeComplete
             Post(WakePoll);
         }
 
-        private void WakePoll()
+        /// <summary>
+        /// 一轮唤醒：先立刻判一次，没看到字就**每 1~2ms** 再判，直到这一键判完。
+        /// ★v191：这里原来用 WinForms Timer 补跳，而 `SetTimer` 的最小间隔是
+        ///   USER_TIMER_MINIMUM = 10ms、再叠加系统时钟粒度（默认 15.6ms）——
+        ///   `Interval = 10` 实际 15.6ms 才响，`Interval = 1` 更是被抬到 10ms 以上。
+        ///   实测端到端中位卡在 16~33ms 就是这个原因（CPU 只占 1ms）。
+        ///   现在改用线程池定时器（`Task.Delay` 吃 timeBeginPeriod(1) 的精度），
+        ///   补跳真的 1~2ms 就到。
+        /// </summary>
+        private async void WakePoll()
         {
             _wakePosted = false;
             if (!_running) return;
-            // ① 先立刻跑一轮：钩子早就返回了，宿主多半已经把字落进文档 ——
-            //    这样就不必等定时器那 15ms 的粒度（WinForms Timer 最细也就这个量级）。
-            PollOnce();
-            // ② 上一轮没看到新字（宿主还在处理 WM_CHAR）或者用户又敲了键 ⇒ 再补一跳
-            if (!_running || Environment.TickCount64 - _lastKeyTs >= 150) return;
-            if (_fastPoll == null)
+            int gen = ++_wakeGen;
+            try
             {
-                _fastPoll = new System.Windows.Forms.Timer();
-                _fastPoll.Tick += (s, e) => FastPollTick();
+                _burstTrace.Clear();
+                long t = Stopwatch.GetTimestamp();
+                PollOnce();
+                _burstTrace.Append('p').Append(Ms(Stopwatch.GetTimestamp() - t)).Append(' ');
+                if (!_running) { EndHiRes(); return; }
+                // 这一键已经判完了（弹了 / 该收 / 该让位）⇒ 一跳都不用补。
+                // ★v191：以前不管结果都补两跳，实测每个键平均跑 5.9 轮轮询，每轮
+                //   0.5~0.9ms 的 COM 全白花，还跟宿主抢它处理按键的时间。
+                if (NoWakeBusy || _keyHandled || Environment.TickCount64 - _lastKeyTs >= 150)
+                {
+                    EndHiRes();
+                    return;
+                }
+                BeginHiRes();
+                for (_fastLeft = 12; _fastLeft > 0 && _running; _fastLeft--)
+                {
+                    long a = Stopwatch.GetTimestamp();
+                    await Task.Delay(1);
+                    long b = Stopwatch.GetTimestamp();
+                    // 又敲了新键：让位给更新那一次唤醒（它自己会接着补跳）
+                    if (!_running || gen != _wakeGen) return;
+                    PollOnce();
+                    _burstTrace.Append('d').Append(Ms(b - a))
+                               .Append("/p").Append(Ms(Stopwatch.GetTimestamp() - b)).Append(' ');
+                    if (_keyHandled || Environment.TickCount64 - _lastKeyTs >= 150) break;
+                }
+                if (_lastKeyStamp > 0)
+                    _burstTrace.Append("=总").Append(Ms(Stopwatch.GetTimestamp() - _lastKeyStamp));
             }
-            // WPS 上单轮 COM 更贵（见 PollOnce 里的间隔档位），补跳也别太密
-            _fastPoll.Interval = ComCtx.IsWpsHost ? 25 : 10;
-            _fastLeft = 2;
-            _fastPoll.Stop();
-            _fastPoll.Start();      // 重启 = 从现在起重新计时，连打时只跑最后一跳
+            catch (Exception e)
+            {
+                Log.Write("唤醒异常：{0}", e.Message);
+            }
+            finally
+            {
+                _burstText = _burstTrace.ToString();
+                if (gen == _wakeGen) EndHiRes();     // 只由最新那一代负责还原精度
+            }
         }
 
-        private void FastPollTick()
+        private static long Ms(long stopwatchTicks) =>
+            (long)(stopwatchTicks * 1000.0 / Stopwatch.Frequency);
+
+        private void BeginHiRes()
         {
-            _fastPoll.Stop();
-            if (!_running) return;
-            PollOnce();
-            // 宿主还没把字落进文档（或者又敲了新键）⇒ 再补一跳；都没有就不再打扰。
-            // ★不补的话会有"偶发不弹"：钩子跑在宿主处理 WM_CHAR 之前，10ms 未必够。
-            if (_fastLeft > 0 && Environment.TickCount64 - _lastKeyTs < 150)
-            {
-                _fastLeft--;
-                _fastPoll.Interval = 30;
-                _fastPoll.Start();
-            }
+            if (_hiRes) return;
+            try { Native.TimeBeginPeriod(1); _hiRes = true; } catch { }
+        }
+
+        private void EndHiRes()
+        {
+            if (!_hiRes) return;
+            _hiRes = false;
+            try { Native.TimeEndPeriod(1); } catch { }
         }
 
         /// <summary>
@@ -1544,7 +1666,7 @@ namespace VbeComplete
             if (Interlocked.Exchange(ref _shutdownDone, 1) != 0) return;
             _running = false;
             try { _timer?.Stop(); _timer?.Dispose(); _timer = null; } catch { }
-            try { _fastPoll?.Stop(); _fastPoll?.Dispose(); _fastPoll = null; } catch { }
+            EndHiRes();     // ★退出必须还原时钟精度，否则整机一直 1ms 心跳（费电）
             try { _recent.Flush(); } catch { }
             try
             {

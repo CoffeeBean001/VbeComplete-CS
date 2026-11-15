@@ -837,6 +837,48 @@ namespace VbeComplete
             if (!Visible) Show();
         }
 
+        /// <summary>
+        /// 预热：把"第一次弹窗"的隐性开销提前付掉 —— 建窗口句柄、建字体、首次排版、
+        /// 首帧自绘。★v191 实测：首次 Show 一共 23ms，之后每帧 1ms。用户感知就是
+        /// "切到 VBE 后第一次弹特别慢，之后就正常"。
+        /// 做法：在屏幕外放一帧再藏起来。不进 Alt+Tab（WS_EX_TOOLWINDOW）、
+        /// 不抢焦点（WS_EX_NOACTIVATE），所以用户看不到也感觉不到。
+        /// </summary>
+        public void WarmUp()
+        {
+            try
+            {
+                if (Handle == IntPtr.Zero) return;      // 句柄建过一次就够
+                using (var g = CreateGraphics())
+                    g.MeasureString("WarmUp", _font);   // GDI+ 首次排版（要加载字体族）
+            }
+            catch { }
+
+            // 首帧自绘那条路径（有候选 vs 空列表画法不同，得走一次真的）
+            try
+            {
+                var keep = _items; _lastX = _lastY = int.MinValue;
+                SetData(new[]
+                {
+                    new Candidate
+                    {
+                        Name = "WarmUp", Hits = new[] { 0, 1 }, HitKind = 3,
+                        Span = 2, ScopeKind = 3,
+                    },
+                }, 0, 0, 1);
+                var sz = DesiredSize();
+                // ★放到屏幕外再显示：不这样会真的在左上角闪一帧
+                Native.SetWindowPos(Handle, Native.HWND_TOPMOST, -32000, -32000,
+                    sz.Width, sz.Height, Native.SWP_NOACTIVATE);
+                if (!Visible) Show();
+                Update();                                // 立刻把 WM_PAINT 走完
+                Hide();
+                _items = keep;
+                ResetPlacement();
+            }
+            catch { try { Hide(); } catch { } }
+        }
+
         protected override void Dispose(bool disposing)
         {
             if (disposing)
