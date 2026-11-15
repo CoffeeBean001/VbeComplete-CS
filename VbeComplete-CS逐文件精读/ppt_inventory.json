@@ -1,0 +1,5132 @@
+{
+ "App.cs": {
+  "lines": 1472,
+  "classes": [
+   "App"
+  ],
+  "methods": [
+   {
+    "line": 108,
+    "acc": "internal",
+    "ret": "void",
+    "name": "NoteInjectedTyping",
+    "args": "bool blank = false",
+    "doc": "<summary> 探针专用：补记\"刚敲了一个字\"。只给 Unicode 注入用 —— 那种事件没有 VK， 钩子按设计看不到（它只认真按键），于是 `RequireKeyTrigger` 判成\"不是用户在打字\"， 候选窗一个都不弹（declprobe 曾因此整批假红）。 ★只动\"打字时刻\"那几格（`_lastKeyTs` / `_las"
+   },
+   {
+    "line": 117,
+    "acc": "private",
+    "ret": "void",
+    "name": "NoteSave",
+    "args": "",
+    "doc": "<summary>按 Ctrl+S 时记下\"保存前那一行\"，供重排判定当旧行锚。</summary>"
+   },
+   {
+    "line": 131,
+    "acc": "internal",
+    "ret": "void",
+    "name": "ProbeNoteSaveForTest",
+    "args": ") { NoteSave(",
+    "doc": "<summary> 探针专用：模拟\"按下 Ctrl+S 那一刻\"记下保存前那一行。 ★必须在摆出格式化后的新行**之前**调，否则存进去的已经是新行。 </summary>"
+   },
+   {
+    "line": 133,
+    "acc": "internal",
+    "ret": "void",
+    "name": "ProbeClearLastSnapForTest",
+    "args": "",
+    "doc": "<summary>探针专用：模拟保存期间短暂失焦（轮询把 _lastSnap 清空）。</summary>"
+   },
+   {
+    "line": 139,
+    "acc": "internal",
+    "ret": "void",
+    "name": "ProbeStaleSaveForTest",
+    "args": "int backCols",
+    "doc": "<summary> 探针专用：确定性造出 v185 那个\"新文本 + 旧光标列\"的落后快照 —— 把保存前快照的光标列人为挪后几格，并强制重排走 _saveSnap 这条锚。 --fmtprobe 用它给 NO_RESPACE_ANCHOR 做 A/B（否则这层修复验不到）。 </summary>"
+   },
+   {
+    "line": 152,
+    "acc": "internal",
+    "ret": "void",
+    "name": "RunOnUi",
+    "args": "Action a) { try { _disp.Invoke(a",
+    "doc": ""
+   },
+   {
+    "line": 153,
+    "acc": "internal",
+    "ret": "void",
+    "name": "RequestExit",
+    "args": ") { try { _disp.BeginInvoke((Action)ExitThread",
+    "doc": ""
+   },
+   {
+    "line": 286,
+    "acc": "internal",
+    "ret": "void",
+    "name": "ReloadSettings",
+    "args": "",
+    "doc": "<summary> 重新读一遍设置（保存 / 恢复默认之后调）：钩子侧开关字段、候选窗字体配色、候选池。 ★任何一项出错都不能拦住别的项 —— 点保存不许因为某个分支异常而\"看起来什么都没发生\"。 </summary>"
+   },
+   {
+    "line": 310,
+    "acc": "internal",
+    "ret": "void",
+    "name": "OpenSettings",
+    "args": "int page = 0",
+    "doc": "<summary>打开设置窗口（page：0 常用 / 1 快捷键 / 2 候选 / 3 外观 / 4 词库）。</summary>"
+   },
+   {
+    "line": 335,
+    "acc": "public",
+    "ret": "void",
+    "name": "Start",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 375,
+    "acc": "private",
+    "ret": "void",
+    "name": "ShowBalloon",
+    "args": "string title, string text",
+    "doc": ""
+   },
+   {
+    "line": 393,
+    "acc": "internal",
+    "ret": "string",
+    "name": "TrustMessage",
+    "args": "bool wasOn, int n",
+    "doc": "<summary> 托盘「允许访问 VBA 工程」点完之后给用户看的那段话。 ★抽成静态方法是为了让 `--trusttest` 弹**同一份**文字：用户将看到的字，和我验过的 字必须是同一份，否则\"验过了\"是空话。 </summary>"
+   },
+   {
+    "line": 425,
+    "acc": "private",
+    "ret": "void",
+    "name": "StartShowListener",
+    "args": "",
+    "doc": "<summary> 监听\"又有人启动了第二个实例\"。Program 那边发现互斥体已存在时会 Set 这个事件，我们收到就把托盘图标的存在感刷一遍 —— 否则用户双击后的 全部观感就是\"什么都没发生\"。 </summary>"
+   },
+   {
+    "line": 460,
+    "acc": "private",
+    "ret": "void",
+    "name": "SetupTray",
+    "args": "",
+    "doc": "<summary> 托盘图标：没有它，用户只能去任务管理器杀进程。 ★图标必须用【系统自带】的 —— 不引入任何资源文件，保持单文件干净。 </summary>"
+   },
+   {
+    "line": 563,
+    "acc": "private",
+    "ret": "void",
+    "name": "StartHook",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 573,
+    "acc": "private",
+    "ret": "void",
+    "name": "HookLoop",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 601,
+    "acc": "private",
+    "ret": "IntPtr",
+    "name": "HookProc",
+    "args": "int nCode, IntPtr wParam, IntPtr lParam",
+    "doc": "<summary> 钩子回调的唯一入口：只负责把异常挡在 native 边界之内。 ★v151：托管异常一旦穿过 CallNextHookEx，CLR 会 FailFast 直接杀进程 （托盘图标突然消失、日志一个字没有），已吞掉的键也不会还原。 </summary>"
+   },
+   {
+    "line": 611,
+    "acc": "private",
+    "ret": "IntPtr",
+    "name": "HookProcCore",
+    "args": "int nCode, IntPtr wParam, IntPtr lParam",
+    "doc": ""
+   },
+   {
+    "line": 921,
+    "acc": "private",
+    "ret": "IntPtr",
+    "name": "Swallow",
+    "args": "int vk",
+    "doc": "<summary>吃掉这一下按键（keydown），并记下 vk 好把配对的 keyup 也吞掉。</summary>"
+   },
+   {
+    "line": 945,
+    "acc": "private",
+    "ret": "IntPtr",
+    "name": "SwallowAndRun",
+    "args": "int vk, bool restoreCtrl, bool restoreShift, Func<bool> work, bool hidePopup = true, bool ",
+    "doc": "<summary> \"吞掉这个键 → 去 UI 线程干事 → 干不成再把键原样还回去\"（全项目这条铁律的唯一落地点）。 ⚠️ 字母键与回车必须 replayOnFail = false：SendVk 见 Ctrl 被按住会刻意不合成 Ctrl， 回放出去的是裸字母/裸回车，比\"什么都没发生\"糟得多。 </summary>"
+   },
+   {
+    "line": 967,
+    "acc": "private",
+    "ret": "bool",
+    "name": "SnippetFormActive",
+    "args": "",
+    "doc": "<summary> 钩子线程用：前台窗口是不是片段窗（或它的子控件）？ 只读一个缓存的 HWND + `GetForegroundWindow` + 几次 `GetParent`， 全是纯 Win32，一次 COM 都不碰，也不去碰任何 WinForms 对象。 </summary>"
+   },
+   {
+    "line": 986,
+    "acc": "private",
+    "ret": "bool",
+    "name": "FreshHookSnap",
+    "args": "out string lineText, out int caretDisp",
+    "doc": "<summary>钩子线程用：拿\"轮询留下的快照\"。快照过期 / 输入法可能正在组字时一律 返回 false —— 宁可这一次不接管（原生行为无害），也绝不拿旧行文本去赌 用户正在敲的那一行。 </summary>"
+   },
+   {
+    "line": 1007,
+    "acc": "private",
+    "ret": "void",
+    "name": "ToggleSnippets",
+    "args": "",
+    "doc": "<summary>Ctrl+Q：开 / 关片段窗（UI 线程）。开窗位置取【开窗之前】的光标。</summary>"
+   },
+   {
+    "line": 1049,
+    "acc": "private",
+    "ret": "bool",
+    "name": "IsWatchedHotkey",
+    "args": "int vk",
+    "doc": "<summary>是不是\"我们该管的\"组合键（只用于诊断日志，免得每天打的字都进日志）。</summary>"
+   },
+   {
+    "line": 1059,
+    "acc": "private",
+    "ret": "bool",
+    "name": "IsHotkeyDiagVk",
+    "args": "int vk",
+    "doc": "<summary> 诊断用：Ctrl + 任何一个符号键（OEM 0xBA~0xDF 与小键盘除号）没命中分支时也留痕。 ★v143：以前只记 IsWatchedHotkey 里那几个 vk，\"用户按的其实是另一个 vk\"在日志里一个字都没有。 </summary>"
+   },
+   {
+    "line": 1070,
+    "acc": "private",
+    "ret": "void",
+    "name": "Post",
+    "args": "Action a",
+    "doc": ""
+   },
+   {
+    "line": 1091,
+    "acc": "private",
+    "ret": "bool",
+    "name": "InVbeCodePane",
+    "args": "",
+    "doc": "<summary>纯 Win32：焦点是不是在 VBE 的代码窗格里（0.02ms，不碰 COM）。</summary>"
+   },
+   {
+    "line": 1119,
+    "acc": "private",
+    "ret": "void",
+    "name": "PollOnce",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 1386,
+    "acc": "private",
+    "ret": "void",
+    "name": "SetInterval",
+    "args": "int ms",
+    "doc": ""
+   },
+   {
+    "line": 1397,
+    "acc": "private",
+    "ret": "void",
+    "name": "ExplainVbeDenied",
+    "args": "",
+    "doc": "<summary> 焦点在代码窗、却拿不到任何快照，而宿主有实例、VBE 窗口也在 —— 只可能是 AccessVBOM 没开（WPS 默认如此）。★先自动打开，但要提示\"重开 WPS\"（它只在启动时读这个值）； ★用户在托盘里自己关掉的不许动（VbaTrust.UserDisabled）。 </summary>"
+   },
+   {
+    "line": 1422,
+    "acc": "private",
+    "ret": "void",
+    "name": "ShowPopupAtCaret",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 1444,
+    "acc": "public",
+    "ret": "void",
+    "name": "Shutdown",
+    "args": "",
+    "doc": "<summary> 退出。★幂等：托盘\"退出\"和 `Application.Run` 返回后都会调一次， 第二次再对已 Dispose 的窗子 Hide/Dispose 只会制造 ObjectDisposedException。 </summary>"
+   }
+  ],
+  "head": "主流程：全局钩子 + 自适应轮询 + 按键路由 + \"改一行\"类操作。 ★这是唯一有权决定吃不吃一个键的地方：钩子线程只读内存状态（一次 COM 都不许碰）， 真动作投递到 UI 线程；吃掉却没做成事，必须原样还回去。"
+ },
+ "AutoStart.cs": {
+  "lines": 420,
+  "classes": [
+   "AutoStart",
+   "State"
+  ],
+  "methods": [
+   {
+    "line": 28,
+    "acc": "private",
+    "ret": "string[]",
+    "name": "AllNames",
+    "args": "",
+    "doc": "<summary>主名 + 历史别名，按\"先主后旧\"排列。</summary>"
+   },
+   {
+    "line": 51,
+    "acc": "public",
+    "ret": "string",
+    "name": "ExePath",
+    "args": "",
+    "doc": "<summary> 当前进程的真实 exe 路径。单文件发布时 `ProcessPath` 就是 `dist\\VbeComplete.exe`； 极端情况下取不到，退回 `Application.ExecutablePath`（apphost 路径）。 </summary>"
+   },
+   {
+    "line": 73,
+    "acc": "private",
+    "ret": "string",
+    "name": "ExeIn",
+    "args": "string cmdline",
+    "doc": "<summary>从注册表里的命令行取出 exe 路径（能处理 `\"C:\\a b\\x.exe\" -arg`）。</summary>"
+   },
+   {
+    "line": 94,
+    "acc": "internal",
+    "ret": "bool",
+    "name": "IsOurCommand",
+    "args": "string value",
+    "doc": "<summary> 这条注册表值是不是\"我们这份 exe\"的。判据分两级： 1) 同目录、同名 → 一定是； 2) 不同目录但那个文件已经不在了 → 是当年登记后挪走/删掉的失效项，也算。 只看文件名不够：别家可能也有个 VbeComplete.exe，那种文件还在的不许动。 </summary>"
+   },
+   {
+    "line": 133,
+    "acc": "public",
+    "ret": "bool",
+    "name": "IsRegistered",
+    "args": "out string value",
+    "doc": "<summary>注册表里现在有没有\"我们这一份\"（主名优先，附带把值读出来）。</summary>"
+   },
+   {
+    "line": 166,
+    "acc": "public",
+    "ret": "bool",
+    "name": "SetEnabled",
+    "args": "bool on",
+    "doc": "<summary>用户从托盘菜单切换：先记住意图，再立刻落到注册表。</summary>"
+   },
+   {
+    "line": 180,
+    "acc": "public",
+    "ret": "void",
+    "name": "Sync",
+    "args": "",
+    "doc": "<summary> 启动时调用：按意图把注册表修正到\"该有的样子\"。 已一致就一个字节都不写（省得每次开机都碰注册表）。 </summary>"
+   },
+   {
+    "line": 233,
+    "acc": "private",
+    "ret": "bool",
+    "name": "SameDir",
+    "args": "string a, string b",
+    "doc": ""
+   },
+   {
+    "line": 245,
+    "acc": "private",
+    "ret": "bool",
+    "name": "Apply",
+    "args": "bool on",
+    "doc": "<summary>写 / 删注册表。on=true 时顺手把历史值名归一（只留主名一条）。</summary>"
+   },
+   {
+    "line": 297,
+    "acc": "public",
+    "ret": "string",
+    "name": "Describe",
+    "args": "",
+    "doc": "<summary>给日志 / 托盘提示用的一句话状态。</summary>"
+   },
+   {
+    "line": 345,
+    "acc": "internal",
+    "ret": "State",
+    "name": "Capture",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 375,
+    "acc": "internal",
+    "ret": "void",
+    "name": "Restore",
+    "args": "State st",
+    "doc": ""
+   },
+   {
+    "line": 408,
+    "acc": "internal",
+    "ret": "void",
+    "name": "RawSet",
+    "args": "string name, string value",
+    "doc": "<summary>自检专用：直接写某个值名的原始内容（不做\"是不是我们的\"判断）。</summary>"
+   }
+  ],
+  "head": "开机自启：在 HKCU\\...\\Run 下登记一个值（免 UAC、可逆）。 ★注册表是\"结果\"、autostart.txt 是\"意图\"：每次启动按意图修一遍注册表，换目录、 被清理软件动过都能自愈。 ★删除前一律过 IsOurCommand —— 历史值名（`VbeComplete`）要清，但绝不误删别家的同名值。"
+ },
+ "BuiltinTables.g.cs": {
+  "lines": 85,
+  "classes": [
+   "BuiltinTables"
+  ],
+  "methods": [],
+  "head": "由 python 版 vba_builtins.py 自动导出，请勿手工编辑。 两边必须逐字一致：这是\"词库里有什么\"的唯一事实来源。"
+ },
+ "ComCall.cs": {
+  "lines": 128,
+  "classes": [
+   "ComCall",
+   "VARIANT",
+   "DISPPARAMS",
+   "IDispatchRaw"
+  ],
+  "methods": [
+   {
+    "line": 55,
+    "acc": "public",
+    "ret": "bool",
+    "name": "CallFourOut",
+    "args": "object target, string method, out int a, out int b, out int c, out int d",
+    "doc": "<summary> 调一个\"四个 ByRef Long 出参\"的方法（目前只有 GetSelection 是这个形状）。 顺序按源码参数顺序给出；内部按 COM 规矩逆序摆放。 </summary>"
+   }
+  ],
+  "head": "直接调 IDispatch::Invoke，只为了那几个带 ByRef 出参的 VBA 方法 （`CodePane.GetSelection` 四个 ByRef Long，dynamic 后期绑定调不了）。 只支持本项目用到的形状（全 byref Long 出参、无入参），不做通用 COM 框架。"
+ },
+ "ComCtx.cs": {
+  "lines": 287,
+  "classes": [
+   "ComCtx"
+  ],
+  "methods": [
+   {
+    "line": 22,
+    "acc": "public",
+    "ret": "object",
+    "name": "GetActive",
+    "args": "string progId",
+    "doc": "<summary>按 ProgID 取正在运行的实例；没有实例返回 null（绝不启动新实例）。</summary>"
+   },
+   {
+    "line": 46,
+    "acc": "private",
+    "ret": "string",
+    "name": "ForegroundProcess",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 52,
+    "acc": "private",
+    "ret": "bool",
+    "name": "IsWpsProcess",
+    "args": "string proc",
+    "doc": ""
+   },
+   {
+    "line": 57,
+    "acc": "private",
+    "ret": "bool",
+    "name": "IsOfficeProcess",
+    "args": "string proc",
+    "doc": ""
+   },
+   {
+    "line": 62,
+    "acc": "private",
+    "ret": "bool",
+    "name": "IsHostProcess",
+    "args": "string proc",
+    "doc": ""
+   },
+   {
+    "line": 69,
+    "acc": "private",
+    "ret": "bool",
+    "name": "HostPidMatches",
+    "args": "object app, uint fgPid",
+    "doc": "<summary> 连到的 Application 是不是\"前台那个宿主\"。 ★Excel 与 WPS 同时开着时 ROT 里两个都在，按候选顺序试会连错 —— 后果是读另一个 工程的代码（甚至把候选写进另一个宿主）。比 Application.Hwnd 的进程号最准。 </summary>"
+   },
+   {
+    "line": 86,
+    "acc": "public",
+    "ret": "List<string>",
+    "name": "HostCandidates",
+    "args": "",
+    "doc": "<summary>候选 ProgID（有序）。</summary>"
+   },
+   {
+    "line": 88,
+    "acc": "public",
+    "ret": "List<string>",
+    "name": "HostCandidates",
+    "args": "string proc",
+    "doc": ""
+   },
+   {
+    "line": 123,
+    "acc": "public",
+    "ret": "void",
+    "name": "NoteHost",
+    "args": "string progid",
+    "doc": ""
+   },
+   {
+    "line": 153,
+    "acc": "public",
+    "ret": "void",
+    "name": "Begin",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 160,
+    "acc": "public",
+    "ret": "void",
+    "name": "End",
+    "args": "bool typing = false",
+    "doc": "<summary> 结束一次 COM 使用期。typing=true（用户正在打字）时不释放 —— 每 80ms 重建连接的 耗时会盖过快照的 800ms 保鲜期，回车补结构直接失灵。停手就释放。 ★连续打字超过 2 秒强制断一次，避免\"边打字边点关闭\"时引用一直挂着。 </summary>"
+   },
+   {
+    "line": 169,
+    "acc": "public",
+    "ret": "void",
+    "name": "Release",
+    "args": "",
+    "doc": "<summary>释放缓存的对象（WPS 上每轮结束都要调；别的宿主只在出错时调）。</summary>"
+   },
+   {
+    "line": 180,
+    "acc": "private",
+    "ret": "bool",
+    "name": "IsWpsProgId",
+    "args": "string progid",
+    "doc": ""
+   },
+   {
+    "line": 189,
+    "acc": "public",
+    "ret": "void",
+    "name": "Reset",
+    "args": "",
+    "doc": "<summary>丢弃缓存（VBE 关掉了 / 报错之后必须调）。</summary>"
+   },
+   {
+    "line": 195,
+    "acc": "public",
+    "ret": "dynamic",
+    "name": "Vbe",
+    "args": "bool verify = true",
+    "doc": "<summary> 拿 VBE 对象。verify=true 时顺带探一次 ActiveCodePane（更慢但更准）。 返回 null 表示\"现在拿不到\"，调用方必须安静退出。 </summary>"
+   },
+   {
+    "line": 275,
+    "acc": "private",
+    "ret": "void",
+    "name": "NoteDenied",
+    "args": "string progid",
+    "doc": ""
+   }
+  ],
+  "head": "COM 接入层：拿到运行中的 VBE 并缓存（全走 IDispatch 后期绑定，不绑 Office 版本）。 ★三条硬规矩：只有 UI 线程（STA）能调；宿主不在就退避、绝不反复试（失败调用会阻塞 到超时，\"卡死\"就是这么来的）；缓存代理每次用前探活，探活失败立刻丢弃。"
+ },
+ "Commands.cs": {
+  "lines": 225,
+  "classes": [
+   "Commands"
+  ],
+  "methods": [
+   {
+    "line": 15,
+    "acc": "public",
+    "ret": "bool",
+    "name": "InsertLineAbove",
+    "args": "VbeBackend be",
+    "doc": "<summary>Ctrl+Shift+Enter：在当前行上方插一行，缩进跟着当前行走。</summary>"
+   },
+   {
+    "line": 26,
+    "acc": "public",
+    "ret": "bool",
+    "name": "DuplicateLine",
+    "args": "VbeBackend be",
+    "doc": "<summary>Ctrl+D：复制当前行到下一行，光标跟到副本上。</summary>"
+   },
+   {
+    "line": 40,
+    "acc": "public",
+    "ret": "bool",
+    "name": "DeleteLine",
+    "args": "VbeBackend be",
+    "doc": "<summary> Ctrl+K：删掉当前整行，光标落到【上一行】的行尾。 删第 1 行 -> 新首行首列；模块只剩一行 -> 清空该行，照样算成功。 </summary>"
+   },
+   {
+    "line": 57,
+    "acc": "public",
+    "ret": "bool",
+    "name": "ToggleComment",
+    "args": "VbeBackend be",
+    "doc": "<summary>Ctrl+/：整行注释开关。有选区就逐行处理。</summary>"
+   },
+   {
+    "line": 174,
+    "acc": "public",
+    "ret": "bool",
+    "name": "CtrlProcJump",
+    "args": "VbeBackend be, int dir",
+    "doc": "<summary> `Ctrl+↑` / `Ctrl+↓`：过程内跳转。↑ = 本过程最后一个 `Dim` 语句的行尾（跨续行落到语句 结束行）；↓ = 收尾行上方最后一条代码的行尾。 光标不在过程里 / 过程还没收尾一律返 false，调用方把键原样还给系统 —— 判定不成立绝不吞键。 </summary>"
+   },
+   {
+    "line": 197,
+    "acc": "private",
+    "ret": "int",
+    "name": "CharColOf",
+    "args": "Snapshot s, string line",
+    "doc": "<summary>把\"显示列\"的光标位置折成同一行靠左的合理字符列。</summary>"
+   },
+   {
+    "line": 204,
+    "acc": "internal",
+    "ret": "string",
+    "name": "LeadingWs",
+    "args": "string s",
+    "doc": ""
+   },
+   {
+    "line": 216,
+    "acc": "private",
+    "ret": "List<string>",
+    "name": "SplitBlock",
+    "args": "string block, int n",
+    "doc": "<summary> 把 `CodeModule.Lines(from, n)` 读回来的一整段拆成 n 行（行尾空白已去掉）。 ★末尾是空行时 split 会少一个元素，必须**按 n 补齐** —— 注释块里\"最后几行是空行\" 极常见（选到 Sub 结尾那种），少数一行就会把撇号加到错的偏移上。 </summary>"
+   }
+  ],
+  "head": "行操作命令：Ctrl+D / Ctrl+K / Ctrl+/ / Ctrl+Enter / Ctrl+↑↓。 ★会改用户代码，所以两条必须成立：同一语义只有一份实现（钩子与 --hktest 走同一批函数， 否则\"验证通过\"证明不了按键那条路是好的）；返回值说清\"到底做成了没有\"—— 钩子靠它 决定要不要把键还回去（旧写法 void 拿不到结果，键被吞、屏幕不动）。"
+ },
+ "Editing.cs": {
+  "lines": 763,
+  "classes": [
+   "Editing"
+  ],
+  "methods": [
+   {
+    "line": 70,
+    "acc": "public",
+    "ret": "string",
+    "name": "LeadingWs",
+    "args": "string s",
+    "doc": "<summary>行首空白（空格 + Tab）。</summary>"
+   },
+   {
+    "line": 79,
+    "acc": "public",
+    "ret": "int",
+    "name": "IndentWidth",
+    "args": "string s",
+    "doc": "<summary>行首空白占几列（Tab 按 4 列算）。</summary>"
+   },
+   {
+    "line": 92,
+    "acc": "public",
+    "ret": "string",
+    "name": "CodePart",
+    "args": "string line",
+    "doc": "<summary>去掉字符串与注释之后的\"代码形状\"部分（行尾空白也去掉）。</summary>"
+   },
+   {
+    "line": 100,
+    "acc": "public",
+    "ret": "bool",
+    "name": "IsCommentOnly",
+    "args": "string line",
+    "doc": "<summary>整行是不是注释（`'...` 或 `Rem ...`）—— 整行没有任何代码。</summary>"
+   },
+   {
+    "line": 110,
+    "acc": "public",
+    "ret": "bool",
+    "name": "IsLabelLine",
+    "args": "string line",
+    "doc": "<summary>行标签（`1:` / `Retry:` / `10: x = 1`）—— 惯例顶格，缩进不代表层级。</summary>"
+   },
+   {
+    "line": 118,
+    "acc": "public",
+    "ret": "string",
+    "name": "DirectiveWord",
+    "args": "string line",
+    "doc": "<summary>条件编译指令的第一段（不含 `#`）：`#If VBA7 Then` -> \"if\"。</summary>"
+   },
+   {
+    "line": 129,
+    "acc": "private",
+    "ret": "string",
+    "name": "Collapse",
+    "args": "string s",
+    "doc": ""
+   },
+   {
+    "line": 155,
+    "acc": "public",
+    "ret": "string",
+    "name": "BlockKind",
+    "args": "string line",
+    "doc": "<summary> 这一行是哪一种块结构的开头？不是块头返回 null。 \"branch\" = Else / ElseIf…Then / Case（缩进一级但**没有收尾**）； \"directive\" = #If / #Else（收尾由用户写 `#End If`）；其余见 Closers。 </summary>"
+   },
+   {
+    "line": 191,
+    "acc": "private",
+    "ret": "bool",
+    "name": "IsModWord",
+    "args": "string w",
+    "doc": ""
+   },
+   {
+    "line": 198,
+    "acc": "public",
+    "ret": "bool",
+    "name": "OpensBlock",
+    "args": "string line",
+    "doc": "<summary>这一行是不是\"块结构的开头\"—— 换行后新行该缩进一级。</summary>"
+   },
+   {
+    "line": 201,
+    "acc": "public",
+    "ret": "string",
+    "name": "BlockCloser",
+    "args": "string line",
+    "doc": "<summary>块头那行该补的收尾；不需要收尾（分支 / 条件编译 / 普通行）返回 null。</summary>"
+   },
+   {
+    "line": 210,
+    "acc": "public",
+    "ret": "bool",
+    "name": "IsBlockCloserLine",
+    "args": "string line",
+    "doc": "<summary>这一行本身是不是某个块的收尾（`End If` / `Next i` / `Loop`…）。</summary>"
+   },
+   {
+    "line": 218,
+    "acc": "public",
+    "ret": "bool",
+    "name": "IsCloserText",
+    "args": "string line, string closer",
+    "doc": "<summary>这一行是不是 closer 那一行（`Next  '注释` 也算 Next）。</summary>"
+   },
+   {
+    "line": 237,
+    "acc": "public",
+    "ret": "string",
+    "name": "NextLineIndent",
+    "args": "string curLine, IList<string> above, string unit",
+    "doc": "<summary> 换行后新行该有的行首缩进。 * 本行是整行注释或空行 -> 往上找第一个\"既不是注释也不是空行\"的行当参考； * 新行 = 参考行的行首空白；参考行是块头再深一级； * 连参考行都找不到 -> 用本行自己的空白（= VBE 原生行为，绝不更差）。 </summary>"
+   },
+   {
+    "line": 266,
+    "acc": "public",
+    "ret": "bool",
+    "name": "BranchAlign",
+    "args": "string line, IList<string> above, string unit, out string mine, out string next",
+    "doc": "<summary> 块【内】分支行该对齐到哪里：返回 (本行应有的行首空白, 新行应有的行首空白)。 不是分支行、或上方找不到它所属的块头 -> false（调用方维持原行为，绝不猜）。 `Else` / `ElseIf` 与 `If … Then` 齐平；`Case` 比 `Select Case` 深一级。 </summary>"
+   },
+   {
+    "line": 284,
+    "acc": "public",
+    "ret": "string",
+    "name": "BranchWord",
+    "args": "string line",
+    "doc": "<summary>这一行是哪种块内分支：else / elseif / case；不是返回 null。</summary>"
+   },
+   {
+    "line": 300,
+    "acc": "private",
+    "ret": "string",
+    "name": "UnclosedOwnerAbove",
+    "args": "IList<string> above, string kind",
+    "doc": "<summary>上方最近一个\"还开着\"的同类块头的行首空白；没有返回 null。</summary>"
+   },
+   {
+    "line": 328,
+    "acc": "public",
+    "ret": "string",
+    "name": "IndentUnitFor",
+    "args": "IEnumerable<string> lines",
+    "doc": "<summary>一级缩进用什么：配置优先；否则跟着工程里的既有 Tab 走；默认 4 空格。</summary>"
+   },
+   {
+    "line": 353,
+    "acc": "public",
+    "ret": "bool",
+    "name": "CloserNeeded",
+    "args": "IList<string> below, string closer, int baseIndent",
+    "doc": "<summary> 下方到底要不要补 closer（移植 PY v80a/v82/v86 的完整口径）： 已有本块收尾 → 不补；下方是同类但更浅 → 问 OwnerAboveAt；其余 → 补。 空行 / 整行注释 / 分支行 / 行标签 / `#` 指令一律跳过（缩进不代表层级）。 ★同级旧块压在下面时也要补 —— 旧口径\"同级一律不"
+   },
+   {
+    "line": 356,
+    "acc": "public",
+    "ret": "bool",
+    "name": "CloserNeeded",
+    "args": "IList<string> below, string closer, int baseIndent, string kind, IList<string> above",
+    "doc": ""
+   },
+   {
+    "line": 399,
+    "acc": "private",
+    "ret": "bool",
+    "name": "OwnCloserBelow",
+    "args": "IList<string> below, string closer, string kind, int baseIndent",
+    "doc": "<summary> 下方是不是已经挂着本块自己的收尾（移植 PY `_own_closer_below`）。 只按\"与块头同缩进\"的行配平：同类块头 +1、同类收尾 -1，配平到 0 遇到的就是本块的； 同缩进的别的东西 = 本块早结束，更浅 = 已出这一层，更深的同类另用 deeper 配平。 </summary>"
+   },
+   {
+    "line": 441,
+    "acc": "private",
+    "ret": "bool",
+    "name": "OwnerAboveAt",
+    "args": "IList<string> above, string kind, int indent",
+    "doc": "<summary> 上方有没有一个【同类、仍未闭合】的块头，缩进正好在 <paramref name=\"indent\"/>？ （移植 Python `_closer_owner_above`）—— 用来判断\"下面那个更浅的同类收尾\" 到底是外层块的，还是用户自己写歪的（写歪的再补一条就成了双份收尾）。 </summary>"
+   },
+   {
+    "line": 462,
+    "acc": "private",
+    "ret": "bool",
+    "name": "IndentBlind",
+    "args": "string line",
+    "doc": "<summary>这一行的缩进【不代表结构层级】：行标签（`1:`）与 `#` 条件编译指令。</summary>"
+   },
+   {
+    "line": 475,
+    "acc": "public",
+    "ret": "bool",
+    "name": "LooksLikeBlockHeaderPrefix",
+    "args": "string line",
+    "doc": "<summary> 这一行\"看起来像块头 / 整行注释\"—— 允许只写了半截。 ★只做**宽松**判据，决定\"要不要先接管\"：钩子线程拿到的是轮询快照，用户敲完最后 一个字符立刻回车时快照还少一位，严格判据会把回车直接放给 VBE（不补收尾）。 真判定交给 NewLineBelow 拿真 COM 数据重判，判不过就把回车还回去。 </su"
+   },
+   {
+    "line": 510,
+    "acc": "public",
+    "ret": "bool",
+    "name": "EnterIndentWanted",
+    "args": "string line, int caretDisp",
+    "doc": "<summary> 这一下回车值不值得由我们接管：只认整行注释与块结构开头，另有三道保守门槛 （只能在行尾、行内不能有 Tab、空行交给 VBE）。 ★caretDisp 是显示列（全角占 2 格、Tab 展开），所以拿\"行尾显示列\"当靶子比 —— 全角行上跟字符数比会算错。 </summary>"
+   },
+   {
+    "line": 525,
+    "acc": "public",
+    "ret": "bool",
+    "name": "BlankLineDeleteWanted",
+    "args": "string line, int caretDisp",
+    "doc": "<summary> 这一下退格要不要由我们接管 —— 整行只有空白（VBE 回车继承缩进造出来的 `    `）时一次删掉整行。真空行不接管（原生退格结果一样），有内容的行 更不接管；光标必须停在这行空白的末尾。 </summary>"
+   },
+   {
+    "line": 539,
+    "acc": "public",
+    "ret": "bool",
+    "name": "PairDeleteSpan",
+    "args": "string line, int caretDisp, out int left, out int right",
+    "doc": "<summary> 光标夹在一对**空**括号 / 空引号正中间时，给出那一对的下标（0-based）。 caretDisp 先换算成字符列再判 —— 换算只走一条路，两种都试就从精确判据退化成 并集，会误删。 </summary>"
+   },
+   {
+    "line": 566,
+    "acc": "public",
+    "ret": "string",
+    "name": "PairInsertion",
+    "args": "string line, int col0, char open, char close, out int caretOff, out bool paired",
+    "doc": "<summary> 算出自动配对后的结果；null = 一个字符都不用写（右半边已在右边，只把光标跨过去）。 引号开收同字，左边引号个数为奇数说明这一下是收尾；`(` 右边还有内容时只插左括号， 除非光标正待在实参/形参表里（那是开新的一层）。 </summary>"
+   },
+   {
+    "line": 598,
+    "acc": "public",
+    "ret": "char",
+    "name": "CloseOf",
+    "args": "char open",
+    "doc": ""
+   },
+   {
+    "line": 604,
+    "acc": "private",
+    "ret": "int",
+    "name": "CountOf",
+    "args": "string s, char c",
+    "doc": ""
+   },
+   {
+    "line": 616,
+    "acc": "public",
+    "ret": "int",
+    "name": "EnclosingCallParen",
+    "args": "string line, int col0",
+    "doc": "<summary> 光标之前\"最内层、未闭合、且左边紧挨标识符\"的左括号下标；没有返回 -1。 这是\"括号组是调用/形参表\"与\"括号组只是运算分组\"的分界线： `foo(` / `Sub Foo(` -> 是；`x = (a + (` -> 不是（宁可少接管）。 </summary>"
+   },
+   {
+    "line": 653,
+    "acc": "public",
+    "ret": "bool",
+    "name": "UnterminatedString",
+    "args": "string line",
+    "doc": "<summary>这一行的代码部分引号是否没闭合（VBE 原生回车会替用户补右引号）。</summary>"
+   },
+   {
+    "line": 694,
+    "acc": "public",
+    "ret": "int",
+    "name": "LastDimEndLine",
+    "args": "IList<string> lines, int startLine, int endLine",
+    "doc": "<summary> `Ctrl+↑` 的落点：过程（startLine..endLine，1-based 闭区间）里最后一个 `Dim` 语句的结束行；找不到返回 0（调用方据此把键还回去）。 ★跨续行的 Dim 要整条跨过去，落在 `Dim a, _` 上等于落在半条语句里。 </summary>"
+   },
+   {
+    "line": 715,
+    "acc": "public",
+    "ret": "bool",
+    "name": "IsContinuation",
+    "args": "string code",
+    "doc": "<summary> 行尾是续行符 ` _`（下划线本身可以是标识符的一部分，所以要求前面是空白）。 </summary>"
+   },
+   {
+    "line": 728,
+    "acc": "public",
+    "ret": "int",
+    "name": "ProcLastCodeLine",
+    "args": "IList<string> lines, int startLine, int endLine",
+    "doc": "<summary> `Ctrl+↓` 的落点：过程收尾行**上方最后一条非空代码**的行号（1-based）。 空白行不当落点（落到空行的\"行尾\"就是行首，对用户毫无意义）； 过程体为空（收尾行紧挨着过程头）返回 0。 </summary>"
+   },
+   {
+    "line": 739,
+    "acc": "public",
+    "ret": "bool",
+    "name": "IsTextKey",
+    "args": "int vk",
+    "doc": ""
+   },
+   {
+    "line": 755,
+    "acc": "public",
+    "ret": "int",
+    "name": "AfterCommentCharCol",
+    "args": "string oldLine, int oldCharCol, bool allCommented",
+    "doc": "<summary> 注释 / 解除注释之后光标该落在哪个字符列（1-based）。只在\"改动发生在光标之前\"时 才调整 —— 否则每注释一次左移一格、解除一次右移一格。 抽成纯函数是为了能被 --selftest 钉住（真机上几乎走不到这条路）。 </summary>"
+   }
+  ],
+  "head": "编辑手感相关的纯判据：块结构识别、缩进推算、自动配对、退格接管。 ★一行 COM 都不许有：这些函数在键盘钩子线程里跑，碰一次 COM 就可能卡住全系统键盘。 只吃\"一行文本 + 一个光标列\"，因此每条规则都能被自检直接钉住。 ★与 Python 版刻意不同：缩进单位不按工程反推 TabWidth —— 拟合猜错就把光标落进词中间。"
+ },
+ "Engine.cs": {
+  "lines": 856,
+  "classes": [
+   "Candidate",
+   "Engine"
+  ],
+  "methods": [
+   {
+    "line": 121,
+    "acc": "private",
+    "ret": "void",
+    "name": "EnsurePool",
+    "args": "string moduleName, string moduleText, int blankLine = 0, int blankStart = 0, string blankT",
+    "doc": "<summary> 重建池子。key 带\"本模块文本长度 + 全工程签名 + 被挖掉的词\"：本模块边打字边 重解析（新写的变量立刻能提示），别的模块只在行数变了之后才重解析。 blank*(1-based) 是正在输入的那个词 —— 解析前挖成空格，池子里就不会出现它自己。 </summary>"
+   },
+   {
+    "line": 269,
+    "acc": "public",
+    "ret": "void",
+    "name": "PrimePool",
+    "args": "string moduleText, string moduleName",
+    "doc": "<summary>把池子按给定源码算出来（自检用；运行期由 Trigger 调）。</summary>"
+   },
+   {
+    "line": 274,
+    "acc": "public",
+    "ret": "void",
+    "name": "InvalidatePool",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 288,
+    "acc": "public",
+    "ret": "bool",
+    "name": "Trigger",
+    "args": "bool manual, Snapshot snap = null",
+    "doc": "<summary> 判断现在该不该弹。manual=true 是 Ctrl+Space（豁免\"打全即收\"等收束规则）。 返回 true 表示窗口已显示。 </summary>"
+   },
+   {
+    "line": 534,
+    "acc": "private",
+    "ret": "bool",
+    "name": "ProcStartsAtLine",
+    "args": "Snapshot snap",
+    "doc": "<summary> 光标这一行是不是**某条过程的声明头行**（解析出来的 StartLine 正好是它）。 ★v186：光看文本不够 —— 过程体里写 `    Declare Ptr` 也长得像过程头， 但那条过程体的外层过程 StartLine 更早，这里必须返回 false， 否则\"过程体里不给 Declare / PtrSafe"
+   },
+   {
+    "line": 547,
+    "acc": "private",
+    "ret": "string",
+    "name": "ProcOf",
+    "args": "Snapshot snap",
+    "doc": "<summary>光标所在的过程名（ScopeKey）；不在任何过程里返回 null。</summary>"
+   },
+   {
+    "line": 560,
+    "acc": "private",
+    "ret": "int",
+    "name": "ComponentTypeOf",
+    "args": "string module",
+    "doc": "<summary>这个模块的 VBE 组件类型（0 = 不知道）。见 Rules.KindOfComponent。</summary>"
+   },
+   {
+    "line": 573,
+    "acc": "private",
+    "ret": "List<string>",
+    "name": "MemberPool",
+    "args": "string root, Snapshot snap",
+    "doc": "<summary> `root.` 的成员名单；**类型不确定时返回 null**（调用方据此整个让给 VBE）。 类型来源只有 `Dim c As Cls` / `Set c = New Cls` 两条，刻意不做推断 —— 猜错就会弹出\"这个对象根本没有的成员\"，比不弹更糟。 </summary>"
+   },
+   {
+    "line": 627,
+    "acc": "private",
+    "ret": "bool",
+    "name": "QuietFromAccepted",
+    "args": "string word, Snapshot snap",
+    "doc": "<summary>\"这个词是不是我们刚按 Tab 写进去的\"。对不上就当场作废。</summary>"
+   },
+   {
+    "line": 650,
+    "acc": "public",
+    "ret": "int",
+    "name": "Cmp",
+    "args": "Candidate a, Candidate b",
+    "doc": "<summary> ★排序键（全部\"越大越靠前\"，与 Python 版逐项对齐）： 命中质量(kind) > 首个命中位置 > 命中跨度 > 作用域就近 > 最近使用 > 你的名字(非内建) > 名字长度(短在前) </summary>"
+   },
+   {
+    "line": 666,
+    "acc": "public",
+    "ret": "string",
+    "name": "Classify",
+    "args": "string name",
+    "doc": "<summary> 图标档位。判据只有这一处：工程过程 > 工程类型 > 词库函数 > 词库类型 > 词库关键字 > 其余。拿不到档位就返回 null（不画图标），绝不默认画成\"变量\"。 </summary>"
+   },
+   {
+    "line": 685,
+    "acc": "public",
+    "ret": "void",
+    "name": "Followup",
+    "args": "string name, string enclosingProc, out bool wantParens, out bool wantSpace",
+    "doc": "<summary> 按 Tab 确认之后，后面该跟什么：(补括号, 补空格)。 用户口径：Sub 补空格 / Function 补括号 / Property 都不补； 例外：在 Function 体内给自己赋值返回值时不补括号。 </summary>"
+   },
+   {
+    "line": 711,
+    "acc": "public",
+    "ret": "bool",
+    "name": "IsOwnProcName",
+    "args": "string name, string enclosingProc",
+    "doc": ""
+   },
+   {
+    "line": 724,
+    "acc": "public",
+    "ret": "void",
+    "name": "Move",
+    "args": "int delta",
+    "doc": ""
+   },
+   {
+    "line": 733,
+    "acc": "public",
+    "ret": "void",
+    "name": "SetSelected",
+    "args": "int index",
+    "doc": ""
+   },
+   {
+    "line": 743,
+    "acc": "public",
+    "ret": "void",
+    "name": "ScrollToSelected",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 752,
+    "acc": "public",
+    "ret": "void",
+    "name": "ScrollBy",
+    "args": "int lines",
+    "doc": ""
+   },
+   {
+    "line": 761,
+    "acc": "public",
+    "ret": "void",
+    "name": "SetTop",
+    "args": "int top",
+    "doc": "<summary>滚轮 / 拖滚动条：直接指定顶行。</summary>"
+   },
+   {
+    "line": 771,
+    "acc": "public",
+    "ret": "void",
+    "name": "Hide",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 782,
+    "acc": "public",
+    "ret": "bool",
+    "name": "Accept",
+    "args": "",
+    "doc": "<summary>接受选中的候选：写回 VBE，然后收起窗口。</summary>"
+   },
+   {
+    "line": 789,
+    "acc": "public",
+    "ret": "bool",
+    "name": "AcceptName",
+    "args": "string name",
+    "doc": ""
+   }
+  ],
+  "head": "候选引擎：攒池子、匹配、排序、决定弹不弹、选完之后补什么。 ★不引用 WinForms（窗口靠回调接进来），所以\"弹不弹 / 排第几 / 补什么\"都能离线测。 ★排序键顺序对齐 Python 版（用户在真机上调出来的）：命中质量 > 位置 > 跨度 > 作用域 > 最近使用 > 内建 > 名字长度。⚠️ 别把\"作用域\"提前，它会顶掉匹配更好的候选。"
+ },
+ "Fuzzy.cs": {
+  "lines": 180,
+  "classes": [
+   "FuzzyHit",
+   "Fuzzy"
+  ],
+  "methods": [
+   {
+    "line": 27,
+    "acc": "public",
+    "ret": "HashSet<int>",
+    "name": "WordBoundaries",
+    "args": "string name",
+    "doc": "<summary> 名字里的\"词边界\"下标集合：首字符 / 下划线之后 / 小写→大写处（驼峰）。 ★必须用原始 name，不能先小写 —— 大小写切换信息一丢就认不出驼峰词首。 </summary>"
+   },
+   {
+    "line": 46,
+    "acc": "public",
+    "ret": "string",
+    "name": "LowerKeepLen",
+    "args": "string s",
+    "doc": "<summary> 小写化，但**保证长度不变**：返回的下标要拿去索引原始名字（高亮 / Kind / Span）。 char.ToLowerInvariant 逐字符转换、一定不变长；写出来是为了让这条约束有个落点。 </summary>"
+   },
+   {
+    "line": 59,
+    "acc": "public",
+    "ret": "int[]",
+    "name": "GreedyPositions",
+    "args": "string low, string query, HashSet<int> bounds",
+    "doc": "<summary> 无法整块连续命中时逐字符挑位置（档位越小越优先，同档取靠前的）： 0 = 既接上一个命中又在词边界、1 = 词边界（缩略型 ds→dataSheet）、 2 = 紧接上一个命中、3 = 其它。反向 maxpos 保证\"真是子序列就一定凑得出\"。 </summary>"
+   },
+   {
+    "line": 101,
+    "acc": "public",
+    "ret": "int",
+    "name": "LongestRun",
+    "args": "int[] positions",
+    "doc": "<summary>命中下标里最长的那段连续长度。</summary>"
+   },
+   {
+    "line": 117,
+    "acc": "public",
+    "ret": "bool",
+    "name": "Match",
+    "args": "string name, string query, out FuzzyHit hit",
+    "doc": "<summary> 模糊匹配。query 为空 = 全都要（手动 Ctrl+Space），此时 Kind=0、Positions 为空。 Kind 越大越像用户要的：4 完全相等 > 3 前缀 > 2 词首缩略 > 1 连续块 > 0 分散。 </summary>"
+   }
+  ],
+  "head": "模糊匹配：哪几个候选命中、命中在哪几位、排第几档（只做字符串，不懂 VBA）。 ★整块连续优先（arr → dataArr），否则逐字符贪心、优先落在词边界（ds → dataSheet）。 ★贪心必须带反向可行性上界，否则\"明明是子序列\"也会判成不匹配。 ★命中位置是逐字符下标集合（UI 拿它逐字符上色），不是区间。"
+ },
+ "IconAssets.cs": {
+  "lines": 67,
+  "classes": [
+   "IconAssets"
+  ],
+  "methods": [
+   {
+    "line": 29,
+    "acc": "public",
+    "ret": "Icon",
+    "name": "Get",
+    "args": "int size",
+    "doc": "<summary> 取指定像素尺寸的程序图标。**返回的是共享实例，调用方不得 Dispose** （它归本类所有，进程活多久就活多久）；失败时退回系统默认图标（绝不抛）。 </summary>"
+   },
+   {
+    "line": 62,
+    "acc": "public",
+    "ret": "Icon",
+    "name": "Tray",
+    "args": "",
+    "doc": "<summary>托盘用的那一份（32px 足够，高 DPI 下系统会自己挑大图标）。</summary>"
+   },
+   {
+    "line": 65,
+    "acc": "public",
+    "ret": "Icon",
+    "name": "Window",
+    "args": "",
+    "doc": "<summary>窗口标题栏 / 任务栏用（16px 是标题栏的实际尺寸）。</summary>"
+   }
+  ],
+  "head": "程序图标：从 exe 内嵌的 app.ico 里取，按需要的尺寸挑最合适的一帧。 ★为什么内嵌：① 单文件发布时 exe 旁边没有 app.ico，读文件会变成托盘一片空白； ② 托盘 / 任务栏 / 窗口必须是同一张图；③ .ico 里放了 16~256 九帧，new Icon(stream, size) 自动挑最接近的一帧，不靠系统缩放（缩出来的 16px 会糊）。 ★app.ico 由 tools/make-icon.py 生成，改图标改脚本再跑，别手工塞位图。"
+ },
+ "InfoBox.cs": {
+  "lines": 70,
+  "classes": [
+   "InfoBox"
+  ],
+  "methods": [
+   {
+    "line": 14,
+    "acc": "public",
+    "ret": "void",
+    "name": "Show",
+    "args": "string title, string text",
+    "doc": ""
+   },
+   {
+    "line": 41,
+    "acc": "public",
+    "ret": "DialogResult",
+    "name": "Confirm",
+    "args": "string text, string title",
+    "doc": "<summary> 确认框（是 / 否）。用它而不是裸 MessageBox 的理由和上面那条一样： 托盘程序没有主窗口，裸框会被压在当前窗口后面，用户以为\"没反应\"。 </summary>"
+   }
+  ],
+  "head": "托盘菜单的反馈框（模态）。 ★不用 ShowBalloonTip：Win11 下用户在通知设置里关掉横幅、或图标被收进溢出区， 气泡一个像素都不显示，用户只会得出\"这个菜单坏了\"的结论。 ★必须带一个屏幕外的 TopMost 属主窗口，否则 MessageBox 被压在其它窗口后面，等于没弹。"
+ },
+ "Log.cs": {
+  "lines": 157,
+  "classes": [
+   "Log"
+  ],
+  "methods": [
+   {
+    "line": 41,
+    "acc": "public",
+    "ret": "void",
+    "name": "Write",
+    "args": "string msg",
+    "doc": ""
+   },
+   {
+    "line": 47,
+    "acc": "public",
+    "ret": "void",
+    "name": "Write",
+    "args": "string fmt, params object[] args",
+    "doc": ""
+   },
+   {
+    "line": 56,
+    "acc": "private",
+    "ret": "string",
+    "name": "Line",
+    "args": "string msg",
+    "doc": ""
+   },
+   {
+    "line": 59,
+    "acc": "private",
+    "ret": "void",
+    "name": "Enqueue",
+    "args": "string line",
+    "doc": ""
+   },
+   {
+    "line": 66,
+    "acc": "private",
+    "ret": "void",
+    "name": "EnsureWriter",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 78,
+    "acc": "private",
+    "ret": "void",
+    "name": "DrainLoop",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 89,
+    "acc": "public",
+    "ret": "void",
+    "name": "Flush",
+    "args": "",
+    "doc": "<summary>把当前排队的日志一次性写下去（退出前调它，别把最后几行丢了）。</summary>"
+   },
+   {
+    "line": 95,
+    "acc": "private",
+    "ret": "void",
+    "name": "Drain",
+    "args": "StringBuilder sb",
+    "doc": ""
+   },
+   {
+    "line": 109,
+    "acc": "private",
+    "ret": "void",
+    "name": "Append",
+    "args": "string path, string text, long maxBytes",
+    "doc": ""
+   },
+   {
+    "line": 123,
+    "acc": "private",
+    "ret": "void",
+    "name": "Rotate",
+    "args": "string path",
+    "doc": ""
+   },
+   {
+    "line": 140,
+    "acc": "public",
+    "ret": "void",
+    "name": "Crash",
+    "args": "string where, Exception e",
+    "doc": "<summary> 崩溃记录：**不受 LOG 开关控制，也不走队列**，立即落盘。 原因很直接 —— WinExe 没有控制台，异常被 CLR 吞掉时用户只看到 \"双击没反应\"，而我们手里一点线索都没有。崩溃恰恰是没开日志时最需要留下的东西， 而且下一秒进程可能就没了，排队等于丢掉。 </summary>"
+   }
+  ],
+  "head": "日志：只在 VBECOMPLETE_LOG=1 时落盘（与 PY 版同一个文件，方便对照）。 任何写日志失败都必须被吞掉 —— 日志永远不允许影响功能。 ★为什么\"入队 + 后台落盘\"而不是直接 AppendAllText：钩子回调里做文件 IO 是硬伤 —— 磁盘慢 / 杀软扫描一卡超过 LowLevelHooksTimeout（默认 300ms），Windows 会直接把钩子摘掉（全机器 按键手感发涩，而日志里一个字都没有）。入队是纯内存操作，IO 交给后台线程。"
+ },
+ "Native.cs": {
+  "lines": 753,
+  "classes": [
+   "Native",
+   "KBDLLHOOKSTRUCT",
+   "MSG",
+   "RECT",
+   "POINT",
+   "MOUSEINPUT",
+   "KEYBDINPUT",
+   "HARDWAREINPUT",
+   "INPUTUNION",
+   "INPUT",
+   "GUITHREADINFO"
+  ],
+  "methods": [
+   {
+    "line": 40,
+    "acc": "public",
+    "ret": "bool",
+    "name": "IsSlashKey",
+    "args": "int vk",
+    "doc": "<summary> 这个 vk 是不是\"`/` 键\"—— 主键盘与**小键盘除号**都算。 ★v143：用户报\"Ctrl+/ 失效\"，而代码里只认 VK_OEM_2；小键盘除号是 VK_DIVIDE，两者差着一个键区。判定只此一处，别再散落到各处比 ==。 </summary>"
+   },
+   {
+    "line": 124,
+    "acc": "public",
+    "ret": "bool",
+    "name": "Down",
+    "args": "int vk",
+    "doc": ""
+   },
+   {
+    "line": 156,
+    "acc": "public",
+    "ret": "bool",
+    "name": "ForceForeground",
+    "args": "IntPtr h",
+    "doc": "<summary>把某个窗口强行弄到前台（探针专用，返回是否成功）。</summary>"
+   },
+   {
+    "line": 283,
+    "acc": "public",
+    "ret": "bool",
+    "name": "SendUnicodeChar",
+    "args": "char ch",
+    "doc": "<summary>注入一个 Unicode 字符（绕过输入法，直接进 WM_CHAR）。</summary>"
+   },
+   {
+    "line": 296,
+    "acc": "public",
+    "ret": "bool",
+    "name": "SendVk",
+    "args": "int vk, bool ctrl = false, bool shift = false, bool alt = false",
+    "doc": "<summary>注入一个虚拟键（不做修饰键合成，调用方自己决定按不按修饰键）。</summary>"
+   },
+   {
+    "line": 323,
+    "acc": "private",
+    "ret": "INPUT",
+    "name": "VkInput",
+    "args": "int vk, bool up",
+    "doc": ""
+   },
+   {
+    "line": 367,
+    "acc": "public",
+    "ret": "bool",
+    "name": "VbeFrameExists",
+    "args": "",
+    "doc": "<summary> VBE 主窗口在不在。★WPS 上这条判据很关键：VBE 没打开时 Application.VBE 直接 E_FAIL（不是\"被禁止访问\"），此时不该提示用户去改信任设置。 </summary>"
+   },
+   {
+    "line": 375,
+    "acc": "public",
+    "ret": "bool",
+    "name": "WpsMainWindowGone",
+    "args": "",
+    "doc": "<summary> WPS 的文档主窗口（类名 OpusApp）是不是已经没了/被隐藏 —— 用户点了关闭。 ★WPS 关主窗时 VBE 那个独立顶层窗口还在，光看 VbeFrameExists 会以为\"还在编辑\"， 于是继续调 COM，正好卡在它退出的节骨眼上（用户报的\"关 WPS 卡死\"）。 </summary>"
+   },
+   {
+    "line": 386,
+    "acc": "public",
+    "ret": "bool",
+    "name": "VbeMemberListVisible",
+    "args": "",
+    "doc": "<summary> VBE 自己的【成员列表】(NameListWndClass) 此刻是不是画在屏幕上。 是的话我们就得让位 —— 两个列表叠在一起，用户根本不知道在看哪一个。 参数信息窗 (PopupTipWndClass) 不算：那个只要求我们挪开，不要求消失。 </summary>"
+   },
+   {
+    "line": 397,
+    "acc": "public",
+    "ret": "RECT[]",
+    "name": "VbePopupRects",
+    "args": "",
+    "doc": "<summary> 当前可见的 VBE 提示窗屏幕矩形。拿不到返回空数组 —— 宁可重叠，也不因为探测失败把窗挪到奇怪的角落。 缓存 150ms：枚举顶层窗口约 1.75ms，每轮都做不可取，但太久会让位不及时。 </summary>"
+   },
+   {
+    "line": 446,
+    "acc": "public",
+    "ret": "bool",
+    "name": "Overlap",
+    "args": "RECT a, RECT b",
+    "doc": "<summary>两个矩形是否真的重叠（只共边/共点不算）。</summary>"
+   },
+   {
+    "line": 473,
+    "acc": "public",
+    "ret": "IntPtr",
+    "name": "FocusedHwndOf",
+    "args": "uint tid",
+    "doc": "<summary>线程里当前拥有键盘焦点的那个窗口（拿不到返回 Zero）。</summary>"
+   },
+   {
+    "line": 483,
+    "acc": "public",
+    "ret": "IntPtr",
+    "name": "FocusedVbeWindow",
+    "args": "",
+    "doc": "<summary>VBE 线程里当前拥有键盘焦点的那个窗口（没有 VBE 就是 Zero）。</summary>"
+   },
+   {
+    "line": 515,
+    "acc": "public",
+    "ret": "bool",
+    "name": "ImeComposing",
+    "args": "IntPtr hwnd",
+    "doc": "<summary>这个窗口此刻有没有输入法组字串？没有/拿不到一律 false。</summary>"
+   },
+   {
+    "line": 530,
+    "acc": "public",
+    "ret": "bool",
+    "name": "CaretRect",
+    "args": "out int x, out int top, out int bottom",
+    "doc": "<summary>当前插入符的屏幕矩形：(x, top, bottom)。VBE 是自绘的，但它仍然 维护一个真的 caret（GetGUIThreadInfo.rcCaret），这是唯一可靠的位置来源。</summary>"
+   },
+   {
+    "line": 552,
+    "acc": "public",
+    "ret": "string",
+    "name": "ClassNameOf",
+    "args": "IntPtr hwnd",
+    "doc": ""
+   },
+   {
+    "line": 560,
+    "acc": "public",
+    "ret": "uint",
+    "name": "PidOf",
+    "args": "IntPtr hwnd",
+    "doc": ""
+   },
+   {
+    "line": 568,
+    "acc": "public",
+    "ret": "string",
+    "name": "ProcessNameOfPid",
+    "args": "uint pid",
+    "doc": ""
+   },
+   {
+    "line": 605,
+    "acc": "public",
+    "ret": "int",
+    "name": "ImeConversionMode",
+    "args": "IntPtr hwnd",
+    "doc": "<summary>问一次窗口所属输入法的转换模式；问不到返回 -1（纯 Win32）。</summary>"
+   },
+   {
+    "line": 622,
+    "acc": "public",
+    "ret": "bool",
+    "name": "ImeFullwidthPunct",
+    "args": "IntPtr hwnd",
+    "doc": "<summary>此刻敲出来的标点是不是全角中文标点（必须在中文模式 + 中文标点/全角）。</summary>"
+   },
+   {
+    "line": 636,
+    "acc": "public",
+    "ret": "bool",
+    "name": "ImeAlphanumeric",
+    "args": "IntPtr hwnd",
+    "doc": "<summary> 输入法现在是不是\"英数/半角\"状态（<c>IME_CMODE_NATIVE</c> 没置位）。 ★只给真机探针用：中文模式下每个字母都会被拿去组字，文本根本落不进文档。 问不到按 true 处理，别让环境探测拖死用例。 </summary>"
+   },
+   {
+    "line": 649,
+    "acc": "public",
+    "ret": "int",
+    "name": "ImeSetAlphanumeric",
+    "args": "IntPtr hwnd",
+    "doc": "<summary> 把窗口所属输入法切到\"英数\"档（只清 <c>IME_CMODE_NATIVE</c>，别的位不动）。 ★只给真机探针用：中文模式下逐字符打字会变成 `Fori= 1 To3`，用例必然失败且 看起来像\"程序坏了\"。与读取同一个通道，同样带 SMTO_ABORTIFHUNG。 返回切完之后的模式（-1 = 没问到）。 <"
+   },
+   {
+    "line": 684,
+    "acc": "public",
+    "ret": "bool",
+    "name": "ImeNativeOn",
+    "args": "IntPtr hwnd",
+    "doc": "<summary> 输入法此刻是不是\"本地语言\"档（<c>IME_CMODE_NATIVE</c> 置位 = 中文态）。 探针恢复现场时用它判断\"Shift 那一下到底退回去了没有\"。 </summary>"
+   },
+   {
+    "line": 697,
+    "acc": "public",
+    "ret": "bool",
+    "name": "ImeForceAlnum",
+    "args": "IntPtr hwnd",
+    "doc": "<summary> 尝试把输入法切到英数档（探针前置条件）：IMM32 两条通道依次试。 ★切不动就返回 false —— 剩下那条路（发一个真 Shift）由探针侧走：本文件只放 纯 Win32、不 Sleep（这些函数会在钩子线程里被调用）。 ★为什么想切成英数：中文档下逐字符打字会被拿去组字，文本根本落不进文档。 实在切不过去也不要"
+   },
+   {
+    "line": 705,
+    "acc": "public",
+    "ret": "void",
+    "name": "ImeRestore",
+    "args": "IntPtr hwnd, int mode",
+    "doc": "<summary>把输入法恢复成给定模式（探针跑完要把用户的输入法状态还回去）。</summary>"
+   },
+   {
+    "line": 724,
+    "acc": "public",
+    "ret": "char",
+    "name": "PairCharForKey",
+    "args": "int vk, bool shift",
+    "doc": "<summary> 这个键敲出来的是不是需要自动配对的符号 —— 返回半角字符，否则 '\\0'。 ★问系统\"这个 vk 在当前布局下的基础字符\"（MapVirtualKey mode 2），别写死 vk 常量， 也别换成 mode 0（那返回的是扫描码）。 </summary>"
+   },
+   {
+    "line": 742,
+    "acc": "public",
+    "ret": "char",
+    "name": "PairCharForIme",
+    "args": "char half, IntPtr hwnd",
+    "doc": "<summary>半角配对字符 -> 输入法此刻真正会打出来的那个（中文标点档换全角）。</summary>"
+   }
+  ],
+  "head": "Win32 层：全局键盘钩子、按键注入、窗口/进程探测。  ★这是\"钩子线程\"能碰的全部东西 —— 只有纯 Win32 和本进程内存。 钩子回调里【绝不允许】出现任何 COM 调用：VBE 可能正忙，一次阻塞就会 让整个系统的键盘卡住（低级钩子在输入队列里串行执行）。"
+ },
+ "Parser.cs": {
+  "lines": 388,
+  "classes": [
+   "ProcInfo",
+   "Parser"
+  ],
+  "methods": [
+   {
+    "line": 21,
+    "acc": "public",
+    "ret": "string",
+    "name": "ToString",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 75,
+    "acc": "public",
+    "ret": "string[]",
+    "name": "SplitLines",
+    "args": "string text",
+    "doc": "<summary>按物理行切分（VBE 的行号就是物理行号，不能把续行合并掉）。</summary>"
+   },
+   {
+    "line": 84,
+    "acc": "public",
+    "ret": "string",
+    "name": "CodeOnly",
+    "args": "string line",
+    "doc": "<summary>去掉注释与字符串内容，只留\"代码形状\"的部分。</summary>"
+   },
+   {
+    "line": 124,
+    "acc": "private",
+    "ret": "bool",
+    "name": "IsRemAt",
+    "args": "string line, int i",
+    "doc": "<summary>line[i] 起是不是一个独立的 `Rem` 关键字（后面不是字母数字）。</summary>"
+   },
+   {
+    "line": 135,
+    "acc": "public",
+    "ret": "List<ProcInfo>",
+    "name": "ExtractProcedures",
+    "args": "string text",
+    "doc": "<summary>模块里所有过程（含同名去重用的 ScopeKey）。</summary>"
+   },
+   {
+    "line": 203,
+    "acc": "public",
+    "ret": "ProcInfo",
+    "name": "ProcOfLine",
+    "args": "List<ProcInfo> procs, int line",
+    "doc": "<summary>第 line 行（1-based）落在哪个过程里；不在任何过程里返回 null。</summary>"
+   },
+   {
+    "line": 212,
+    "acc": "public",
+    "ret": "HashSet<string>",
+    "name": "ExtractDeclared",
+    "args": "string text",
+    "doc": "<summary>收\"声明出来的名字\"：Dim/Const/Static/参数/Enum 成员/Type 成员。</summary>"
+   },
+   {
+    "line": 266,
+    "acc": "private",
+    "ret": "IEnumerable<string>",
+    "name": "NamesInDecl",
+    "args": "string code",
+    "doc": ""
+   },
+   {
+    "line": 286,
+    "acc": "private",
+    "ret": "IEnumerable<string>",
+    "name": "NamesInParamList",
+    "args": "string inner",
+    "doc": ""
+   },
+   {
+    "line": 307,
+    "acc": "public",
+    "ret": "List<string>",
+    "name": "SplitTopLevel",
+    "args": "string s",
+    "doc": "<summary>按顶层逗号切分（不切括号里面的逗号）。</summary>"
+   },
+   {
+    "line": 324,
+    "acc": "private",
+    "ret": "string",
+    "name": "Clean",
+    "args": "string name",
+    "doc": ""
+   },
+   {
+    "line": 334,
+    "acc": "public",
+    "ret": "HashSet<string>",
+    "name": "ExtractIdentifiers",
+    "args": "string text, ICollection<string> alsoAdd = null",
+    "doc": "<summary> 模块里出现过的所有标识符形状的词（不含注释/字符串里的）。 这是候选池的主体 —— 变量、过程、控件名、用户自定义类型都在里面。 </summary>"
+   },
+   {
+    "line": 356,
+    "acc": "public",
+    "ret": "HashSet<string>",
+    "name": "ExtractTypeNames",
+    "args": "string text",
+    "doc": "<summary>模块里声明的类型名（Enum X / Type X）。用于图标档位。</summary>"
+   },
+   {
+    "line": 371,
+    "acc": "public",
+    "ret": "bool",
+    "name": "OptionExplicit",
+    "args": "string text",
+    "doc": ""
+   }
+  ],
+  "head": "VBA 源码解析：从模块全文里收\"工程自己定义的名字\"。 ★完全不碰 COM，只吃字符串 —— 能被单独测试，也是\"候选池里到底有什么\"的唯一事实来源。 收：过程名、变量/常量、类型/枚举名、窗体/控件名、参数名，以及一切标识符形状的词。 不收：注释里和字符串里的词。"
+ },
+ "PopupForm.cs": {
+  "lines": 864,
+  "classes": [
+   "PopupForm"
+  ],
+  "methods": [
+   {
+    "line": 43,
+    "acc": "private",
+    "ret": "Color",
+    "name": "SettingColor",
+    "args": "string key, string def",
+    "doc": "<summary>读一个 #RRGGBB 形式的配色；写错 / 没写就用默认值，绝不让配色配置崩掉窗口。</summary>"
+   },
+   {
+    "line": 146,
+    "acc": "public",
+    "ret": "void",
+    "name": "ReloadStyle",
+    "args": "",
+    "doc": "<summary> 重新读一遍字体与配色并重算行高/字宽（设置里改完外观要立刻见效，候选窗是常驻的）。 ★旧字体必须自己 Dispose：Control 不拥有 Font，而 `_fontBold` 在某些字体上就是 `_font` 本身（建粗体失败的兜底），要判同一个对象不能删两次。 </summary>"
+   },
+   {
+    "line": 185,
+    "acc": "private",
+    "ret": "Font",
+    "name": "BuildFont",
+    "args": "out float pt",
+    "doc": "<summary> 字体 = \"好看 + 比 VBE 小一号\"。 名字：`POPUP_FONT` 优先，否则 VBE 编辑器字体（去掉 Light/Thin），再否则 PrettyFaces。 字号：`POPUP_FONT_SIZE` 正数 = 绝对值，负数 = 比 VBE 小几号，0/没写 = 小一号。 注册表读不到就退回 Courie"
+   },
+   {
+    "line": 210,
+    "acc": "private",
+    "ret": "string",
+    "name": "ReadVbeFont",
+    "args": "out float pt",
+    "doc": "<summary> 读 VBE 编辑器当前的字体与字号。★v140：必须按 7.1 → 7.0 → 6.0 的顺序找 —— 老代码只认 6.0，在只写了 7.1 的机器上（本机就是）永远读不到， 于是静默退回 Courier New 10，那就是用户说的\"太扁平\"。 </summary>"
+   },
+   {
+    "line": 244,
+    "acc": "private",
+    "ret": "float",
+    "name": "PxToPt",
+    "args": "float px",
+    "doc": "<summary> 像素 -> 点。VBE 注册表里的 <c>FontHeight</c> 是像素（本机 14）， 而 Font 构造只要点。96dpi 下 1pt = 4/3 px，直接当点用会大 33%。 按屏幕 DPI 换算，取不到就按 96 算（PY 版同样用 px*72/96 兜底）。 </summary>"
+   },
+   {
+    "line": 261,
+    "acc": "private",
+    "ret": "string",
+    "name": "PickFace",
+    "args": "string vbeFace",
+    "doc": "<summary> 挑字体名。先试 VBE 编辑器字体（去掉字重后缀 —— 用户设的 \"JetBrains Mono Light\" 是细体，小字号下正是\"扁平\"的来源）， 再退到 <see cref=\"PrettyFaces\"/> 候选链。 </summary>"
+   },
+   {
+    "line": 279,
+    "acc": "private",
+    "ret": "string",
+    "name": "StripWeight",
+    "args": "string face",
+    "doc": ""
+   },
+   {
+    "line": 294,
+    "acc": "private",
+    "ret": "bool",
+    "name": "IsUgly",
+    "args": "string face",
+    "doc": ""
+   },
+   {
+    "line": 301,
+    "acc": "private",
+    "ret": "bool",
+    "name": "FamilyExists",
+    "args": "string face",
+    "doc": ""
+   },
+   {
+    "line": 312,
+    "acc": "private",
+    "ret": "Font",
+    "name": "CreateFont",
+    "args": "string face, float pt",
+    "doc": "<summary>建字体；装不上（GDI 会悄悄换成别的字）就退回 Courier New 同字号。</summary>"
+   },
+   {
+    "line": 344,
+    "acc": "public",
+    "ret": "void",
+    "name": "SetData",
+    "args": "IReadOnlyList<Candidate> items, int sel, int top, int rows",
+    "doc": ""
+   },
+   {
+    "line": 354,
+    "acc": "public",
+    "ret": "void",
+    "name": "UpdateView",
+    "args": "int sel, int top",
+    "doc": ""
+   },
+   {
+    "line": 369,
+    "acc": "public",
+    "ret": "Size",
+    "name": "DesiredSize",
+    "args": "",
+    "doc": "<summary> 窗口该有多大（离屏渲染与自检用；运行期由 PlaceAt 自己算）。 注意别叫 PreferredSize —— 那是 <see cref=\"Control\"/> 上的属性,同名方法会隐藏它。 </summary>"
+   },
+   {
+    "line": 372,
+    "acc": "public",
+    "ret": "string",
+    "name": "DetailText",
+    "args": "",
+    "doc": "<summary>当前该不该显示详情行：只有\"活动行的名字被截断\"时才显示。</summary>"
+   },
+   {
+    "line": 392,
+    "acc": "private",
+    "ret": "int",
+    "name": "MeasureLongest",
+    "args": "",
+    "doc": "<summary> 当前候选里最长的那个名字有多宽（按名字缓存）。**不许看 DetailText** —— 详情行的宽度又是按这里算的，互相引用就成了无限递归（v139 差点写出来）。 </summary>"
+   },
+   {
+    "line": 414,
+    "acc": "private",
+    "ret": "int",
+    "name": "ComputeWidth",
+    "args": "",
+    "doc": "<summary> 宽度 = 最长候选 + 图标 + 内边距 + 滚动条，至少 MinChars 个字符宽（贴着内容收窄）。 ★名字宽度按名字缓存：每次按键都重算，几十条候选逐条 MeasureText 会被感知到。 </summary>"
+   },
+   {
+    "line": 430,
+    "acc": "public",
+    "ret": "void",
+    "name": "PlaceAt",
+    "args": "int x, int top, int bottom",
+    "doc": "<summary> 贴着光标显示。(x, top, bottom) 是插入符的屏幕坐标。 下方放不下就翻到光标上方；若与 VBE 的参数信息窗重叠，整体下移到它下方。 </summary>"
+   },
+   {
+    "line": 485,
+    "acc": "public",
+    "ret": "void",
+    "name": "ResetPlacement",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 490,
+    "acc": "protected",
+    "ret": "void",
+    "name": "OnPaintBackground",
+    "args": "PaintEventArgs e",
+    "doc": ""
+   },
+   {
+    "line": 495,
+    "acc": "protected",
+    "ret": "void",
+    "name": "OnPaint",
+    "args": "PaintEventArgs e",
+    "doc": ""
+   },
+   {
+    "line": 609,
+    "acc": "private",
+    "ret": "void",
+    "name": "DrawName",
+    "args": "Graphics g, Candidate c, int x, int y, bool selected",
+    "doc": "<summary> 画名字。★v139：命中的字母只**加粗**，不再涂红 —— VBE 的列表全是黑字， 涂色就不像了；加粗既保留\"这几个字母命中了\"的提示，又不改配色。 ★v140：选中行是深蓝底，黑字加粗在上面完全看不见 —— 那里改成白字 + 亮黄。 </summary>"
+   },
+   {
+    "line": 634,
+    "acc": "private",
+    "ret": "int",
+    "name": "DrawChunk",
+    "args": "Graphics g, string s, int x, int y, bool bold, Color fg, Color hitFg",
+    "doc": ""
+   },
+   {
+    "line": 643,
+    "acc": "private",
+    "ret": "int",
+    "name": "MeasureText",
+    "args": "string s, Font font, int maxW",
+    "doc": ""
+   },
+   {
+    "line": 648,
+    "acc": "private",
+    "ret": "int",
+    "name": "MeasureText",
+    "args": "string s, Font font, int maxW, int h",
+    "doc": ""
+   },
+   {
+    "line": 662,
+    "acc": "public",
+    "ret": "string",
+    "name": "Truncate",
+    "args": "string name, int maxW, out int prefixLen",
+    "doc": "<summary> 超过 maxW 就用 ... 省略。prefixLen = 原名字里还能完整显示几个字符 （命中下标超出这个范围的不再上色）。 ★先按等宽估算再微调：逐字符 MeasureText 是 O(n) 次 GDI 调用，而每帧每行都要做。 </summary>"
+   },
+   {
+    "line": 682,
+    "acc": "private",
+    "ret": "void",
+    "name": "DrawIcon",
+    "args": "Graphics g, string kind, int x, int y, int w, bool selected",
+    "doc": "<summary> 五档图标全部现画（不发位图）：函数=绿箭头、属性=紫方块、变量=蓝竖条、 类型=琥珀菱形、关键字=灰横线。**拿不到档位就不画**。 选中行整行是深蓝底：图标统一改白，否则蓝竖条会沉进背景里。 </summary>"
+   },
+   {
+    "line": 738,
+    "acc": "private",
+    "ret": "int",
+    "name": "RowAt",
+    "args": "int y",
+    "doc": ""
+   },
+   {
+    "line": 746,
+    "acc": "protected",
+    "ret": "void",
+    "name": "OnMouseMove",
+    "args": "MouseEventArgs e",
+    "doc": ""
+   },
+   {
+    "line": 774,
+    "acc": "protected",
+    "ret": "void",
+    "name": "OnMouseLeave",
+    "args": "EventArgs e",
+    "doc": ""
+   },
+   {
+    "line": 783,
+    "acc": "protected",
+    "ret": "void",
+    "name": "OnMouseDown",
+    "args": "MouseEventArgs e",
+    "doc": ""
+   },
+   {
+    "line": 814,
+    "acc": "protected",
+    "ret": "void",
+    "name": "OnMouseUp",
+    "args": "MouseEventArgs e",
+    "doc": ""
+   },
+   {
+    "line": 823,
+    "acc": "protected",
+    "ret": "void",
+    "name": "OnMouseWheel",
+    "args": "MouseEventArgs e",
+    "doc": ""
+   },
+   {
+    "line": 834,
+    "acc": "public",
+    "ret": "void",
+    "name": "ShowAt",
+    "args": "int x, int top, int bottom",
+    "doc": "<summary> 先定位、再显示。★顺序反了用户会看到窗口在屏幕左上角闪一下再跳过来： <c>StartPosition = Manual</c> 且还没设过 Location 时，首次 Show 用的是 系统给的默认位置（0,0 附近）。 </summary>"
+   },
+   {
+    "line": 840,
+    "acc": "protected",
+    "ret": "void",
+    "name": "Dispose",
+    "args": "bool disposing",
+    "doc": ""
+   },
+   {
+    "line": 852,
+    "acc": "protected",
+    "ret": "void",
+    "name": "WndProc",
+    "args": "ref System.Windows.Forms.Message m",
+    "doc": ""
+   }
+  ],
+  "head": "候选窗：无边框、置顶、永不抢焦点、全部自绘。 ★四条不能动：① 绝不抢焦点（抢一下用户在 VBE 的输入就断了）；② 一个 OnPaint 画完 （每行一个 Control 的话滚一下要重排几十个句柄）；③ 拿不到光标矩形就不显示； ④ 宽度按内容定，上限 640px。 外观照 VBE 自带列表：字体从注册表 7.1→7.0→6.0 读并去掉 Light/Thin，默认小一号。"
+ },
+ "Probes.Caret.cs": {
+  "lines": 165,
+  "classes": [
+   "Program"
+  ],
+  "methods": [
+   {
+    "line": 21,
+    "acc": "private",
+    "ret": "int",
+    "name": "CaretTest",
+    "args": "",
+    "doc": "<summary> 光标落点验证（真机）：模拟\"打到一半 + Tab 补全\"，读回 VBE 真实光标列，跟按真行 算出来的列对数，并把光标左右两截打出来。 ★动的是模块末尾的临时行，finally 里删干净并逐字节比对原文。 </summary>"
+   },
+   {
+    "line": 145,
+    "acc": "private",
+    "ret": "string",
+    "name": "Esc",
+    "args": "char c",
+    "doc": "<summary>把单个字符渲染成日志里看得见的样子（空格/Tab/空位都要能区分）。</summary>"
+   },
+   {
+    "line": 149,
+    "acc": "private",
+    "ret": "int",
+    "name": "WholeWordIndex",
+    "args": "string text, string word",
+    "doc": "<summary>整词查找（前后都不是标识符字符），找不到返回 -1。测试用。</summary>"
+   }
+  ],
+  "head": ""
+ },
+ "Probes.Decl.cs": {
+  "lines": 707,
+  "classes": [
+   "Program"
+  ],
+  "methods": [
+   {
+    "line": 22,
+    "acc": "private",
+    "ret": "int",
+    "name": "DeclProbe",
+    "args": "string only = null",
+    "doc": "<summary> 真机探针：在 VBE 里逐字符敲\"声明位置 + 第二个关键字\"的各种组合，看候选窗弹不弹。 ★必须上真机：selftest / enginetest 只看文本，而用户走的是 钩子 → 快照 → Trigger —— 快照落后一格、自动空格、输入法组字，任一环节偏一下结论就不同。 ★脚手架用完必删（`Sub VbcEnt"
+   },
+   {
+    "line": 364,
+    "acc": "private",
+    "ret": "int",
+    "name": "FmtProbe",
+    "args": "",
+    "doc": "<summary> 真机探针：**宿主把一行重排了空白之后，光标该落在哪儿**。 敲完 `n=n+1` 按 Ctrl+S，VBE 会把行格式化成 `    n = n + 1`，而光标只按原列号 保留 ⇒ 跑到第二个 `n` 后面，接着打字插错地方还会弹一屏假候选。 ★不真的按 Ctrl+S（会把测试行写进用户的工作簿）：直接把这一行换成"
+   }
+  ],
+  "head": ""
+ },
+ "Probes.Dump.cs": {
+  "lines": 242,
+  "classes": [
+   "Program"
+  ],
+  "methods": [
+   {
+    "line": 21,
+    "acc": "private",
+    "ret": "int",
+    "name": "DumpModule",
+    "args": "",
+    "doc": "<summary> 把当前代码窗模块的全文写到 moddump.txt（只读）。真机跑 --writetest / --hktest / --carettest 前 dump 一份、跑完再 dump 一份 diff —— 那几条用例都会\"改完再删\"， 这是唯一的核对手段。 </summary>"
+   },
+   {
+    "line": 41,
+    "acc": "private",
+    "ret": "int",
+    "name": "PoolDump",
+    "args": "string onlyModule",
+    "doc": "<summary> 诊断：把当前模块的解析结果 + 光标处的候选全写进 pooldump.txt。 ★\"某个名字该提示却没提示\"时跑一次，就能分清是没进 FreeIdents、进了但作用域对不上、 还是被 Option Explicit 拦了。全程只读。 </summary>"
+   },
+   {
+    "line": 112,
+    "acc": "private",
+    "ret": "int",
+    "name": "PoolDumpNamed",
+    "args": "string name, StringBuilder sb",
+    "doc": "<summary>按模块名离线解析（不需要那个代码窗是活动的）。</summary>"
+   },
+   {
+    "line": 158,
+    "acc": "private",
+    "ret": "int",
+    "name": "WriteTest",
+    "args": "",
+    "doc": "<summary> 写入链路验证：在模块末尾追加一行 -> 用补全改它 -> 删掉，最后逐字节比对原文。 ★只在用户显式跑 `--writetest` 时动，正常运行一次都不会碰用户代码。 </summary>"
+   },
+   {
+    "line": 233,
+    "acc": "private",
+    "ret": "string",
+    "name": "SafeSlice",
+    "args": "string s, int from, int len",
+    "doc": "</summary> <summary>日志用：安全截一段字符串（越界不抛，换行写成 \\n）。</summary>"
+   }
+  ],
+  "head": ""
+ },
+ "Probes.Env.cs": {
+  "lines": 206,
+  "classes": [
+   "Program"
+  ],
+  "methods": [
+   {
+    "line": 21,
+    "acc": "private",
+    "ret": "int",
+    "name": "StartupTest",
+    "args": "",
+    "doc": "<summary> 图标 + 开机自启的自检（不需要 Excel、不需要桌面）：图标九个尺寸能否各自取到且 像素尺寸正确；自启能登记 → 读回等于当前命令行 → 取消 → 读回为空。 ★先给注册表和 autostart.txt 拍快照，测完原样还原。 </summary>"
+   },
+   {
+    "line": 156,
+    "acc": "private",
+    "ret": "int",
+    "name": "TrustTest",
+    "args": "",
+    "doc": "<summary> AccessVBOM（\"信任对 VBA 工程对象模型的访问\"）现状。 ★默认只读：这个开关决定 WPS / Office 里能不能拿到 VBE，误写等于改用户的安全设置， 真写必须显式加 VBECOMPLETE_TRUST_WRITE（=1 开 / =0 关）。 ★VBECOMPLETE_TRUST_BOX=1 时把托"
+   },
+   {
+    "line": 195,
+    "acc": "private",
+    "ret": "string",
+    "name": "JoinKv",
+    "args": "Dictionary<string, string> d",
+    "doc": "<summary>把 Run 键快照拼成一行，只用于 --startuptest 的失败详情。</summary>"
+   }
+  ],
+  "head": ""
+ },
+ "Probes.Host.cs": {
+  "lines": 533,
+  "classes": [
+   "Program",
+   "FixedTextBackend"
+  ],
+  "methods": [
+   {
+    "line": 17,
+    "acc": "private",
+    "ret": "int",
+    "name": "Probe",
+    "args": "",
+    "doc": "<summary>诊断用：把\"能不能连上 VBE\"写进 probe.log。</summary>"
+   },
+   {
+    "line": 117,
+    "acc": "private",
+    "ret": "int",
+    "name": "VbeTest",
+    "args": "string progid",
+    "doc": "<summary> 直接探一个 ProgID 的 VBE 对象模型（WPS / Word / PPT 兼容性排查）。 ★每一步单独 try：坏在\"拿不到 VBE\"和坏在\"拿不到 CodeModule\"是完全不同的两件事， 合成一个 catch 只会看到一句\"发生意外\"。 </summary>"
+   },
+   {
+    "line": 208,
+    "acc": "private",
+    "ret": "int",
+    "name": "YieldProbe",
+    "args": "",
+    "doc": "<summary> 让位判据采样：先把 VBE 自己的成员列表**真弹出来**（抢前台 + Ctrl+Space）， 再采样 App.PollOnce 用的同一个函数。 ★不促发的话这条判据永远读到 false —— 那是\"绿着但什么都没验\"。 </summary>"
+   },
+   {
+    "line": 273,
+    "acc": "private",
+    "ret": "string",
+    "name": "App_invbe",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 291,
+    "acc": "private",
+    "ret": "bool",
+    "name": "BareProcHead",
+    "args": "string s",
+    "doc": "<summary> v183 真机探针：**窗体代码里打控件名**（用户报\"我在窗体里，不会提示 TextBox1\"）。 <para>★不改模块一个字符、不抢前台：真 Backend（真 Designer 读取 + 真 ProjectScopes） 配一个合成快照，直接问引擎\"这一行该给什么\"。验的是这次改动的整条链： Designer "
+   },
+   {
+    "line": 307,
+    "acc": "private",
+    "ret": "int",
+    "name": "HdrProbe",
+    "args": "",
+    "doc": "<summary> v186：验\"在写好的函数头前补 pri / pub 会不会提示 Private / Public\"。 ★只读：不改模块、不抢前台、不注入按键。文本取**当前模块的真全文**， 只在内存副本里把某个过程头行前面插一个半截修饰符；后端仍是真 VbeBackend（组件类型 / 工程作用域 / 词库都走产品路径）。 ★反向"
+   },
+   {
+    "line": 381,
+    "acc": "private",
+    "ret": "bool",
+    "name": "HdrCheck",
+    "args": "VbeBackend be, string module, string text, int lineNo, string line, int caretCol, string[]",
+    "doc": "<summary>hdrprobe 的一格：把内存副本钉住，问真 Engine 该给哪些候选。</summary>"
+   },
+   {
+    "line": 407,
+    "acc": "private",
+    "ret": "int",
+    "name": "FormProbe",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 478,
+    "acc": "private",
+    "ret": "bool",
+    "name": "Check",
+    "args": "VbeBackend be, string module, string text, string line, string ctl, bool mustHave, StringB",
+    "doc": "<summary>formprobe 的一格：把 <paramref name=\"line\"/> 当成\"模块的第 1 行\"问引擎。</summary>"
+   },
+   {
+    "line": 522,
+    "acc": "public",
+    "ret": "Snapshot",
+    "name": "Snapshot",
+    "args": "bool verify = true",
+    "doc": ""
+   },
+   {
+    "line": 523,
+    "acc": "public",
+    "ret": "string",
+    "name": "ModuleText",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 524,
+    "acc": "public",
+    "ret": "List<string>",
+    "name": "ComponentNames",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 525,
+    "acc": "public",
+    "ret": "List<ModuleScope>",
+    "name": "ProjectScopes",
+    "args": "out int signature",
+    "doc": ""
+   },
+   {
+    "line": 529,
+    "acc": "public",
+    "ret": "string",
+    "name": "EnclosingProcName",
+    "args": "",
+    "doc": ""
+   }
+  ],
+  "head": ""
+ },
+ "Probes.Key.cs": {
+  "lines": 913,
+  "classes": [
+   "Program"
+  ],
+  "methods": [
+   {
+    "line": 21,
+    "acc": "private",
+    "ret": "int",
+    "name": "ParenTest",
+    "args": "",
+    "doc": "<summary> 括号补全验证（真机）：走 Engine.AcceptName 这条真路径，确认选函数真的补一对括号、 光标落在括号中间，类型名 / 关键字一个都不许补。全程只动模块末尾临时行，最后还原。 ★括号逻辑分散在四处（判档位 → 判位置 → 判 Call 语句 → 落光标），只有真机能验完整条。 </summary>"
+   },
+   {
+    "line": 133,
+    "acc": "private",
+    "ret": "int",
+    "name": "HkTest",
+    "args": "",
+    "doc": "<summary> 真机验证四个命令：Ctrl+Shift+Enter / Ctrl+D / Ctrl+K / Ctrl+/。 ★按键能不能走到钩子在这里试不了（钩子按设计不理注入键），但\"命令本身能不能干活\" 可以 100% 验 —— 这里调的就是钩子调的那几个 Commands.*。全过 ⇒ 问题只在路由。 全程只动模块末尾临时追加的"
+   },
+   {
+    "line": 468,
+    "acc": "private",
+    "ret": "int",
+    "name": "EnterProbe",
+    "args": "",
+    "doc": "<summary> 真机\"回车补结构\"探针 —— **走真键盘钩子**（真 App + 真轮询 + SendInput）。 ★--hktest 只验后端（直接调 NewLineBelow），而用户走的是 WH_KEYBOARD_LL → FreshHookSnap → EnterIndentWanted → Post → NewLineB"
+   }
+  ],
+  "head": ""
+ },
+ "Probes.Pure.cs": {
+  "lines": 860,
+  "classes": [
+   "Program",
+   "SyntheticBackend"
+  ],
+  "methods": [
+   {
+    "line": 21,
+    "acc": "private",
+    "ret": "int",
+    "name": "SnippetTest",
+    "args": "",
+    "doc": "<summary> 片段库自检（不需要 Excel、不需要桌面）：在**临时库**上跑一遍增删改查， 顺便报告真实库的路径与条数。 ★刻意不碰用户的 snippets-cs.db —— 自检绝不允许改坏用户攒下来的片段。 </summary>"
+   },
+   {
+    "line": 100,
+    "acc": "private",
+    "ret": "int",
+    "name": "DbTest",
+    "args": "",
+    "doc": "<summary> 词库自检（不需要 Excel、不需要桌面）：在**临时库**上验证 \"第一次自动建库并灌种子 → 载入内存 → 用户加一行也能生效\"。 ★刻意不碰真实的关键字/函数库 —— 自检绝不允许改坏用户自己维护的词库。 </summary>"
+   },
+   {
+    "line": 240,
+    "acc": "private",
+    "ret": "int",
+    "name": "EngineTest",
+    "args": "",
+    "doc": "<summary> 候选判定的完整回归：真实模块文本 + 人造快照跑 Trigger，逐条验\"弹不弹、第一条是什么\"。 ★Trigger 的全部输入就是 (模块文本, 行, 列)，人造快照走同一条代码路径，判定逻辑 100% 覆盖；\"按键有没有送到钩子\"由 --hktest 兜。纯读，一个字符都不写模块。 </summary>"
+   },
+   {
+    "line": 817,
+    "acc": "public",
+    "ret": "SyntheticBackend",
+    "name": "Add",
+    "args": "string name, int type, string text",
+    "doc": ""
+   },
+   {
+    "line": 825,
+    "acc": "public",
+    "ret": "SyntheticBackend",
+    "name": "AddForm",
+    "args": "string name, string text, params string[] controls",
+    "doc": "<summary>加一个窗体（ComponentType=3）并给它挂上控件名。</summary>"
+   },
+   {
+    "line": 832,
+    "acc": "public",
+    "ret": "Snapshot",
+    "name": "Snapshot",
+    "args": "bool verify = true",
+    "doc": ""
+   },
+   {
+    "line": 834,
+    "acc": "public",
+    "ret": "string",
+    "name": "ModuleText",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 837,
+    "acc": "public",
+    "ret": "List<string>",
+    "name": "ComponentNames",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 839,
+    "acc": "public",
+    "ret": "List<ModuleScope>",
+    "name": "ProjectScopes",
+    "args": "out int signature",
+    "doc": ""
+   },
+   {
+    "line": 857,
+    "acc": "public",
+    "ret": "string",
+    "name": "EnclosingProcName",
+    "args": "",
+    "doc": ""
+   }
+  ],
+  "head": ""
+ },
+ "Probes.Support.cs": {
+  "lines": 266,
+  "classes": [
+   "Program"
+  ],
+  "methods": [
+   {
+    "line": 20,
+    "acc": "private",
+    "ret": "int",
+    "name": "CleanupScratch",
+    "args": "VbeBackend be",
+    "doc": "<summary> 删掉探针留下的 `Sub VbcEnter()` … `End Sub` 块（成功跑完要删、上一次 中途炸掉也要删 —— 探针绝不能把垃圾留在用户的模块里）。 </summary>"
+   },
+   {
+    "line": 53,
+    "acc": "private",
+    "ret": "void",
+    "name": "RebuildScaffold",
+    "args": "App app, VbeBackend be, int at, string header, params string[] extra",
+    "doc": "<summary> 把 at 之后的模块内容整段重建成： `Sub VbcEnter()` / <paramref name=\"header\"/> / 逗号给的几行 / `End Sub`， 光标停在 header 行尾（header 为空则停在行首）。 </summary>"
+   },
+   {
+    "line": 78,
+    "acc": "private",
+    "ret": "void",
+    "name": "RebuildScaffoldTopLevel",
+    "args": "App app, VbeBackend be, int at, string line",
+    "doc": "<summary> 把用例摆在**模块级**：`用例行` + 一个空的 `Sub VbcEnter()`/`End Sub`。 ★不能包进过程里：`Declare PtrSafe` / `Option Explicit` / `Property` 这些\"只能写在 模块级\"的关键字包进 Sub 就变成过程体内，会被 KeywordAllow"
+   },
+   {
+    "line": 99,
+    "acc": "private",
+    "ret": "string[]",
+    "name": "ReadLines",
+    "args": "App app, VbeBackend be, int at, int n",
+    "doc": "<summary>读回脚手架的前几行（探针用）。</summary>"
+   },
+   {
+    "line": 111,
+    "acc": "private",
+    "ret": "string",
+    "name": "Tail",
+    "args": "string[] lines",
+    "doc": ""
+   },
+   {
+    "line": 119,
+    "acc": "private",
+    "ret": "string",
+    "name": "EnterDiag",
+    "args": "App app",
+    "doc": "<summary>钩子那一侧此刻看到的判据 —— 失败时把这一串打进日志，一眼看出卡在哪。</summary>"
+   },
+   {
+    "line": 131,
+    "acc": "private",
+    "ret": "void",
+    "name": "SendKeys",
+    "args": "App app, int vk, bool shift = false",
+    "doc": "<summary>发一个键（只放行这一下注入）。</summary>"
+   },
+   {
+    "line": 147,
+    "acc": "private",
+    "ret": "void",
+    "name": "SendCombo",
+    "args": "App app, int vk, bool ctrl = false, bool shift = false",
+    "doc": "<summary> 发一个\"组合键\"（Ctrl+某键），只放行目标键这一下注入。 ★Ctrl 的 down/up 同样是注入的、会被 LLKHF_INJECTED 闸滤掉，但它们照样进系统， 所以目标键到达时 Down(VK_CONTROL) 为真。目标键经 AcceptInjectedVk 单点放行。 </summary>"
+   },
+   {
+    "line": 159,
+    "acc": "private",
+    "ret": "bool",
+    "name": "TypeText",
+    "args": "App app, string s, int delayMs",
+    "doc": "<summary>逐字符敲一串文本（用真 vk，模拟真人按键；注入标记在探针里放行）。</summary>"
+   },
+   {
+    "line": 195,
+    "acc": "private",
+    "ret": "bool",
+    "name": "TypeTyping",
+    "args": "App app, string s, int delayMs, out string how",
+    "doc": "<summary> 逐字符\"打字\"：英数档走真 vk（和人手一致）；中文档走 Unicode 注入 （否则字母被拿去组字，敲出来是 `Fori= 1 To3`，失败原因会伪装成\"程序坏了\"）。 返回实际用的方式并写进日志。 ★Unicode 注入没有 VK，钩子按设计看不到注入键 —— 必须靠 NoteInjectedTyping 补记\""
+   },
+   {
+    "line": 218,
+    "acc": "private",
+    "ret": "bool",
+    "name": "PrepareImeForTyping",
+    "args": "Action<string> log, out int mode0, out bool usedShift",
+    "doc": "<summary> 逐字符用例的前置：定下这一轮走哪条注入路径（默认 Unicode），并把输入法现状写进日志。 ★v181：以前切不过去只写一句\"⚠️ 切不过去\"然后照跑 —— 结果 37 条\"该弹\"全红， 看起来像程序坏了，其实一个字都没验到（中文档下注入只能走 Unicode，钩子不理）。 ★只有真要验 VK 路径（PROBE_VK"
+   },
+   {
+    "line": 243,
+    "acc": "private",
+    "ret": "bool",
+    "name": "CharToVk",
+    "args": "char c, out int vk, out bool shift",
+    "doc": ""
+   }
+  ],
+  "head": ""
+ },
+ "Probes.Ui.cs": {
+  "lines": 301,
+  "classes": [
+   "Program"
+  ],
+  "methods": [
+   {
+    "line": 20,
+    "acc": "private",
+    "ret": "int",
+    "name": "UiTest",
+    "args": "",
+    "doc": "<summary> 候选窗离屏渲染：把窗口画进一张 PNG，用来一眼核对配色 / 图标 / 布局。 不需要桌面，也不会出现在屏幕上。 </summary>"
+   },
+   {
+    "line": 287,
+    "acc": "private",
+    "ret": "void",
+    "name": "DumpControls",
+    "args": "Control.ControlCollection cs, StringBuilder sb, int depth",
+    "doc": "<summary>把控件树按缩进打进日志（离线布局核对用）。</summary>"
+   }
+  ],
+  "head": ""
+ },
+ "Program.cs": {
+  "lines": 185,
+  "classes": [
+   "Program"
+  ],
+  "methods": [
+   {
+    "line": 23,
+    "acc": "private",
+    "ret": "int",
+    "name": "Main",
+    "args": "string[] args",
+    "doc": ""
+   },
+   {
+    "line": 48,
+    "acc": "private",
+    "ret": "int",
+    "name": "RunMain",
+    "args": "string[] args",
+    "doc": ""
+   },
+   {
+    "line": 175,
+    "acc": "private",
+    "ret": "void",
+    "name": "SignalExisting",
+    "args": "",
+    "doc": ""
+   }
+  ],
+  "head": "入口：单实例 + 启动；带上 --selftest 时只跑自检、不装钩子（这样能在没有 桌面的环境里验证全部纯逻辑）。"
+ },
+ "Recent.cs": {
+  "lines": 78,
+  "classes": [
+   "Recent"
+  ],
+  "methods": [
+   {
+    "line": 29,
+    "acc": "private",
+    "ret": "void",
+    "name": "Load",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 51,
+    "acc": "public",
+    "ret": "int",
+    "name": "Rank",
+    "args": "string name",
+    "doc": ""
+   },
+   {
+    "line": 57,
+    "acc": "public",
+    "ret": "void",
+    "name": "Note",
+    "args": "string name",
+    "doc": ""
+   },
+   {
+    "line": 64,
+    "acc": "public",
+    "ret": "void",
+    "name": "Flush",
+    "args": "",
+    "doc": ""
+   }
+  ],
+  "head": "最近使用：与 python 版共用同一份 recent.json（扁平字典 {名字: 递增序号}）。 序号越大表示越近；读坏了就当空，绝不抛异常。"
+ },
+ "Rules.cs": {
+  "lines": 982,
+  "classes": [
+   "Rules",
+   "DeclSlot",
+   "ModuleKind"
+  ],
+  "methods": [
+   {
+    "line": 15,
+    "acc": "public",
+    "ret": "bool",
+    "name": "IsIdentChar",
+    "args": "char c",
+    "doc": ""
+   },
+   {
+    "line": 21,
+    "acc": "public",
+    "ret": "string",
+    "name": "WordBefore",
+    "args": "string line, int caretCol, out int wordStartCol",
+    "doc": "<summary> 取光标左边那个词。caretCol 是 1-based 字符列（VBE 的 GetSelection 给的）。 返回 (词, 词的起始列 1-based)；取不到返回 (\"\", caretCol)。 </summary>"
+   },
+   {
+    "line": 36,
+    "acc": "public",
+    "ret": "string",
+    "name": "ReplaceWord",
+    "args": "string line, int wordStartCol, int endCol, string completion",
+    "doc": "<summary>把 [wordStartCol, endCol) 换成 completion（列都是 1-based）。</summary>"
+   },
+   {
+    "line": 52,
+    "acc": "public",
+    "ret": "int",
+    "name": "FindCompletionEnd",
+    "args": "string actual, string completion, int near0, int fallback0",
+    "doc": "<summary> VBE 重排整行之后，找回补全词真正的结束下标（0-based 排他）。 只认整词出现，多处取起点最接近 near0 的。★不能只 LastIndexOf —— `Split = Split(x)` 会取到最后一个，光标跑到别的词后面。 </summary>"
+   },
+   {
+    "line": 84,
+    "acc": "public",
+    "ret": "int",
+    "name": "DispCol",
+    "args": "string text, int charIndex, int tabw = -1",
+    "doc": "<summary> 字符下标 -> VBE 认的\"显示列\"（1-based）。 VBE 的 SetSelection 列是按 Tab 展开后的格数算的：不做换算，光标 在有 Tab 或缺省缩进（VBE 用 Tab）的行上会落进词的中间。 </summary>"
+   },
+   {
+    "line": 106,
+    "acc": "public",
+    "ret": "int",
+    "name": "CaretColForCharCol",
+    "args": "string text, int charCol, int tabw = -1",
+    "doc": "<summary> \"第 charCol 个字符之前\" -> VBE 认的显示列（1-based）。 ★v131c：SetCaret 的列语义唯一实现。DispCol(i) 是\"字符 i 之前\"，所以这里取 DispCol(charCol - 1) —— 差这一格，真机上就是\"光标永远比你以为的右一格\"。 </summary>"
+   },
+   {
+    "line": 112,
+    "acc": "public",
+    "ret": "bool",
+    "name": "IsWide",
+    "args": "char c",
+    "doc": ""
+   },
+   {
+    "line": 123,
+    "acc": "public",
+    "ret": "int",
+    "name": "CharColFromDisp",
+    "args": "string text, int dispCol, int tabw = -1",
+    "doc": "<summary> 反向换算：VBE 给的显示列（1-based）→ 1-based 字符列。 ★GetSelection 返回的是**显示列**（Tab 展开、全角占 2），当字符列用会取错词甚至 取到空词，症状是\"这一行根本不弹候选\"。吃 CaretCol 的判据都得先过这一道。 </summary>"
+   },
+   {
+    "line": 178,
+    "acc": "public",
+    "ret": "bool",
+    "name": "InDeclarationPosition",
+    "args": "string line, int caretCol",
+    "doc": "<summary> 光标是不是停在\"造新名字 / 写类型\"的位置 —— 这类位置一律不弹 （`As` 后不弹，裸声明的名字位不弹；`Const PI = 3.14` 右边是表达式，照常提示）。 ★只拦\"正在起一个**新**名字\"：`ReDim [Preserve] arr|`（命名既有数组）与 `Dim arr(0 To n|`（上界表达"
+   },
+   {
+    "line": 242,
+    "acc": "public",
+    "ret": "bool",
+    "name": "AtParamStart",
+    "args": "string line, int wordStartCol",
+    "doc": "<summary> 光标是不是停在过程头形参表里\"一个参数的开头\"：`Sub Foo(|`、`Sub Foo(a As Long, |`、 `Declare PtrSafe Function X Lib \"k\" (|`。那里该提示 ByVal / ByRef / Optional / ParamArray。 ★v180 用户报\"形参列表里"
+   },
+   {
+    "line": 275,
+    "acc": "public",
+    "ret": "string[]",
+    "name": "ParamStartFollow",
+    "args": "string line, int wordStartCol",
+    "doc": "<summary>形参表里\"新参数开头\"该给的关键字；不是这个位置返回 null。</summary>"
+   },
+   {
+    "line": 279,
+    "acc": "private",
+    "ret": "bool",
+    "name": "InParens",
+    "args": "string line, int from, int end",
+    "doc": "<summary>光标之前有没有**没闭合**的圆括号（引号里、注释里的括号不算）。</summary>"
+   },
+   {
+    "line": 345,
+    "acc": "public",
+    "ret": "string[]",
+    "name": "DeclKeywordFollow",
+    "args": "string line, int wordStartCol",
+    "doc": "<summary> 光标前那个词是\"后面还该跟一个关键字\"的声明关键字时，返回该位置可用的关键字； 不是这种位置返回 null（照旧按声明位置处理 —— 宁可少弹不要乱弹）。 ★光看前一个词不够，还要求它是**这条语句的头**（或头的合法第二节），否则同一个词 出现在别处会被误套：行首孤零零的 `Preserve` 会把 `ReDim` "
+   },
+   {
+    "line": 358,
+    "acc": "public",
+    "ret": "DeclSlot",
+    "name": "DeclSlotOf",
+    "args": "string line, int wordStartCol, out string[] keywords",
+    "doc": "<summary> 光标前那个词后面允许出现什么：None（不限）/ KeywordsOnly / KeywordsAndNames。 keywords 与返回值配套（None → null，其余给白名单，空数组 = 一个关键字都不许）。 </summary> <remarks> ★按 VBA 语法逐个核过，别凭手感改。名字合法的只有：`"
+   },
+   {
+    "line": 454,
+    "acc": "private",
+    "ret": "string",
+    "name": "HeadWord",
+    "args": "string line, int anchorStart",
+    "doc": "<summary> 语句段开头到 <paramref name=\"anchorStart\"/> 之间还剩什么词（剥掉 Public/Private/ Friend/Global/Static 这类修饰符）。空串 = 锚点就是这条语句的头。 </summary>"
+   },
+   {
+    "line": 468,
+    "acc": "private",
+    "ret": "bool",
+    "name": "IsModifier",
+    "args": "string w",
+    "doc": ""
+   },
+   {
+    "line": 472,
+    "acc": "private",
+    "ret": "bool",
+    "name": "SameWord",
+    "args": "string a, string b",
+    "doc": ""
+   },
+   {
+    "line": 476,
+    "acc": "public",
+    "ret": "bool",
+    "name": "PrefixOfAny",
+    "args": "string word, string[] list",
+    "doc": "<summary>word 是不是 list 里某个关键字的前缀（大小写不敏感）。</summary>"
+   },
+   {
+    "line": 486,
+    "acc": "public",
+    "ret": "bool",
+    "name": "InList",
+    "args": "string[] list, string name",
+    "doc": "<summary>名字是不是 list 里的（大小写不敏感），给候选过滤用。</summary>"
+   },
+   {
+    "line": 513,
+    "acc": "public",
+    "ret": "ModuleKind",
+    "name": "KindOfComponent",
+    "args": "int componentType",
+    "doc": "<summary>VBE 的 `Component.Type` → 我们只关心的三种。</summary>"
+   },
+   {
+    "line": 547,
+    "acc": "public",
+    "ret": "bool",
+    "name": "KeywordAllowed",
+    "args": "string name, ModuleKind kind, bool inProc",
+    "doc": "<summary> 这个关键字能不能出现在当前位置。<paramref name=\"inProc\"/> = 光标在某个过程体内。 不是关键字的（函数 / 类型 / 用户名字）一律放行 —— 它们没有这种限制。 </summary>"
+   },
+   {
+    "line": 562,
+    "acc": "private",
+    "ret": "bool",
+    "name": "IsProcHeadWord",
+    "args": "string w",
+    "doc": "<summary>过程 / 类型声明头的第一个词。</summary>"
+   },
+   {
+    "line": 580,
+    "acc": "public",
+    "ret": "bool",
+    "name": "IsProcHeaderLine",
+    "args": "string line",
+    "doc": "<summary> 这一行是不是\"过程 / 类型声明头\"：允许前面有完整的、或**正在打的半截** 模块级修饰符（`pri Function …` / `pub Sub …` / `Private Declare …`）。 ★v186：过程头行属于**模块级**语法位置，Private / Public / Static / Declar"
+   },
+   {
+    "line": 610,
+    "acc": "public",
+    "ret": "bool",
+    "name": "SameCodeIgnoringSpace",
+    "args": "string a, string b",
+    "doc": "<summary> 两行去掉**全部空白**之后是否相同 —— 相同 = 只差空白，不是打字。 ★v179：大小写也算\"一样\"。VBE 有\"智能大小写\"，保存/回车时会把 `dim x` 改成 `Dim x`、把 `n` 改成声明里的 `N`。那同样是宿主行为，不该当成\"用户在打字\" （v174 比的是 Ordinal，一遇大小写差异就整"
+   },
+   {
+    "line": 627,
+    "acc": "public",
+    "ret": "int",
+    "name": "SpaceCount",
+    "args": "string s",
+    "doc": "<summary>空白字符个数（只用来判\"重排是加了空格还是删了空格\"）。</summary>"
+   },
+   {
+    "line": 644,
+    "acc": "public",
+    "ret": "int",
+    "name": "RespaceOldDisp",
+    "args": "string oldText, int prevDisp, int snapDisp",
+    "doc": "<summary> 宿主重排空白后，反算\"保存前光标在旧行的哪个显示列\"。 ★v185：不能拿 prev.CaretCol 当锚 —— 敲完最后一个字符立刻 Ctrl+S 时， Snapshot 非原子（先读文本、后读光标，见 v181 typingRace），上一次轮询 可能停在\"新文本 + 旧光标列\"，比真值落后一格（中文全角落后两格"
+   },
+   {
+    "line": 659,
+    "acc": "public",
+    "ret": "int",
+    "name": "RemapCaretOverSpaces",
+    "args": "string oldText, int oldCharCol, string newText",
+    "doc": "<summary> 把光标从\"旧文本第 <paramref name=\"oldCharCol\"/> 个字符之前\"搬到新文本的等价位置， 返回 1-based 字符列。锚是**非空白字符的序号**（重排只动空白，这个序号是稳的）。 ★真机：敲完 `n=n+1` 按 Ctrl+S，VBE 会把行格式化成 `    n = n + 1`，但光标"
+   },
+   {
+    "line": 681,
+    "acc": "public",
+    "ret": "int",
+    "name": "StatementStart",
+    "args": "string line, int endCol",
+    "doc": "<summary> 光标所在**语句段**的起点（0-based）。`:` 分隔多条语句，只认引号外 / 注释外的冒号。 ★`Then` / `Else` 也是边界（单行 If）：`If n > 0 Then ReDim Preserve res` 的声明 起点在 Then 之后。不切这一刀，\"声明位置不弹候选\"在紧凑写法下整条失效。 <"
+   },
+   {
+    "line": 708,
+    "acc": "private",
+    "ret": "bool",
+    "name": "IsWordAt",
+    "args": "string line, int i, int end, string kw",
+    "doc": "<summary>line 的 i 处是不是完整的一个词 kw（左右都不再连标识符字符）。</summary>"
+   },
+   {
+    "line": 724,
+    "acc": "public",
+    "ret": "bool",
+    "name": "AfterTypeKeyword",
+    "args": "string line, int wordStartCol",
+    "doc": "<summary> 光标前那个词是不是紧跟在 `As` / `New` 后面（那里只可能是类型名，不弹）。 ★不能并进 InDeclarationPosition：那条只认 Dim/Const/ReDim/WithEvents 开头的整行， 而 `Set c = New |`、`Sub Foo(a As |)` 的行首不是声明关键字。 w"
+   },
+   {
+    "line": 741,
+    "acc": "public",
+    "ret": "string",
+    "name": "BlankToken",
+    "args": "string moduleText, int line1, int startCol1, string token",
+    "doc": "<summary> 把模块全文里\"正在输入的那个词\"挖成空格，免得半截名字被当成声明、在池子里提示 它自己（`Dim glo|`）。 ★先核对那一行那一列确实就是这个词，对不上就原样返回：全文有缓存、可能比光标慢 一拍，宁可这次不挖，也不能拿错位的位置把别人挖掉（挖坏 Dim 会让整个模块解析失败）。 </summary>"
+   },
+   {
+    "line": 774,
+    "acc": "public",
+    "ret": "int",
+    "name": "MemberDotCol",
+    "args": "string line, int caretCol",
+    "doc": "<summary> 光标停在**成员访问位置**时返回那个点号的 0-based 下标，否则 -1。 ★这是\"要不要让给 VBE\"的唯一判据：我们的裸名池在上面弹会把 VBE 的成员列表压住。 认 `student.|` / `Range(\"A1\").|` / With 块的 `    .Size`； 不认 `1.5` / `\"abc\"."
+   },
+   {
+    "line": 823,
+    "acc": "public",
+    "ret": "bool",
+    "name": "InMemberPosition",
+    "args": "string line, int caretCol",
+    "doc": "<summary>光标是不是停在成员访问位置（`student.|` / `Range(\"A1\").na|`）。</summary>"
+   },
+   {
+    "line": 830,
+    "acc": "public",
+    "ret": "bool",
+    "name": "MemberRoot",
+    "args": "string line, int caretCol, out string root, out int dotCol",
+    "doc": "<summary> 光标是不是在 `对象.|` 或 `对象.前|` 这种位置。成立时 root = 点号前的标识符。 只认\"点号前是简单标识符\"（`Me` / `c` / `m_arr`）—— `Range(\"A1\").` 要真求值，不在这一层猜。 </summary>"
+   },
+   {
+    "line": 853,
+    "acc": "public",
+    "ret": "bool",
+    "name": "InCommentOnly",
+    "args": "string line, int caretCol",
+    "doc": "<summary> 光标是不是在注释里（`'...` 或语句开头的 `Rem`）。 ★与 InCommentOrString 只差\"字符串算不算\"：自动配对必须用这一版 —— 打 `s = \"abc` 再按 `\"` 时光标正在未闭合字符串里，那一下正是收尾的引号。 </summary>"
+   },
+   {
+    "line": 857,
+    "acc": "public",
+    "ret": "bool",
+    "name": "InCommentOrString",
+    "args": "string line, int caretCol",
+    "doc": "<summary>光标是不是在注释里（`'` 之后）或字符串里（含未闭合字符串）。</summary>"
+   },
+   {
+    "line": 865,
+    "acc": "public",
+    "ret": "bool",
+    "name": "InDeadZone",
+    "args": "string line, int caretCol",
+    "doc": "<summary> 光标是不是落在注释（`'` 或 `Rem`）或字符串里 —— 候选弹窗用这一条。 ★v150：它原来只过 InCommentOrString（不认 `Rem`），于是 `Rem 说明 |` 里照样弹 全工程候选、按 Tab 还能把注释改写掉。两个判据各自漏的正好互补，取并集。 </summary>"
+   },
+   {
+    "line": 872,
+    "acc": "private",
+    "ret": "bool",
+    "name": "ScanDead",
+    "args": "string line, int caretCol, bool strCounts, bool remCounts",
+    "doc": "<summary> 上面三个判据的公共扫描（旧实现是两份几乎逐行重复的循环，改一处漏一处）。 strCounts = 未闭合字符串算不算死区；remCounts = 语句开头的 `Rem` 算不算注释。 </summary>"
+   },
+   {
+    "line": 909,
+    "acc": "public",
+    "ret": "bool",
+    "name": "IsCallSite",
+    "args": "string line, int wordStartCol",
+    "doc": "<summary> 这个词的位置允不允许补一对括号。 只管\"位置\"，不管\"是什么名字\"（那是引擎的活）。 </summary>"
+   },
+   {
+    "line": 935,
+    "acc": "public",
+    "ret": "bool",
+    "name": "PrefixIsResolved",
+    "args": "string word, IList<string> matches",
+    "doc": "<summary> \"打全了没有\"：精确命中【并且】没有更长的候选，才算打全。 打全就该收起列表 —— 否则按 Tab 会把已经打完的名字再补一遍。 </summary>"
+   },
+   {
+    "line": 953,
+    "acc": "public",
+    "ret": "bool",
+    "name": "LineEditInserted",
+    "args": "string oldLine, string newLine, out char inserted",
+    "doc": "<summary> 一次文本变化是不是\"在光标处插进了一个字符\"（用来判断用户真敲了字）。 命中时 inserted 是插入的那个字符；删除/替换返回 false。 </summary>"
+   },
+   {
+    "line": 970,
+    "acc": "public",
+    "ret": "string",
+    "name": "Rstrip",
+    "args": "string s",
+    "doc": "<summary>把行尾的空白去掉（比较\"有没有实质变化\"时用）。</summary>"
+   },
+   {
+    "line": 978,
+    "acc": "public",
+    "ret": "bool",
+    "name": "AutoTriggerWanted",
+    "args": "bool changed, bool modSwitched, bool keyTriggered, bool lineJumped",
+    "doc": "<summary> 自动弹窗的总判据，四个条件同时成立：快照真变了、不是切了代码窗、最近按过键、 **行号没变**。 ★第 4 条拦的是\"鼠标点一下变量名就弹\"：点另一行的变量时行号会变，真打字绝不会变 （方向键 / Ctrl+Home 只移动光标，也一定会变），所以行号一变只收不弹。 </summary>"
+   }
+  ],
+  "head": "纯判据：不碰 COM、不碰 UI、不碰全局状态 —— 全部可以单独测。  ★为什么这些要独立成一个文件：它们是\"补全准不准\"的全部决定者。 混进 COM 或窗口代码里的话，就只能靠真机试，一条 bug 要试十次。"
+ },
+ "Scope.cs": {
+  "lines": 894,
+  "classes": [
+   "Decl",
+   "ModuleScope",
+   "Scope"
+  ],
+  "methods": [
+   {
+    "line": 19,
+    "acc": "public",
+    "ret": "string",
+    "name": "ToString",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 78,
+    "acc": "public",
+    "ret": "string",
+    "name": "TypeOf",
+    "args": "string name, string proc",
+    "doc": ""
+   },
+   {
+    "line": 151,
+    "acc": "private",
+    "ret": "void",
+    "name": "Put",
+    "args": "Dictionary<string, KeyValuePair<string, int>> map, string name, int rank",
+    "doc": ""
+   },
+   {
+    "line": 250,
+    "acc": "private",
+    "ret": "bool",
+    "name": "IsHostObjectName",
+    "args": "string name",
+    "doc": ""
+   },
+   {
+    "line": 261,
+    "acc": "private",
+    "ret": "bool",
+    "name": "IsHostEnumConst",
+    "args": "string name",
+    "doc": ""
+   },
+   {
+    "line": 278,
+    "acc": "public",
+    "ret": "ModuleScope",
+    "name": "Analyze",
+    "args": "string module, string text",
+    "doc": "<summary>解析一个模块。text 为 null 时返回一个空壳（绝不返回 null）。</summary>"
+   },
+   {
+    "line": 656,
+    "acc": "private",
+    "ret": "bool",
+    "name": "IsMemberAccess",
+    "args": "string code, Match m",
+    "doc": "<summary> 这个标识符是不是\"点号后面的成员名\"（`wsR.Cells` 里的 `Cells`）？ 只看紧邻的前一个非空白字符：是 `.` 就算成员，否则不算。 不追类型、不认大小写 —— 判据纯语法，绝不猜。 </summary>"
+   },
+   {
+    "line": 667,
+    "acc": "private",
+    "ret": "bool",
+    "name": "IsAfterAs",
+    "args": "string code, Match m",
+    "doc": "<summary> 这个标识符是不是紧跟在 `As` 后面（= 类型名，不是值也不是调用）。 只看前一个词是不是 `As`，不做别的推断。 </summary>"
+   },
+   {
+    "line": 670,
+    "acc": "private",
+    "ret": "bool",
+    "name": "PrevWordIs",
+    "args": "string code, Match m, string word",
+    "doc": "<summary>标识符前面那个词是不是 <paramref name=\"word\"/>（跳过空白）。</summary>"
+   },
+   {
+    "line": 686,
+    "acc": "private",
+    "ret": "bool",
+    "name": "IsArrayLikeUse",
+    "args": "string code, Match m",
+    "doc": "<summary> 后面跟括号的这个名字，其实是**数组变量**而不是函数调用吗（只看语法）： * 前面是 `ReDim` / `Preserve` / `Let`；* 语句起点且括号配平后紧跟 `=`。 `If arr(1) = 5 Then` 不算（前面有 If，不是语句起点）。 </summary>"
+   },
+   {
+    "line": 716,
+    "acc": "private",
+    "ret": "bool",
+    "name": "IsLabelDefinition",
+    "args": "string code, Match m",
+    "doc": "<summary> `名字:` 后面再没有别的内容 —— 这是 VBA 的**行标签定义**（`错误处理:`）， 不是变量。`Select Case` 的 `Case 1:` 之类不受影响（1 不是标识符）。 </summary>"
+   },
+   {
+    "line": 729,
+    "acc": "private",
+    "ret": "bool",
+    "name": "IsNamedArg",
+    "args": "string code, Match m",
+    "doc": "<summary> 后面紧跟 `:=` —— 命名参数（`MsgBox Prompt:=x`），不是变量。 与行标签 `名字:` 的区别就是多了一个等号（对齐 PY 的 `_usage_candidates` 里\"后面跟 `(` 或 `:` 都跳过\"那条）。 </summary>"
+   },
+   {
+    "line": 740,
+    "acc": "private",
+    "ret": "bool",
+    "name": "IsAfterNumber",
+    "args": "string code, Match m",
+    "doc": "<summary> 这个名字是不是数字字面量的一部分：`&HFF` 的 `HFF`、`1E10` 的 `E10`。 只看前一个字符（`&` 或数字），不做进制的额外推断。 </summary>"
+   },
+   {
+    "line": 749,
+    "acc": "private",
+    "ret": "bool",
+    "name": "IsAtStatementStart",
+    "args": "string code, Match m",
+    "doc": "<summary>这个标识符前面（到行首或冒号为止）只有空白吗 —— 即它在语句起点。</summary>"
+   },
+   {
+    "line": 764,
+    "acc": "private",
+    "ret": "bool",
+    "name": "FollowedByParen",
+    "args": "string code, Match m",
+    "doc": "<summary> 这个标识符后面是不是紧跟 `(`（= 被当成函数/过程调用）。只跳空白，不做类型推断。 与 LooksLikeHostObject 的分工：那边看\"后面跟点号\"（对象），这边看\"后面跟括号\"（调用）。 </summary>"
+   },
+   {
+    "line": 776,
+    "acc": "private",
+    "ret": "bool",
+    "name": "LooksLikeHostObject",
+    "args": "string code, Match m",
+    "doc": "<summary> 像不像\"宿主给的对象\"？只认一条语法证据：**后面紧跟点号**（`CommandButton1.Caption`）。 ★不认\"前面是 Set\" —— `Set x = ...` 的 x 是被赋值的变量，没 Dim 就是编译错误。 不做类型推断，拿不准按普通自由标识符处理。 </summary>"
+   },
+   {
+    "line": 834,
+    "acc": "private",
+    "ret": "string",
+    "name": "Clean",
+    "args": "string name",
+    "doc": ""
+   },
+   {
+    "line": 851,
+    "acc": "private",
+    "ret": "void",
+    "name": "SplitLogical",
+    "args": "string[] lines, out string[] physical, out string[] logical, out bool[] isCont",
+    "doc": ""
+   }
+  ],
+  "head": "作用域分析：从模块文本算出\"每个名字属于谁、在别处看不看得见\"（不碰 COM / UI）。 档位（越大越近，排序优先）：4 = 本过程局部/参数，3 = 本模块模块级（含 Private）， 2 = 别的模块 Public（以及本模块\"用过但没声明\"的名字），0 = 不可见（不进池）。"
+ },
+ "SelfTest.cs": {
+  "lines": 2056,
+  "classes": [
+   "SelfTest",
+   "FakeBackend"
+  ],
+  "methods": [
+   {
+    "line": 19,
+    "acc": "private",
+    "ret": "void",
+    "name": "Ok",
+    "args": "string name, bool cond, string detail = \"\"",
+    "doc": ""
+   },
+   {
+    "line": 35,
+    "acc": "public",
+    "ret": "int",
+    "name": "Run",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 74,
+    "acc": "private",
+    "ret": "void",
+    "name": "TestRules",
+    "args": "",
+    "doc": "------------------------------------------------------------------"
+   },
+   {
+    "line": 535,
+    "acc": "private",
+    "ret": "void",
+    "name": "TestParser",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 597,
+    "acc": "private",
+    "ret": "void",
+    "name": "TestEngine",
+    "args": "",
+    "doc": "------------------------------------------------------------------"
+   },
+   {
+    "line": 717,
+    "acc": "private",
+    "ret": "void",
+    "name": "TestFuzzy",
+    "args": "",
+    "doc": "------------------------------------------------------------------ 编辑手感（块结构 / 缩进 / 自动配对 / 退格接管） 每个断言都对应一条真实修过的 bug；模糊匹配里有一条\"贪心会漏判\"的经典反例。 ---------------------------------"
+   },
+   {
+    "line": 837,
+    "acc": "private",
+    "ret": "void",
+    "name": "TestScope",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 918,
+    "acc": "private",
+    "ret": "List<Candidate>",
+    "name": "enginesTrigger",
+    "args": "Engine eng, string line, int caretDisp, string proc = \"B\"",
+    "doc": "<summary>造一个假快照跑 Trigger（不碰 COM），返回候选名。</summary>"
+   },
+   {
+    "line": 941,
+    "acc": "public",
+    "ret": "Snapshot",
+    "name": "Snapshot",
+    "args": "bool verify = true",
+    "doc": ""
+   },
+   {
+    "line": 942,
+    "acc": "public",
+    "ret": "string",
+    "name": "ModuleText",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 943,
+    "acc": "public",
+    "ret": "List<string>",
+    "name": "ComponentNames",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 944,
+    "acc": "public",
+    "ret": "List<ModuleScope>",
+    "name": "ProjectScopes",
+    "args": "out int signature",
+    "doc": ""
+   },
+   {
+    "line": 949,
+    "acc": "public",
+    "ret": "bool",
+    "name": "ApplyCompletion",
+    "args": "int lineNo, int wordStartCol, int endCol, string completion, bool wantParens, bool wantSpa",
+    "doc": ""
+   },
+   {
+    "line": 957,
+    "acc": "public",
+    "ret": "string",
+    "name": "EnclosingProcName",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 1012,
+    "acc": "private",
+    "ret": "void",
+    "name": "TestChineseAndExplicit",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 1152,
+    "acc": "private",
+    "ret": "void",
+    "name": "TestGuards",
+    "args": "",
+    "doc": "<summary> v151 加的两道护栏： 1. AcceptName 必须复核\"现在还是当初算候选的那个位置吗\"； 2. 内建不能被\"同名局部变量\"一票否决。 </summary>"
+   },
+   {
+    "line": 1240,
+    "acc": "private",
+    "ret": "void",
+    "name": "TestFreeIdents",
+    "args": "",
+    "doc": "<summary> 无 Option Explicit 时，只被当**函数调用**过的名字（`Range(\"d2\")` / `InputBox(\"x\")`） 不能算\"自动声明的变量\"：否则打 `ra` 第一条会是 Excel 的 `Range`，把 `Rate` / `Randomize` 顶下去。 </summary>"
+   },
+   {
+    "line": 1402,
+    "acc": "private",
+    "ret": "void",
+    "name": "TestMember",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 1581,
+    "acc": "private",
+    "ret": "void",
+    "name": "TestEditing",
+    "args": "",
+    "doc": "------------------------------------------------------------------"
+   },
+   {
+    "line": 1886,
+    "acc": "private",
+    "ret": "void",
+    "name": "TestContinuation",
+    "args": "",
+    "doc": "------------------------------------------------------------------ 续行判据：`Ctrl+↑` 跨续行找最后的 Dim 时要用它，判错会把光标停在 半条语句上（`Dim a, _` 那行）。v150 删掉一键格式化（Ctrl+Shift+L）后， 这是原 Indent.cs"
+   },
+   {
+    "line": 1901,
+    "acc": "private",
+    "ret": "void",
+    "name": "TestAutoTrigger",
+    "args": "",
+    "doc": "------------------------------------------------------------------ 自动弹出的总判据：**行号变了就不能弹** 单击另一行上的变量时\"行号 + 行文本\"全变，和\"敲了一个字\"长得一样，\"最近按过键\" 那条拦不住（打完字顺手点一下）。 --------------------"
+   },
+   {
+    "line": 1931,
+    "acc": "private",
+    "ret": "void",
+    "name": "TestAutoStart",
+    "args": "",
+    "doc": "------------------------------------------------------------------ 开机自启：\"这条注册表值是不是我们这份 exe\"（纯判断，真登记走 --startuptest） ★历史值名（`VbeComplete`）也要认，只按当前名字删会让用户关了自启照样被拉起来。 -------"
+   },
+   {
+    "line": 1965,
+    "acc": "private",
+    "ret": "void",
+    "name": "TestSettingsIo",
+    "args": "",
+    "doc": "------------------------------------------------------------------ settings.ini 的写入（设置界面「保存 / 恢复默认」的底层） ★用临时 ini 文件跑：绝不能碰用户真实的那一份，写完还要把环境变量还原 —— 否则后面所有用例都会读到一个被改过的配置。 ---"
+   },
+   {
+    "line": 2024,
+    "acc": "private",
+    "ret": "void",
+    "name": "TestSnippets",
+    "args": "",
+    "doc": "------------------------------------------------------------------ 片段库：标题模糊匹配（不碰数据库，纯函数） ------------------------------------------------------------------"
+   }
+  ],
+  "head": "自检：把\"补全准不准\"的全部判据跑一遍，结果写进 selftest.log。  用文件而不是 Console：程序是 WinExe（没有控制台），而自检必须在没有桌面的 环境下也能跑。"
+ },
+ "Settings.cs": {
+  "lines": 243,
+  "classes": [
+   "Settings"
+  ],
+  "methods": [
+   {
+    "line": 48,
+    "acc": "public",
+    "ret": "string",
+    "name": "IniPath",
+    "args": "",
+    "doc": "<summary>settings.ini 的实际路径（环境变量 VBECOMPLETE_SETTINGS 优先）。</summary>"
+   },
+   {
+    "line": 54,
+    "acc": "public",
+    "ret": "void",
+    "name": "Load",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 88,
+    "acc": "public",
+    "ret": "string",
+    "name": "LastError",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 95,
+    "acc": "public",
+    "ret": "string",
+    "name": "IniValue",
+    "args": "string key",
+    "doc": "<summary> **只看 settings.ini** 里那一项的值（不吃环境变量、不吃默认值）。 设置界面用它判断\"这一项用户改过没有\" —— 环境变量是我们探针用的， 不能让它把界面上的勾选状态带跑。 </summary>"
+   },
+   {
+    "line": 106,
+    "acc": "public",
+    "ret": "bool",
+    "name": "Set",
+    "args": "string key, string value",
+    "doc": "<summary> 把一项写进 settings.ini 的 `[settings]` 段，并立刻重新 Load（本进程马上生效）。 `value == null` = 恢复默认：把那一行**注释掉**而不是删掉（行上面就是它的说明书）。 找不到那一行就把新行插在段尾（手写的 ini 可能压根没这一项）。 </summary>"
+   },
+   {
+    "line": 113,
+    "acc": "public",
+    "ret": "bool",
+    "name": "Reset",
+    "args": "string key, string defaultValue",
+    "doc": "<summary> 恢复默认：把那一行重新注释掉，并把值写回 <paramref name=\"defaultValue\"/>。 ★不能只写 `; KEY =`（模板里的值本身就是说明书）；也不能沿用行上原有的值 —— 活行上是用户改的值（比如 0），注释保留它会让\"注释掉 = 用默认值\"变成\"看起来还关着\"。 </summary>"
+   },
+   {
+    "line": 115,
+    "acc": "private",
+    "ret": "bool",
+    "name": "Write",
+    "args": "string key, string value, string commentValue",
+    "doc": ""
+   },
+   {
+    "line": 193,
+    "acc": "public",
+    "ret": "string",
+    "name": "Raw",
+    "args": "string key",
+    "doc": "<summary>取原始字符串；都没有就返回 null。</summary>"
+   },
+   {
+    "line": 206,
+    "acc": "private",
+    "ret": "bool?",
+    "name": "_boolOf",
+    "args": "string s",
+    "doc": ""
+   },
+   {
+    "line": 217,
+    "acc": "public",
+    "ret": "bool",
+    "name": "Flag",
+    "args": "string key, bool def",
+    "doc": ""
+   },
+   {
+    "line": 223,
+    "acc": "public",
+    "ret": "int",
+    "name": "Int",
+    "args": "string key, int def, int min = int.MinValue, int max = int.MaxValue",
+    "doc": ""
+   },
+   {
+    "line": 233,
+    "acc": "public",
+    "ret": "double",
+    "name": "Double",
+    "args": "string key, double def",
+    "doc": ""
+   }
+  ],
+  "head": "配置中心：与 Python 版【共用同一个 settings.ini】。  优先级（第一个\"能认出来的\"赢）：环境变量 > settings.ini > 代码默认值。 认不出的值（`AUTO_SPACE = maybe`）继续往下找，绝不因为写错一个词就让功能失效。"
+ },
+ "SettingsForm.cs": {
+  "lines": 1134,
+  "classes": [
+   "SettingsForm",
+   "Row",
+   "BankView"
+  ],
+  "methods": [
+   {
+    "line": 95,
+    "acc": "protected",
+    "ret": "void",
+    "name": "Dispose",
+    "args": "bool disposing",
+    "doc": ""
+   },
+   {
+    "line": 110,
+    "acc": "private",
+    "ret": "void",
+    "name": "BuildUi",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 195,
+    "acc": "private",
+    "ret": "void",
+    "name": "NavDraw",
+    "args": "object sender, DrawItemEventArgs e",
+    "doc": ""
+   },
+   {
+    "line": 213,
+    "acc": "public",
+    "ret": "void",
+    "name": "GoPage",
+    "args": "int i",
+    "doc": "<summary>从外面切页（托盘「添加关键字」直接落到词库页）。</summary>"
+   },
+   {
+    "line": 215,
+    "acc": "private",
+    "ret": "void",
+    "name": "SelectPage",
+    "args": "int i",
+    "doc": ""
+   },
+   {
+    "line": 231,
+    "acc": "private",
+    "ret": "TableLayoutPanel",
+    "name": "Page",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 245,
+    "acc": "private",
+    "ret": "void",
+    "name": "Add",
+    "args": "TableLayoutPanel page, Control c",
+    "doc": ""
+   },
+   {
+    "line": 254,
+    "acc": "private",
+    "ret": "Label",
+    "name": "Section",
+    "args": "string text",
+    "doc": "<summary>小节标题（一行粗体 + 上面留白）。</summary>"
+   },
+   {
+    "line": 267,
+    "acc": "private",
+    "ret": "void",
+    "name": "AddToggle",
+    "args": "TableLayoutPanel page, string key, bool def, string title, string desc, bool invert = fals",
+    "doc": "<summary>勾选项：标题一行、说明一行（说明自动换行，不会被切掉）。</summary> <param name=\"invert\"> 反向项：ini 键名是 `NO_XXX`（写了 = 关掉功能），而标签说的是功能本身，所以勾上 必须对应\"ini 里没有这一项\"。★凡\"键名带 NO_ / 标签说的是功能\"的都走这个口子， 否则框是空"
+   },
+   {
+    "line": 310,
+    "acc": "private",
+    "ret": "void",
+    "name": "AddToggleOff",
+    "args": "TableLayoutPanel page, string key, bool def, string title, string desc",
+    "doc": "<summary>反向项（键名 `NO_XXX`，勾上 = 功能开着）。见 <see cref=\"AddToggle\"/>。</summary>"
+   },
+   {
+    "line": 315,
+    "acc": "private",
+    "ret": "void",
+    "name": "AddField",
+    "args": "TableLayoutPanel page, string key, string def, string title, string desc, Control value, F",
+    "doc": "<summary>带输入框的一行：左边标题 + 说明，右边控件。</summary>"
+   },
+   {
+    "line": 365,
+    "acc": "private",
+    "ret": "NumericUpDown",
+    "name": "Number",
+    "args": "int min, int max, int value, int width = 90",
+    "doc": ""
+   },
+   {
+    "line": 374,
+    "acc": "private",
+    "ret": "ComboBox",
+    "name": "Combo",
+    "args": "string[] items, int index, int width",
+    "doc": ""
+   },
+   {
+    "line": 390,
+    "acc": "private",
+    "ret": "Panel",
+    "name": "BuildCommonPage",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 446,
+    "acc": "private",
+    "ret": "int",
+    "name": "IndentIndex",
+    "args": "string raw",
+    "doc": ""
+   },
+   {
+    "line": 462,
+    "acc": "private",
+    "ret": "Panel",
+    "name": "BuildHotkeyPage",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 492,
+    "acc": "private",
+    "ret": "Panel",
+    "name": "BuildCandidatePage",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 526,
+    "acc": "private",
+    "ret": "Panel",
+    "name": "BuildLookPage",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 587,
+    "acc": "private",
+    "ret": "void",
+    "name": "AddColor",
+    "args": "TableLayoutPanel page, string key, string def, string title, string desc",
+    "doc": ""
+   },
+   {
+    "line": 622,
+    "acc": "private",
+    "ret": "Color",
+    "name": "ParseColor",
+    "args": "string s",
+    "doc": ""
+   },
+   {
+    "line": 627,
+    "acc": "private",
+    "ret": "string",
+    "name": "ToHex",
+    "args": "Color c",
+    "doc": ""
+   },
+   {
+    "line": 629,
+    "acc": "private",
+    "ret": "Color",
+    "name": "Contrast",
+    "args": "Color c",
+    "doc": ""
+   },
+   {
+    "line": 636,
+    "acc": "private",
+    "ret": "Panel",
+    "name": "BuildWordBankPage",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 673,
+    "acc": "private",
+    "ret": "TabPage",
+    "name": "BuildBankTab",
+    "args": "string bank, string title, string fileName",
+    "doc": ""
+   },
+   {
+    "line": 816,
+    "acc": "private",
+    "ret": "string",
+    "name": "ItemWord",
+    "args": "ListViewItem it",
+    "doc": ""
+   },
+   {
+    "line": 819,
+    "acc": "private",
+    "ret": "void",
+    "name": "ReloadBank",
+    "args": "BankView v",
+    "doc": ""
+   },
+   {
+    "line": 828,
+    "acc": "private",
+    "ret": "void",
+    "name": "Refilter",
+    "args": "BankView v",
+    "doc": ""
+   },
+   {
+    "line": 903,
+    "acc": "private",
+    "ret": "void",
+    "name": "AddWord",
+    "args": "BankView v",
+    "doc": ""
+   },
+   {
+    "line": 927,
+    "acc": "private",
+    "ret": "void",
+    "name": "EditWord",
+    "args": "BankView v",
+    "doc": ""
+   },
+   {
+    "line": 948,
+    "acc": "private",
+    "ret": "void",
+    "name": "DeleteWords",
+    "args": "BankView v",
+    "doc": ""
+   },
+   {
+    "line": 964,
+    "acc": "private",
+    "ret": "void",
+    "name": "SearchFor",
+    "args": "BankView v, string word",
+    "doc": ""
+   },
+   {
+    "line": 978,
+    "acc": "private",
+    "ret": "void",
+    "name": "AfterBankChange",
+    "args": "string what",
+    "doc": "<summary>写完库的统一收尾：重灌内存镜像 + 清候选池 + 报状态。</summary>"
+   },
+   {
+    "line": 985,
+    "acc": "private",
+    "ret": "void",
+    "name": "RevealFile",
+    "args": "string path",
+    "doc": ""
+   },
+   {
+    "line": 1004,
+    "acc": "private",
+    "ret": "void",
+    "name": "SaveAll",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 1042,
+    "acc": "internal",
+    "ret": "bool",
+    "name": "SetRowForTest",
+    "args": "string key, string value",
+    "doc": "<summary> 离屏自检用：把某一项设成给定值并走一遍「保存」（和点按钮完全同一条路径）。 ★存在的理由：真正会出错的不是 Settings.Set，而是\"界面上的勾选框接了哪个 ini 键\"这层接线 —— 接错了界面上一切正常、ini 里却写着别的项。 </summary>"
+   },
+   {
+    "line": 1060,
+    "acc": "internal",
+    "ret": "bool",
+    "name": "RowCheckedForTest",
+    "args": "string key",
+    "doc": "<summary> 离屏自检用：这一项的勾选框现在是不是勾上的。 ★反向项（`NO_XXX`）要验的正是\"功能开着时框是勾上的\"—— 只验 ini 读值验不到这一层， 而用户看到的只有框。 </summary>"
+   },
+   {
+    "line": 1070,
+    "acc": "internal",
+    "ret": "int",
+    "name": "BankItemsForTest",
+    "args": "int index",
+    "doc": "<summary> 某个词库页签的列表里现在有几行（0 = 关键字，1 = 函数与类型）。 给 uitest 用 —— v182 那个\"函数页从没填过\"就是靠\"列表行数 vs 库行数\"抓出来的。 </summary>"
+   },
+   {
+    "line": 1074,
+    "acc": "internal",
+    "ret": "void",
+    "name": "BankTabForTest",
+    "args": "int index",
+    "doc": "<summary>切到某个词库页签（0 = 关键字，1 = 函数与类型）。给 uitest 出截图用。</summary>"
+   },
+   {
+    "line": 1086,
+    "acc": "internal",
+    "ret": "bool",
+    "name": "BankToggleForTest",
+    "args": "int index, string word, bool on",
+    "doc": "<summary> 模拟\"用户点了某一项的勾选框\"（先记一次用户动作，再改 Checked）。 用来反向验证：上面的\"程序性重建不写库\"没有把真实勾选一起关死。 </summary>"
+   },
+   {
+    "line": 1100,
+    "acc": "private",
+    "ret": "void",
+    "name": "ResetDefaults",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 1118,
+    "acc": "private",
+    "ret": "void",
+    "name": "SetStatus",
+    "args": "string text, bool error",
+    "doc": ""
+   },
+   {
+    "line": 1127,
+    "acc": "private",
+    "ret": "Panel",
+    "name": "Wrap",
+    "args": "TableLayoutPanel page",
+    "doc": "<summary>把页面套进一个 Fill 容器里（TableLayoutPanel 直接当页用会丢失滚动条）。</summary>"
+   }
+  ],
+  "head": "设置界面（托盘右键 →「设置…」/ 双击托盘）：常用 / 快捷键 / 候选 / 外观 / 词库 五页。 ★保存只写\"改过\"的项；「恢复默认」= 把那行重新注释掉并写回模板默认值，不是删行 （注释掉 = 用默认值，行上的中文说明要留着）。 ★绝大多数项即时生效（Settings 现读 + App.ReloadSettings）；只有候选窗字体/配色要重建样式。 ★词库页经 WordBank 直接读写两个库，改完 Reload + 清池；界面永远显示**真实路径**。"
+ },
+ "SnippetForm.cs": {
+  "lines": 960,
+  "classes": [
+   "SnippetForm",
+   "SnippetList"
+  ],
+  "methods": [
+   {
+    "line": 73,
+    "acc": "protected",
+    "ret": "void",
+    "name": "Dispose",
+    "args": "bool disposing",
+    "doc": "<summary>释放自己 new 的三个 Font（Control 不拥有它们，见字段处说明）。</summary>"
+   },
+   {
+    "line": 88,
+    "acc": "private",
+    "ret": "void",
+    "name": "BuildUi",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 119,
+    "acc": "private",
+    "ret": "Control",
+    "name": "BuildToolbar",
+    "args": "",
+    "doc": "<summary> 顶部工具栏：左边\"片段库\"标签（带强调色竖条）+ 搜索框（占满剩余宽度）。 ★不写\"代码片段\"（那是窗口标题），也不挂\"共 N 条 · 命中 M 条\"：那会挤短搜索框、 还让右边缘跟下面两栏对不齐。计数只在底部状态条出现一次。 </summary>"
+   },
+   {
+    "line": 183,
+    "acc": "private",
+    "ret": "Control",
+    "name": "BuildMain",
+    "args": "",
+    "doc": "<summary>主体：左列表 + 右编辑区。</summary>"
+   },
+   {
+    "line": 262,
+    "acc": "private",
+    "ret": "Control",
+    "name": "BuildFooter",
+    "args": "",
+    "doc": "<summary>底部：状态文字在左，按钮在右（\"插入\"是唯一的主按钮）。</summary>"
+   },
+   {
+    "line": 315,
+    "acc": "private",
+    "ret": "Button",
+    "name": "MakeButton",
+    "args": "string text, Action onClick, bool primary",
+    "doc": ""
+   },
+   {
+    "line": 344,
+    "acc": "public",
+    "ret": "void",
+    "name": "OpenAtCaret",
+    "args": "bool hasRect, int x, int top, int bottom",
+    "doc": "<summary>弹出并定位。rect = 光标屏幕坐标 (x, 上, 下)；拿不到就传 false。</summary>"
+   },
+   {
+    "line": 362,
+    "acc": "private",
+    "ret": "void",
+    "name": "PlaceWindow",
+    "args": "bool hasRect, int x, int top, int bottom",
+    "doc": ""
+   },
+   {
+    "line": 388,
+    "acc": "public",
+    "ret": "void",
+    "name": "Close_",
+    "args": "",
+    "doc": "<summary>收起窗口，并把焦点交回 VBE（否则用户敲键盘会\"没反应\"）。</summary>"
+   },
+   {
+    "line": 398,
+    "acc": "protected",
+    "ret": "bool",
+    "name": "ProcessCmdKey",
+    "args": "ref Message msg, Keys keyData",
+    "doc": ""
+   },
+   {
+    "line": 418,
+    "acc": "public",
+    "ret": "void",
+    "name": "Reload",
+    "args": "string keep = null",
+    "doc": "<summary>从库里重读全部片段，再按当前搜索词过滤。</summary>"
+   },
+   {
+    "line": 434,
+    "acc": "private",
+    "ret": "void",
+    "name": "Refilter",
+    "args": "string keep",
+    "doc": ""
+   },
+   {
+    "line": 484,
+    "acc": "private",
+    "ret": "void",
+    "name": "OnPick",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 506,
+    "acc": "private",
+    "ret": "void",
+    "name": "ReselectShown",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 519,
+    "acc": "private",
+    "ret": "bool",
+    "name": "IsDirty",
+    "args": "",
+    "doc": "<summary>文本框内容是否与\"当前展示的那条\"不一致（纯比较，不靠事件记账）。</summary>"
+   },
+   {
+    "line": 525,
+    "acc": "private",
+    "ret": "string",
+    "name": "CodeText",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 531,
+    "acc": "private",
+    "ret": "string",
+    "name": "ToCrlf",
+    "args": "string s",
+    "doc": "<summary> 库存内容一律是 LF，而 WinForms 的多行 TextBox 只认 CRLF —— 不换算的话 整段代码会挤成一行。存 / 插之前再换回 LF，两边字节形态保持一致。 </summary>"
+   },
+   {
+    "line": 534,
+    "acc": "private",
+    "ret": "string",
+    "name": "ToLf",
+    "args": "string s",
+    "doc": ""
+   },
+   {
+    "line": 537,
+    "acc": "private",
+    "ret": "void",
+    "name": "ShowSnippet",
+    "args": "string title",
+    "doc": ""
+   },
+   {
+    "line": 548,
+    "acc": "private",
+    "ret": "void",
+    "name": "SetStatus",
+    "args": "string msg, bool err = false",
+    "doc": ""
+   },
+   {
+    "line": 555,
+    "acc": "private",
+    "ret": "bool",
+    "name": "Confirm",
+    "args": "string text",
+    "doc": ""
+   },
+   {
+    "line": 561,
+    "acc": "private",
+    "ret": "void",
+    "name": "CodeKeyDown",
+    "args": "object sender, KeyEventArgs e",
+    "doc": ""
+   },
+   {
+    "line": 583,
+    "acc": "private",
+    "ret": "void",
+    "name": "DoAdd",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 610,
+    "acc": "private",
+    "ret": "void",
+    "name": "DoSave",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 655,
+    "acc": "private",
+    "ret": "void",
+    "name": "DoDelete",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 680,
+    "acc": "private",
+    "ret": "void",
+    "name": "DoInsert",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 702,
+    "acc": "public",
+    "ret": "void",
+    "name": "PreviewOnly",
+    "args": "List<KeyValuePair<string, string>> rows",
+    "doc": "================================================================== 给 --uitest 用：把窗子离屏画成一张图，用来核对布局配色 =================================================================="
+   },
+   {
+    "line": 751,
+    "acc": "public",
+    "ret": "void",
+    "name": "SetItems",
+    "args": "List<SnippetHit> items",
+    "doc": ""
+   },
+   {
+    "line": 762,
+    "acc": "private",
+    "ret": "void",
+    "name": "EnsureVisible",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 772,
+    "acc": "protected",
+    "ret": "void",
+    "name": "OnPaint",
+    "args": "PaintEventArgs e",
+    "doc": ""
+   },
+   {
+    "line": 870,
+    "acc": "private",
+    "ret": "string",
+    "name": "FirstLine",
+    "args": "string code",
+    "doc": ""
+   },
+   {
+    "line": 878,
+    "acc": "private",
+    "ret": "int",
+    "name": "RowAt",
+    "args": "int y",
+    "doc": ""
+   },
+   {
+    "line": 880,
+    "acc": "protected",
+    "ret": "void",
+    "name": "OnMouseMove",
+    "args": "MouseEventArgs e",
+    "doc": ""
+   },
+   {
+    "line": 888,
+    "acc": "protected",
+    "ret": "void",
+    "name": "OnMouseLeave",
+    "args": "EventArgs e",
+    "doc": ""
+   },
+   {
+    "line": 894,
+    "acc": "protected",
+    "ret": "void",
+    "name": "OnMouseDown",
+    "args": "MouseEventArgs e",
+    "doc": ""
+   },
+   {
+    "line": 906,
+    "acc": "protected",
+    "ret": "void",
+    "name": "OnMouseWheel",
+    "args": "MouseEventArgs e",
+    "doc": ""
+   },
+   {
+    "line": 914,
+    "acc": "protected",
+    "ret": "bool",
+    "name": "IsInputKey",
+    "args": "Keys keyData",
+    "doc": ""
+   },
+   {
+    "line": 931,
+    "acc": "protected",
+    "ret": "void",
+    "name": "OnKeyDown",
+    "args": "KeyEventArgs e",
+    "doc": ""
+   },
+   {
+    "line": 948,
+    "acc": "protected",
+    "ret": "void",
+    "name": "OnKeyPress",
+    "args": "KeyPressEventArgs e",
+    "doc": ""
+   }
+  ],
+  "head": "代码片段窗（Ctrl+Q）：左侧自绘列表（命中高亮 + 代码首行预览）、右侧标题 + 代码 + 按钮。 ★列表自绘：搜索命中要逐字符高亮，且 ListBox 的 DrawToBitmap 在离屏渲染时常画不出条目 （--uitest 就废了）。 ★与候选窗相反，这个窗要收键盘（搜索/编辑），所以 Esc / Ctrl+Q 必须由本窗自己绑。"
+ },
+ "SnippetStore.cs": {
+  "lines": 277,
+  "classes": [
+   "SnippetHit",
+   "SnippetStore",
+   "SnippetMatch"
+  ],
+  "methods": [
+   {
+    "line": 28,
+    "acc": "public",
+    "ret": "string",
+    "name": "LastError",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 35,
+    "acc": "public",
+    "ret": "string",
+    "name": "DbPath",
+    "args": "",
+    "doc": "<summary> 库文件路径：`SNIPPET_DB`（settings.ini / 环境变量）优先，否则程序目录下的 `snippets-cs.db`。带 `-cs` 是为了永远不与 Python 版撞名。 </summary>"
+   },
+   {
+    "line": 43,
+    "acc": "private",
+    "ret": "string",
+    "name": "DefaultPath",
+    "args": "",
+    "doc": "<summary>库里认的默认文件名（带 `-cs`，永不与 Python 版撞名）。</summary>"
+   },
+   {
+    "line": 45,
+    "acc": "private",
+    "ret": "bool",
+    "name": "Open",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 84,
+    "acc": "public",
+    "ret": "string",
+    "name": "Get",
+    "args": "string title",
+    "doc": "<summary>取一条的代码；不存在返回 null。</summary>"
+   },
+   {
+    "line": 92,
+    "acc": "public",
+    "ret": "bool",
+    "name": "Exists",
+    "args": "string title",
+    "doc": ""
+   },
+   {
+    "line": 94,
+    "acc": "public",
+    "ret": "int",
+    "name": "Count",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 105,
+    "acc": "public",
+    "ret": "bool",
+    "name": "Add",
+    "args": "string title, string code",
+    "doc": "<summary>新增。标题已存在时不覆盖（返回 false，由界面提示改走\"保存修改\"）。</summary>"
+   },
+   {
+    "line": 116,
+    "acc": "public",
+    "ret": "bool",
+    "name": "Update",
+    "args": "string title, string code",
+    "doc": "<summary>改代码（标题不变）。返回是否真的改到了行。</summary>"
+   },
+   {
+    "line": 125,
+    "acc": "public",
+    "ret": "bool",
+    "name": "Rename",
+    "args": "string oldTitle, string newTitle",
+    "doc": "<summary>改标题。新标题已被占用时不动任何数据、返回 false。</summary>"
+   },
+   {
+    "line": 137,
+    "acc": "public",
+    "ret": "bool",
+    "name": "Delete",
+    "args": "string title",
+    "doc": "<summary>删除一条。返回是否真的删掉了。</summary>"
+   },
+   {
+    "line": 145,
+    "acc": "public",
+    "ret": "void",
+    "name": "Dispose",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 159,
+    "acc": "private",
+    "ret": "string",
+    "name": "LowerKeepLen",
+    "args": "string text",
+    "doc": ""
+   },
+   {
+    "line": 171,
+    "acc": "private",
+    "ret": "bool",
+    "name": "IsBoundary",
+    "args": "string title, int idx",
+    "doc": ""
+   },
+   {
+    "line": 182,
+    "acc": "private",
+    "ret": "int?",
+    "name": "TermScore",
+    "args": "string termLow, string title, string titleLow, List<int> hitsOut",
+    "doc": "<summary>单个词在标题上的命中情况；没命中返回 null。</summary>"
+   },
+   {
+    "line": 216,
+    "acc": "public",
+    "ret": "int?",
+    "name": "Score",
+    "args": "string query, string title, out List<int> hits",
+    "doc": "<summary>query 能否模糊命中 title。命中返回分数，否则 null。</summary>"
+   },
+   {
+    "line": 244,
+    "acc": "public",
+    "ret": "List<SnippetHit>",
+    "name": "Filter",
+    "args": "List<KeyValuePair<string, string>> rows, string query",
+    "doc": "<summary> 按标题模糊过滤。空 query 原样返回全部（保持库里的顺序）； 否则按\"分数高 -> 标题短 -> 字母序\"排。 </summary>"
+   }
+  ],
+  "head": "代码片段库：SQLite 两列表（title 主键 + code），外加标题模糊匹配。 ★这是 C# 版自己的库 `snippets-cs.db`，与 Python 版没有任何读写关系。 表结构：snippets(title TEXT PRIMARY KEY, code TEXT NOT NULL) —— 刻意不加 id：标题天然唯一。 不碰 COM、不碰 WinForms，全是纯数据操作，能被 --snipetest 单独验证。"
+ },
+ "Sqlite.cs": {
+  "lines": 256,
+  "classes": [
+   "SqliteDb"
+  ],
+  "methods": [
+   {
+    "line": 58,
+    "acc": "public",
+    "ret": "string",
+    "name": "LastError",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 65,
+    "acc": "public",
+    "ret": "bool",
+    "name": "Open",
+    "args": "string path",
+    "doc": "<summary>打开（不存在就建）。目录不存在会先建目录。失败返回 false，原因在 LastError。</summary>"
+   },
+   {
+    "line": 101,
+    "acc": "private",
+    "ret": "string",
+    "name": "ErrMsg",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 113,
+    "acc": "public",
+    "ret": "bool",
+    "name": "Exec",
+    "args": "string sql",
+    "doc": "<summary>执行一条不带参数、也不读结果的 SQL（建表 / 建索引 / 触发器）。</summary>"
+   },
+   {
+    "line": 138,
+    "acc": "public",
+    "ret": "bool",
+    "name": "Write",
+    "args": "string sql, params object[] args",
+    "doc": "<summary>执行一条带 N 个文本参数的写语句，返回是否真的改到了行。</summary>"
+   },
+   {
+    "line": 172,
+    "acc": "private",
+    "ret": "void",
+    "name": "BindOne",
+    "args": "IntPtr stmt, int index, object v",
+    "doc": "<summary> 参数只支持 string / int / bool / null。 ★int 走 bind_text16（转成十进制文本）是**故意**的：SQLite 是动态类型， 表里那些 0/1 列本来就被当数字存，用文本绑进去写入时会被列的亲和性 （INTEGER）自动转回去。少一套 bind_int 就少一处原生签名写错的机"
+   },
+   {
+    "line": 186,
+    "acc": "public",
+    "ret": "List<string[]>",
+    "name": "Query",
+    "args": "string sql, int maxRows, params object[] args",
+    "doc": "<summary> 跑一条查询，把每一行读成 string[]。最多 maxRows 行（0 = 不限）。 SQL 里的 ? 按 args 顺序绑定。 </summary>"
+   },
+   {
+    "line": 226,
+    "acc": "public",
+    "ret": "long",
+    "name": "Scalar",
+    "args": "string sql, long def = 0, params object[] args",
+    "doc": "<summary>单值查询（COUNT(*) 之类）；出错或没行返回 def。</summary>"
+   },
+   {
+    "line": 234,
+    "acc": "public",
+    "ret": "void",
+    "name": "ResetError",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 236,
+    "acc": "private",
+    "ret": "int",
+    "name": "ColumnCount",
+    "args": "IntPtr stmt",
+    "doc": ""
+   },
+   {
+    "line": 241,
+    "acc": "private",
+    "ret": "string",
+    "name": "ColText",
+    "args": "IntPtr stmt, int col",
+    "doc": ""
+   },
+   {
+    "line": 247,
+    "acc": "public",
+    "ret": "void",
+    "name": "Dispose",
+    "args": "",
+    "doc": ""
+   }
+  ],
+  "head": "极薄 SQLite 封装：P/Invoke 系统自带的 winsqlite3.dll，不引任何 NuGet （承诺\"一个 exe 双击就能跑\"，不往产物里塞原生二进制）。 ★只负责跑 SQL / 读列，不认识业务表；写出去的必须是真·SQLite 文件（用户要用 DB Browser 编辑）。"
+ },
+ "TrayPin.cs": {
+  "lines": 64,
+  "classes": [
+   "TrayPin"
+  ],
+  "methods": [
+   {
+    "line": 18,
+    "acc": "public",
+    "ret": "void",
+    "name": "EnsureVisible",
+    "args": "",
+    "doc": "<summary> 尽力把自己的托盘图标设为\"始终显示\"。只写日志，不抛异常。 </summary>"
+   }
+  ],
+  "head": "让托盘图标常驻（不被 Win11 折叠进 ^ 溢出区）。 ★Win11 把每个图标的状态记在 HKCU\\Control Panel\\NotifyIconSettings\\<id>： 按 ExecutablePath 精确找到自己那条，只把 IsPromoted 置 1，绝不碰别人的。 ★这条记录在图标第一次出现时才创建，找不到就安静返回。"
+ },
+ "UiTheme.cs": {
+  "lines": 102,
+  "classes": [
+   "UiTheme"
+  ],
+  "methods": [
+   {
+    "line": 26,
+    "acc": "public",
+    "ret": "Color",
+    "name": "Hex",
+    "args": "string s",
+    "doc": ""
+   },
+   {
+    "line": 31,
+    "acc": "public",
+    "ret": "Button",
+    "name": "Primary",
+    "args": "string text",
+    "doc": ""
+   },
+   {
+    "line": 49,
+    "acc": "public",
+    "ret": "Button",
+    "name": "Plain",
+    "args": "string text, int w = 96",
+    "doc": ""
+   },
+   {
+    "line": 67,
+    "acc": "public",
+    "ret": "CheckBox",
+    "name": "Check",
+    "args": "string text, bool on, bool enabled = true",
+    "doc": ""
+   },
+   {
+    "line": 88,
+    "acc": "public",
+    "ret": "Label",
+    "name": "Label",
+    "args": "string text, Color color, Font font = null, bool wrap = false",
+    "doc": "<summary> 普通标签。`font` 只在给了的时候才赋值 —— Control.Font 不接受 null。 ★换行标签必须 AutoSize=true + MaximumSize(宽, 0)：只设 MaximumSize 而 AutoSize=false 时，高度会被\"最大高度 0\"直接压成 0（整行说明消失， 截图里只剩一个 "
+   }
+  ],
+  "head": "设置界面 / 词条编辑窗共用的观感：配色、按钮、复选框、分组标题。 ★与 PopupForm（无边框浮窗）和 SnippetForm（独立窗）同一套色板，它们各自写了一份 私有常量；这边新加的两个窗口共用一个，免得再来第三、第四份。 ★字体**不由这里创建**：Control 不拥有 Font，谁 new 的谁在 Dispose 里放掉， 集中创建等于把释放责任藏起来。"
+ },
+ "VbaBuiltins.cs": {
+  "lines": 130,
+  "classes": [
+   "VbaBuiltins"
+  ],
+  "methods": [
+   {
+    "line": 23,
+    "acc": "private",
+    "ret": "HashSet<string>",
+    "name": "Mk",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 34,
+    "acc": "private",
+    "ret": "void",
+    "name": "ApplySeed",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 53,
+    "acc": "public",
+    "ret": "void",
+    "name": "Apply",
+    "args": "IEnumerable<KeyValuePair<string, bool>> keywords, IEnumerable<KeyValuePair<string, string>",
+    "doc": "<summary> 用词库内容替换内存镜像。由 <see cref=\"WordLibrary.Load\"/> 在启动时调一次。 </summary>"
+   },
+   {
+    "line": 78,
+    "acc": "public",
+    "ret": "bool",
+    "name": "IsBuiltinFunction",
+    "args": "string name",
+    "doc": ""
+   },
+   {
+    "line": 81,
+    "acc": "public",
+    "ret": "bool",
+    "name": "IsBuiltinType",
+    "args": "string name",
+    "doc": ""
+   },
+   {
+    "line": 84,
+    "acc": "public",
+    "ret": "bool",
+    "name": "IsKeyword",
+    "args": "string name",
+    "doc": ""
+   },
+   {
+    "line": 88,
+    "acc": "public",
+    "ret": "bool",
+    "name": "IsBuiltin",
+    "args": "string name",
+    "doc": "<summary>这个词算不算\"内建词汇\"（排序时用来把用户自己的名字排前面）。</summary>"
+   },
+   {
+    "line": 92,
+    "acc": "public",
+    "ret": "bool",
+    "name": "KeywordWantsSpace",
+    "args": "string name",
+    "doc": "<summary>补全后要不要跟一个空格（以词库的 wants_space 为准）。</summary>"
+   },
+   {
+    "line": 102,
+    "acc": "public",
+    "ret": "bool",
+    "name": "IsCallableBuiltin",
+    "args": "string name",
+    "doc": "<summary> 是不是\"该补一对括号\"的可调用名字。 两道判据问的是不同问题，不能合成一条： ① 词库 wants_parens —— 挡住类型名与不可调用语句； ② 类型排除 —— 挡住 `String` / `Date` 这类\"既是类型又是函数\"的双身份名字 （在 `Dim x As String` 的位置补括号就是语法错误）。 "
+   },
+   {
+    "line": 106,
+    "acc": "public",
+    "ret": "string",
+    "name": "KindOf",
+    "args": "string name",
+    "doc": "<summary>图标档位：kw / func / type；不是内建返回 null。</summary>"
+   },
+   {
+    "line": 116,
+    "acc": "public",
+    "ret": "IEnumerable<string>",
+    "name": "Pool",
+    "args": "",
+    "doc": "<summary>给引擎用的内建名总表（关键字是否收由开关决定）。</summary>"
+   },
+   {
+    "line": 128,
+    "acc": "public",
+    "ret": "void",
+    "name": "ResetToSeed",
+    "args": "",
+    "doc": "<summary>自检 / --dbtest 用：把内存镜像恢复成内置种子。</summary>"
+   }
+  ],
+  "head": "内建名字：语言关键字 / 内建函数 / 内建类型。 ★v133 起事实来源是两个 SQLite 词库，本类只是内存镜像；保留内置种子是为了词库被删 / 打不开时补全不变哑巴。 ★枚举常量一律不收（用户口径：\"VBA 里枚举太多了，不要作为提示词\"）。 ★VBA_KEYWORDS 是关键字总开关：关掉 = 关键字一条都不提示，函数与类型照旧。"
+ },
+ "VbaTrust.cs": {
+  "lines": 148,
+  "classes": [
+   "VbaTrust"
+  ],
+  "methods": [
+   {
+    "line": 27,
+    "acc": "private",
+    "ret": "object",
+    "name": "Read",
+    "args": "string ver, string app",
+    "doc": ""
+   },
+   {
+    "line": 41,
+    "acc": "public",
+    "ret": "bool",
+    "name": "IsBlocked",
+    "args": "",
+    "doc": "<summary> 有任何一个 AccessVBOM = 0 就算被禁。值不存在按\"没禁\"处理 —— Office 的默认行为是允许，只有用户/软件显式写过 0 才是关的。 </summary>"
+   },
+   {
+    "line": 54,
+    "acc": "public",
+    "ret": "bool",
+    "name": "AllEnabled",
+    "args": "",
+    "doc": "<summary> 12 处**全是 1** 才算开着（缺值按\"没开\"算 —— Office 的出厂默认就是关的）。 ★和 IsBlocked 不是一回事：那个只认\"显式写过 0\"，用来决定要不要自动动手； 这个用来给用户看真实状态（托盘菜单的勾）。 </summary>"
+   },
+   {
+    "line": 63,
+    "acc": "public",
+    "ret": "string",
+    "name": "Detail",
+    "args": "",
+    "doc": "<summary>逐版本一行的当前值，给提示框看（用户能自己核对）。</summary>"
+   },
+   {
+    "line": 80,
+    "acc": "public",
+    "ret": "int",
+    "name": "EnableAll",
+    "args": "",
+    "doc": "<summary>全部打开，返回实际改了几处（已经是 1 的不计）。</summary>"
+   },
+   {
+    "line": 83,
+    "acc": "public",
+    "ret": "int",
+    "name": "DisableAll",
+    "args": "",
+    "doc": "<summary>全部关掉（写 0），返回实际改了几处。</summary>"
+   },
+   {
+    "line": 85,
+    "acc": "private",
+    "ret": "int",
+    "name": "Write",
+    "args": "int value",
+    "doc": ""
+   },
+   {
+    "line": 115,
+    "acc": "private",
+    "ret": "void",
+    "name": "Remember",
+    "args": "bool on",
+    "doc": "<summary> 记录\"这是用户自己的选择\"：关掉就留标记，打开就删掉。 ★标记只用来挡住**后面**的自动帮忙（见 ExplainVbeDenied），不参与状态判断 —— 状态永远以注册表为准，用户在 Office 选项里手工改过也认。 </summary>"
+   },
+   {
+    "line": 136,
+    "acc": "public",
+    "ret": "string",
+    "name": "Describe",
+    "args": "",
+    "doc": "<summary>日志 / 气泡里显示当前值。</summary>"
+   }
+  ],
+  "head": "\"信任对 VBA 工程对象模型的访问\"（AccessVBOM）。 ★WPS 默认是 0：此时 Application.VBE 直接 E_FAIL，看着像\"WPS 不支持对象模型\"， 其实只是这个开关没开。 ★WPS 读 Microsoft\\Office\\12.0\\Excel\\Security，但用户装的 Office 版本不定 ⇒ 4 个版本号 × 3 个组件全写一遍，谁读都生效。 ★这是用户的开关：他关掉之后绝不能在背后自动写回 1（trust-off.txt 记着他的选择）。"
+ },
+ "VbeBackend.cs": {
+  "lines": 1420,
+  "classes": [
+   "Snapshot",
+   "IVbeSource",
+   "VbeBackend"
+  ],
+  "methods": [
+   {
+    "line": 19,
+    "acc": "public",
+    "ret": "string",
+    "name": "ToString",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 85,
+    "acc": "public",
+    "ret": "void",
+    "name": "InvalidateSnapshot",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 91,
+    "acc": "private",
+    "ret": "void",
+    "name": "Fail",
+    "args": "Exception e",
+    "doc": ""
+   },
+   {
+    "line": 113,
+    "acc": "private",
+    "ret": "bool",
+    "name": "TryCodePane",
+    "args": "out dynamic pane, out dynamic module",
+    "doc": "<summary> 取\"当前代码窗 + 它的 CodeModule\"，拿不到返回 false。 ★VBE 关着 / 切到没有代码窗的视图时 `ActiveCodePane` 是 null，点 `.CodeModule` 会抛 null reference。那不是故障（不该报警），也不该让每个方法各判一遍。 </summary>"
+   },
+   {
+    "line": 143,
+    "acc": "public",
+    "ret": "Snapshot",
+    "name": "Snapshot",
+    "args": "bool verify = true",
+    "doc": "<summary> 轻量快照：行号 / 行文本 / 模块名 / 光标列。多行选择或不在代码窗时返回 null。 两级读取：先只 GetSelection（0.13ms），行列没动就直接返回上一轮。 </summary>"
+   },
+   {
+    "line": 223,
+    "acc": "public",
+    "ret": "string",
+    "name": "ModuleText",
+    "args": "",
+    "doc": "<summary>当前模块全文。带缓存：模块名 + 行数都没变就不重读。</summary>"
+   },
+   {
+    "line": 253,
+    "acc": "public",
+    "ret": "string",
+    "name": "ModuleTextOf",
+    "args": "string moduleName",
+    "doc": "<summary> 指定模块的全文（只读；**不切当前代码窗、不动光标**）。 <para>`ModuleText()` 只能给\"当前打开\"那个模块。探针想验\"另一个模块里的候选\" （比如不抢前台验某个窗体的控件名）时，改代码窗会干扰用户，用它。</para> </summary>"
+   },
+   {
+    "line": 283,
+    "acc": "public",
+    "ret": "void",
+    "name": "OnWeWrote",
+    "args": "",
+    "doc": "<summary>我在\"文本被我们改过\"之后必须调它，否则下一轮读到的是旧代码。</summary>"
+   },
+   {
+    "line": 294,
+    "acc": "public",
+    "ret": "void",
+    "name": "ForceReloadModule",
+    "args": "",
+    "doc": "<summary>\"纯文本里失效\"的标记：确认模块缓存已经跟不上时强制重读一次。</summary>"
+   },
+   {
+    "line": 301,
+    "acc": "public",
+    "ret": "List<string>",
+    "name": "ComponentNames",
+    "args": "",
+    "doc": "<summary>本工程所有组件的名字（模块 / 类模块 / 窗体）。缓存 30 秒。</summary>"
+   },
+   {
+    "line": 335,
+    "acc": "private",
+    "ret": "string",
+    "name": "ProjectKey",
+    "args": "",
+    "doc": "<summary> 当前工程的身份：`Name|FileName`。取不到返回空串（调用方据此跳过校验）。 <para>FileName 对\"从没保存过的工作簿\"会抛 COM 异常 —— 那种情况只用 Name。 代价是两次 COM（Name + FileName），但只在作用域重算（默认 2 秒一次）时调。</para> </summa"
+   },
+   {
+    "line": 361,
+    "acc": "public",
+    "ret": "List<ModuleScope>",
+    "name": "ProjectScopes",
+    "args": "out int signature",
+    "doc": "<summary> 全工程每个模块的作用域分析（别的模块的 Public 也要能提示 —— 那是合法的跨模块调用）。 signature = \"各组件名 + 行数\"的滚动哈希，供引擎判池子要不要重建：读全文跑正则比读 CountOfLines 贵两个数量级，而行数没变就不用重读。 </summary>"
+   },
+   {
+    "line": 479,
+    "acc": "private",
+    "ret": "List<string>",
+    "name": "FormControls",
+    "args": "object comp, string moduleName",
+    "doc": "<summary> 窗体设计器里的控件名（`TextBox1` / `CommandButton1` / `Label1`…）。 <para>★为什么非走 Designer：控件名只存在于**设计器数据**里，窗体代码模块通常 一个字都没有 —— 除非那个控件挂过事件过程，才会以 `Label1_Click` 的形式留下。 用户\"刚拖上一"
+   },
+   {
+    "line": 521,
+    "acc": "public",
+    "ret": "bool",
+    "name": "InCallStatement",
+    "args": "string line",
+    "doc": ""
+   },
+   {
+    "line": 528,
+    "acc": "public",
+    "ret": "bool",
+    "name": "ApplyCompletion",
+    "args": "int lineNo, int wordStartCol, int endCol, string completion, bool wantParens, bool wantSpa",
+    "doc": "<summary> 把 [wordStartCol, endCol) 换成 completion（都是 1-based 字符列）。 返回 true 表示真的写进去了。 </summary>"
+   },
+   {
+    "line": 612,
+    "acc": "public",
+    "ret": "bool",
+    "name": "ReplaceLineRaw",
+    "args": "int lineNo, string text",
+    "doc": ""
+   },
+   {
+    "line": 624,
+    "acc": "public",
+    "ret": "bool",
+    "name": "DeleteLines",
+    "args": "int from, int count",
+    "doc": ""
+   },
+   {
+    "line": 636,
+    "acc": "public",
+    "ret": "bool",
+    "name": "InsertLines",
+    "args": "int at, string text",
+    "doc": ""
+   },
+   {
+    "line": 648,
+    "acc": "public",
+    "ret": "int",
+    "name": "LineCount",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 657,
+    "acc": "public",
+    "ret": "string",
+    "name": "LineAt",
+    "args": "int lineNo",
+    "doc": ""
+   },
+   {
+    "line": 669,
+    "acc": "public",
+    "ret": "string",
+    "name": "LinesBlock",
+    "args": "int from, int count",
+    "doc": "<summary> 一次读回连续 <paramref name=\"count\"/> 行（VBE 用 CRLF 拼好）。 ★v145：Ctrl+/ 改走\"一次读整段\"——逐行 `Lines(i,1)` 是 count 次跨进程往返， 选 30 行就白白多付 29 次。读失败返回 null，调用方按\"拿不到\"处理。 </summary>"
+   },
+   {
+    "line": 694,
+    "acc": "public",
+    "ret": "bool",
+    "name": "RunVbeCommand",
+    "args": "int id",
+    "doc": "<summary> 直接执行 VBE 自己的命令。返回 false 表示\"没做成\"——调用方**必须**回退到 手写路径，绝不能拿 true 当\"大概成了\"（吞键却什么都没发生是最坏的结果）。 </summary>"
+   },
+   {
+    "line": 736,
+    "acc": "private",
+    "ret": "void",
+    "name": "DropCmdCache",
+    "args": "int id",
+    "doc": ""
+   },
+   {
+    "line": 747,
+    "acc": "public",
+    "ret": "bool",
+    "name": "WriteLineRaw",
+    "args": "int lineNo, string text",
+    "doc": "<summary> 把 text 写回第 lineNo 行。VBE 允许光标停在\"模块最后一行的下一行\"（尚不存在的 虚拟空行）：`Lines()` 读出来是空串、看着正常，但 `ReplaceLine()` 会抛\"无效的过程 调用或参数\"。这种行得先用 `InsertLines()` 真的建出来。 </summary>"
+   },
+   {
+    "line": 763,
+    "acc": "private",
+    "ret": "List<string>",
+    "name": "LinesAbove",
+    "args": "string[] all, int lineNo",
+    "doc": "<summary>本模块第 lineNo 行【上方】各行（越靠近它的越靠后）。</summary>"
+   },
+   {
+    "line": 772,
+    "acc": "private",
+    "ret": "List<string>",
+    "name": "LinesBelow",
+    "args": "string[] all, int lineNo",
+    "doc": "<summary>本模块第 lineNo 行【下方】各行（越靠近它的越靠前）。</summary>"
+   },
+   {
+    "line": 787,
+    "acc": "public",
+    "ret": "bool",
+    "name": "NewLineBelow",
+    "args": "bool smart, bool autoClose, bool alignBranch",
+    "doc": "<summary> Shift+Enter（smart=false）/ 回车（smart=true）：在光标行【下方】新起一行，光标落在 缩进之后，本行一个字符都不动。 smart=true 多四道保险（任一不满足返回 false，让调用方把回车还给系统）：有选区、 光标不在行尾、空行、引号没闭合。 alignBranch：本行是 Els"
+   },
+   {
+    "line": 907,
+    "acc": "private",
+    "ret": "string",
+    "name": "CloserFor",
+    "args": "string lineText, List<string> above, string[] all, int anchor",
+    "doc": "<summary>块头该补的收尾（含缩进）；不该补返回 null。</summary>"
+   },
+   {
+    "line": 924,
+    "acc": "public",
+    "ret": "bool",
+    "name": "DeleteBlankLineHere",
+    "args": "",
+    "doc": "<summary> 退格删整行：光标所在行只有空白时一次删掉，光标落到【上一行行尾】 （与 VBE 原生\"空行上按退格\"的结果一致）。 </summary>"
+   },
+   {
+    "line": 956,
+    "acc": "public",
+    "ret": "bool",
+    "name": "DeletePairHere",
+    "args": "",
+    "doc": "<summary> 退格删一对：光标夹在一对**空**括号 / 空引号中间时，一次把两端都删掉， 光标停在左符号原来的位置。 </summary>"
+   },
+   {
+    "line": 994,
+    "acc": "private",
+    "ret": "int",
+    "name": "LocateByPrefix",
+    "args": "string actual, string written, int off0",
+    "doc": "<summary> 在 VBE 重排过的行里找回我们那个落点：拿\"压平后的前缀\"当指纹 —— 取写入内容在 off0 之前的部分，去掉所有空白转小写，再在实际行上前缀匹配 同样长度的字符。找不到返回 -1（调用方退回原 off0）。 </summary>"
+   },
+   {
+    "line": 1012,
+    "acc": "private",
+    "ret": "string",
+    "name": "NormCode",
+    "args": "string s",
+    "doc": ""
+   },
+   {
+    "line": 1029,
+    "acc": "public",
+    "ret": "bool",
+    "name": "InsertPair",
+    "args": "char openCh",
+    "doc": "<summary> 自动配对：敲 `(` / `\"` 时补出右半边，光标落在中间。 true = 这一下我代为输入了（调用方吞掉原按键）；false = 我没管（必须放行）。 openCh 可能是**全角**（中文标点输入法）：由钩子侧换算后送进来，这一层不再猜 输入法状态（两份判据早晚会打架）。 </summary>"
+   },
+   {
+    "line": 1110,
+    "acc": "private",
+    "ret": "int",
+    "name": "LocateInserted",
+    "args": "string actual, string written, char openCh, char closeCh, int col0",
+    "doc": "<summary>在重排过的行里找 `openCh+closeCh`，取离 col0 最近的那一处（返回其\"之后\"的下标）。</summary>"
+   },
+   {
+    "line": 1129,
+    "acc": "private",
+    "ret": "bool",
+    "name": "WrapSelection",
+    "args": "int sl, int sc, int ec, char openCh, char closeCh",
+    "doc": "<summary>单行选区用一对符号包起来（`abc` -> `\"abc\"` / `(abc)`）。</summary>"
+   },
+   {
+    "line": 1165,
+    "acc": "public",
+    "ret": "bool",
+    "name": "MoveCaretLine",
+    "args": "int delta",
+    "doc": "<summary> 把代码窗光标上/下移 delta 行，尽量保持同一列。 ★不能让 VBE 自己动：Shift+↑/↓ 在 VBE 里的原生语义是**扩选**。 列原样透传（两边是同一套语义），目标行短时由 VBE 自己钳到行尾。 </summary>"
+   },
+   {
+    "line": 1202,
+    "acc": "public",
+    "ret": "bool",
+    "name": "InsertSnippet",
+    "args": "string text",
+    "doc": "<summary> 把一段（可能多行的）片段插到光标处：前半行 + 片段首行、中间行、末行 + 后半行， 所以\"光标在行中间\"也能插；有选区是替换语义。 ★尽量原子：中间行用**一次** InsertLines 灌进去；任何一步失败都回到\"什么都没发生\" （留下半截片段会让用户再点一次，片段就插两遍）。 </summary>"
+   },
+   {
+    "line": 1301,
+    "acc": "private",
+    "ret": "int",
+    "name": "TailPos",
+    "args": "string actual, string tail",
+    "doc": "<summary>尾部原文在写回后的那一行里从哪开始（找不到就退到行尾）。</summary>"
+   },
+   {
+    "line": 1310,
+    "acc": "public",
+    "ret": "bool",
+    "name": "CaretToLineEnd",
+    "args": "int lineNo",
+    "doc": "<summary>把光标放到某行的行尾（列交给 VBE 自己钳）。</summary>"
+   },
+   {
+    "line": 1331,
+    "acc": "public",
+    "ret": "bool",
+    "name": "SetCaret",
+    "args": "int lineNo, int charCol",
+    "doc": "<summary> 把光标放到第 charCol 个字符【之前】（1-based 字符列，与 VBE 的列语义一致）。 ★参数是\"第几个字符之前\"，不是\"跳过几个字符\"：直接把 charCol 喂给 DispCol 会 稳定右偏一格（真机 SetCaret(10,1) 读回来是 (10,2)）。 </summary>"
+   },
+   {
+    "line": 1349,
+    "acc": "public",
+    "ret": "bool",
+    "name": "SetSelectionRange",
+    "args": "int sl, int sc, int el, int ec",
+    "doc": "<summary> 设一个跨行选区（1-based 行 / VBE 的显示列）。 只有 `--hktest` 用它：格式化缩进\"只理选区\"的那条路，必须真的拉一个选区才算测到。 </summary>"
+   },
+   {
+    "line": 1362,
+    "acc": "public",
+    "ret": "bool",
+    "name": "TryGetSelection",
+    "args": "out int sl, out int sc, out int el, out int ec",
+    "doc": "<summary>当前选区（四个 Long）。四个出参都是 ByRef，只能走 IDispatch 直调。</summary>"
+   },
+   {
+    "line": 1373,
+    "acc": "public",
+    "ret": "string",
+    "name": "SelectedText",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 1387,
+    "acc": "public",
+    "ret": "bool",
+    "name": "FocusVbe",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 1409,
+    "acc": "public",
+    "ret": "string",
+    "name": "EnclosingProcName",
+    "args": "",
+    "doc": ""
+   }
+  ],
+  "head": "VBE 后端：读快照、读模块全文、把补全写回去、以及那些\"改一行\"的操作。  ★所有方法都只在 UI 线程调用，且【任何 COM 异常都被吞掉并返回失败】—— 补全工具永远不允许把异常抛到用户脸上，更不允许因为 VBE 忙就把自己卡死。"
+ },
+ "WordBank.cs": {
+  "lines": 267,
+  "classes": [
+   "WordEntry",
+   "WordBank"
+  ],
+  "methods": [
+   {
+    "line": 22,
+    "acc": "public",
+    "ret": "WordEntry",
+    "name": "Clone",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 34,
+    "acc": "public",
+    "ret": "string",
+    "name": "PathOf",
+    "args": "string bank",
+    "doc": ""
+   },
+   {
+    "line": 42,
+    "acc": "public",
+    "ret": "List<WordEntry>",
+    "name": "All",
+    "args": "string bank, out string err",
+    "doc": "<summary>读出整个库（**含** enabled=0 的行 —— 界面上要能把它们重新勾上）。</summary>"
+   },
+   {
+    "line": 84,
+    "acc": "public",
+    "ret": "bool",
+    "name": "Count",
+    "args": "string bank, out int total, out int on, out string err",
+    "doc": "<summary>库里有几行、其中几行启用着（状态栏用；比 All() 便宜）。</summary>"
+   },
+   {
+    "line": 114,
+    "acc": "public",
+    "ret": "bool",
+    "name": "Save",
+    "args": "string bank, WordEntry e, string oldWord, out string err",
+    "doc": "<summary> 插入或覆盖一行。<paramref name=\"oldWord\"/> 非空且与 Word 不同 = 改名 （主键是 word，只能删了再插；同一个事务里做，失败就回滚）。 返回 true = 写成功。 </summary>"
+   },
+   {
+    "line": 175,
+    "acc": "public",
+    "ret": "bool",
+    "name": "SetEnabled",
+    "args": "string bank, IEnumerable<string> words, bool on, out string err",
+    "doc": "<summary>只改启用状态（列表里勾选 / 取消勾选，一次可能几十行）。</summary>"
+   },
+   {
+    "line": 209,
+    "acc": "public",
+    "ret": "int",
+    "name": "Delete",
+    "args": "string bank, IEnumerable<string> words, out string err",
+    "doc": "<summary> 删掉若干行。返回**真的**删掉了几条（词不在库里不算错，那一条就是 0）。 ★`Write` 的返回值正是 `sqlite3_changes() > 0`，所以它同时回答了 \"SQL 失败了\"和\"这条本来就不在\"—— 前者会让 err 有内容。 </summary>"
+   },
+   {
+    "line": 244,
+    "acc": "public",
+    "ret": "void",
+    "name": "Reload",
+    "args": "",
+    "doc": "<summary> 把两个库重新灌进内存镜像（VbaBuiltins）。改完词库必须调 —— 否则用户 加了词、列表里也看得见，候选里却没有，只能靠重启。 </summary>"
+   },
+   {
+    "line": 251,
+    "acc": "public",
+    "ret": "bool",
+    "name": "IsValidWord",
+    "args": "string word, out string why",
+    "doc": "<summary> 词条合法性：VBA 标识符（字母/汉字开头，后面字母数字下划线）。 ★不做\"是不是 VBA 语法关键字\"的校验 —— 用户往库里加自己的常用词是明确支持的， 这里只挡住\"加了也用不上\"的东西（带空格、带点、纯数字）。 </summary>"
+   }
+  ],
+  "head": "词库的读写层（给设置界面用；WordLibrary 只负责\"读进来变成内存镜像\"）。 ★WordLibrary.Load 有\"表空了就灌种子\"的语义，绝不能拿来做增删改 —— 用户删到 0 条会被 当成库坏了，一重启种子全回来。这里只做 CRUD，出事都在 LastError 里。 ★改完必须 Reload()，再由调用方 Engine.InvalidatePool()，新词才立刻出现在候选里。"
+ },
+ "WordEditForm.cs": {
+  "lines": 312,
+  "classes": [
+   "WordEditForm"
+  ],
+  "methods": [
+   {
+    "line": 63,
+    "acc": "protected",
+    "ret": "void",
+    "name": "Dispose",
+    "args": "bool disposing",
+    "doc": ""
+   },
+   {
+    "line": 75,
+    "acc": "public",
+    "ret": "WordEditForm",
+    "name": "Preview",
+    "args": "string bank, WordEntry editing",
+    "doc": "<summary> 只建窗口、不弹模态 —— 给 --uitest 离屏渲染用（核对布局，不进用户流程）。 </summary>"
+   },
+   {
+    "line": 79,
+    "acc": "public",
+    "ret": "List<WordEntry>",
+    "name": "Ask",
+    "args": "IWin32Window owner, string bank, WordEntry editing",
+    "doc": "<summary>弹窗收集词条；用户取消返回 null，确定返回要写的条目（可能多条）。</summary>"
+   },
+   {
+    "line": 90,
+    "acc": "private",
+    "ret": "void",
+    "name": "BuildUi",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 250,
+    "acc": "private",
+    "ret": "void",
+    "name": "Fill",
+    "args": "WordEntry e",
+    "doc": ""
+   },
+   {
+    "line": 267,
+    "acc": "private",
+    "ret": "void",
+    "name": "SyncKind",
+    "args": "",
+    "doc": "<summary>类型选成\"类型名\"时，括号那一项没意义（选了也不会补）。</summary>"
+   },
+   {
+    "line": 275,
+    "acc": "private",
+    "ret": "void",
+    "name": "Commit",
+    "args": "",
+    "doc": ""
+   }
+  ],
+  "head": "\"添加 / 编辑词条\"小窗：一行一个批量粘，用户不用再开 DB Browser。 ★函数库问\"函数/类型 + 补括号\"，关键字库问\"补完跟空格\"—— 两者语义不同 （`Dim ` 要空格、`MsgBox()` 要括号），不能混在一个勾选框里。 ★只收集用户意图，落库在 WordBank；校验只挡\"加了也用不上\"的词（带空格、纯数字）。"
+ },
+ "WordLibrary.cs": {
+  "lines": 275,
+  "classes": [
+   "WordLibrary",
+   "KeywordSeeds"
+  ],
+  "methods": [
+   {
+    "line": 29,
+    "acc": "public",
+    "ret": "string",
+    "name": "KeywordPath",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 35,
+    "acc": "public",
+    "ret": "string",
+    "name": "FunctionPath",
+    "args": "",
+    "doc": ""
+   },
+   {
+    "line": 49,
+    "acc": "public",
+    "ret": "void",
+    "name": "Load",
+    "args": "",
+    "doc": "<summary> 载入两个库到内存。任何一个打不开都**不致命**：那一个退回内置种子， 另一个照常工作 —— 补全工具不能因为用户手滑删了个文件就变哑巴。 </summary>"
+   },
+   {
+    "line": 95,
+    "acc": "private",
+    "ret": "bool",
+    "name": "LoadKeywords",
+    "args": "List<KeyValuePair<string, bool>> outp",
+    "doc": ""
+   },
+   {
+    "line": 127,
+    "acc": "private",
+    "ret": "bool",
+    "name": "LoadFunctions",
+    "args": "List<KeyValuePair<string, string>> outp, HashSet<string> parens",
+    "doc": ""
+   },
+   {
+    "line": 163,
+    "acc": "private",
+    "ret": "bool",
+    "name": "SeedKeywords",
+    "args": "SqliteDb db",
+    "doc": "<summary> 首次建库时灌关键字种子。返回 false = 没灌成（调用方回落内置种子）。 ★BEGIN / 每条 INSERT / COMMIT 的返回值必须检查：只要有一条写失败，表里就是残缺的 0~N 条，而\"表非空就不再灌\"会让它**永远**补不回来（词库永久缺字，日志却写成功）。 </summary>"
+   },
+   {
+    "line": 185,
+    "acc": "private",
+    "ret": "bool",
+    "name": "SeedFunctions",
+    "args": "SqliteDb db",
+    "doc": "<summary>灌函数/类型种子；类型在前（理由见下面注释）。返回 false = 没灌成。</summary>"
+   },
+   {
+    "line": 224,
+    "acc": "public",
+    "ret": "void",
+    "name": "WriteReadmeOnce",
+    "args": "",
+    "doc": "<summary> 第一次建库时在旁边留一份说明（纯文本，用户改库时不用猜列是什么）。 只在文件不存在时写，绝不覆盖用户自己的笔记。 </summary>"
+   },
+   {
+    "line": 272,
+    "acc": "public",
+    "ret": "bool",
+    "name": "WantsSpace",
+    "args": "string word",
+    "doc": ""
+   }
+  ],
+  "head": "词库：两个由用户自己维护的 SQLite 库（keywords-cs.db / functions-cs.db，绝不与 PY 版共用）。 表结构：keywords(word, wants_space, enabled) / functions(word, kind, wants_parens, enabled)。 wants_space 决定关键字补完跟空格（`Dim `），wants_parens 决定函数补括号 —— 类型名 （String / Long）绝不补；enabled = 0 = \"知道但别提示我\"。 ★启动时一次性全量读进内存，之后每个按键都是纯内存匹配；表非空就不再灌种子（尊"
+ }
+}

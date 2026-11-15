@@ -1,0 +1,614 @@
+{
+ "total_pages": 87,
+ "pages": [
+  {
+   "n": 1,
+   "kind": "cover",
+   "file": null,
+   "part": null,
+   "parts": null
+  },
+  {
+   "n": 2,
+   "kind": "catalog",
+   "file": null,
+   "part": null,
+   "parts": null
+  },
+  {
+   "n": 3,
+   "kind": "section",
+   "file": null,
+   "part": null,
+   "parts": null
+  },
+  {
+   "n": 4,
+   "kind": "roadmap",
+   "file": null,
+   "part": null,
+   "parts": null
+  },
+  {
+   "n": 5,
+   "kind": "intro",
+   "file": null,
+   "part": null,
+   "parts": null
+  },
+  {
+   "n": 6,
+   "kind": "intro",
+   "file": null,
+   "part": null,
+   "parts": null
+  },
+  {
+   "n": 7,
+   "kind": "intro",
+   "file": null,
+   "part": null,
+   "parts": null
+  },
+  {
+   "n": 8,
+   "kind": "section",
+   "file": null,
+   "part": null,
+   "parts": null
+  },
+  {
+   "n": 9,
+   "kind": "file",
+   "file": "Program.cs",
+   "part": 1,
+   "parts": 1
+  },
+  {
+   "n": 10,
+   "kind": "file",
+   "file": "Settings.cs",
+   "part": 1,
+   "parts": 1
+  },
+  {
+   "n": 11,
+   "kind": "file",
+   "file": "Log.cs",
+   "part": 1,
+   "parts": 1
+  },
+  {
+   "n": 12,
+   "kind": "file",
+   "file": "Native.cs",
+   "part": 1,
+   "parts": 3
+  },
+  {
+   "n": 13,
+   "kind": "file",
+   "file": "Native.cs",
+   "part": 2,
+   "parts": 3
+  },
+  {
+   "n": 14,
+   "kind": "file",
+   "file": "Native.cs",
+   "part": 3,
+   "parts": 3
+  },
+  {
+   "n": 15,
+   "kind": "file",
+   "file": "ComCtx.cs",
+   "part": 1,
+   "parts": 2
+  },
+  {
+   "n": 16,
+   "kind": "file",
+   "file": "ComCtx.cs",
+   "part": 2,
+   "parts": 2
+  },
+  {
+   "n": 17,
+   "kind": "file",
+   "file": "ComCall.cs",
+   "part": 1,
+   "parts": 1
+  },
+  {
+   "n": 18,
+   "kind": "file",
+   "file": "AutoStart.cs",
+   "part": 1,
+   "parts": 2
+  },
+  {
+   "n": 19,
+   "kind": "file",
+   "file": "AutoStart.cs",
+   "part": 2,
+   "parts": 2
+  },
+  {
+   "n": 20,
+   "kind": "file",
+   "file": "VbaTrust.cs",
+   "part": 1,
+   "parts": 1
+  },
+  {
+   "n": 21,
+   "kind": "file",
+   "file": "TrayPin.cs",
+   "part": 1,
+   "parts": 1
+  },
+  {
+   "n": 22,
+   "kind": "section",
+   "file": null,
+   "part": null,
+   "parts": null
+  },
+  {
+   "n": 23,
+   "kind": "file",
+   "file": "Rules.cs",
+   "part": 1,
+   "parts": 4
+  },
+  {
+   "n": 24,
+   "kind": "file",
+   "file": "Rules.cs",
+   "part": 2,
+   "parts": 4
+  },
+  {
+   "n": 25,
+   "kind": "file",
+   "file": "Rules.cs",
+   "part": 3,
+   "parts": 4
+  },
+  {
+   "n": 26,
+   "kind": "file",
+   "file": "Rules.cs",
+   "part": 4,
+   "parts": 4
+  },
+  {
+   "n": 27,
+   "kind": "file",
+   "file": "Fuzzy.cs",
+   "part": 1,
+   "parts": 1
+  },
+  {
+   "n": 28,
+   "kind": "file",
+   "file": "Editing.cs",
+   "part": 1,
+   "parts": 4
+  },
+  {
+   "n": 29,
+   "kind": "file",
+   "file": "Editing.cs",
+   "part": 2,
+   "parts": 4
+  },
+  {
+   "n": 30,
+   "kind": "file",
+   "file": "Editing.cs",
+   "part": 3,
+   "parts": 4
+  },
+  {
+   "n": 31,
+   "kind": "file",
+   "file": "Editing.cs",
+   "part": 4,
+   "parts": 4
+  },
+  {
+   "n": 32,
+   "kind": "file",
+   "file": "Parser.cs",
+   "part": 1,
+   "parts": 2
+  },
+  {
+   "n": 33,
+   "kind": "file",
+   "file": "Parser.cs",
+   "part": 2,
+   "parts": 2
+  },
+  {
+   "n": 34,
+   "kind": "file",
+   "file": "Scope.cs",
+   "part": 1,
+   "parts": 2
+  },
+  {
+   "n": 35,
+   "kind": "file",
+   "file": "Scope.cs",
+   "part": 2,
+   "parts": 2
+  },
+  {
+   "n": 36,
+   "kind": "file",
+   "file": "VbaBuiltins.cs",
+   "part": 1,
+   "parts": 1
+  },
+  {
+   "n": 37,
+   "kind": "file",
+   "file": "BuiltinTables.g.cs",
+   "part": 1,
+   "parts": 1
+  },
+  {
+   "n": 38,
+   "kind": "section",
+   "file": null,
+   "part": null,
+   "parts": null
+  },
+  {
+   "n": 39,
+   "kind": "file",
+   "file": "Sqlite.cs",
+   "part": 1,
+   "parts": 1
+  },
+  {
+   "n": 40,
+   "kind": "file",
+   "file": "WordLibrary.cs",
+   "part": 1,
+   "parts": 1
+  },
+  {
+   "n": 41,
+   "kind": "file",
+   "file": "WordBank.cs",
+   "part": 1,
+   "parts": 1
+  },
+  {
+   "n": 42,
+   "kind": "file",
+   "file": "SnippetStore.cs",
+   "part": 1,
+   "parts": 2
+  },
+  {
+   "n": 43,
+   "kind": "file",
+   "file": "SnippetStore.cs",
+   "part": 2,
+   "parts": 2
+  },
+  {
+   "n": 44,
+   "kind": "file",
+   "file": "Recent.cs",
+   "part": 1,
+   "parts": 1
+  },
+  {
+   "n": 45,
+   "kind": "section",
+   "file": null,
+   "part": null,
+   "parts": null
+  },
+  {
+   "n": 46,
+   "kind": "file",
+   "file": "VbeBackend.cs",
+   "part": 1,
+   "parts": 4
+  },
+  {
+   "n": 47,
+   "kind": "file",
+   "file": "VbeBackend.cs",
+   "part": 2,
+   "parts": 4
+  },
+  {
+   "n": 48,
+   "kind": "file",
+   "file": "VbeBackend.cs",
+   "part": 3,
+   "parts": 4
+  },
+  {
+   "n": 49,
+   "kind": "file",
+   "file": "VbeBackend.cs",
+   "part": 4,
+   "parts": 4
+  },
+  {
+   "n": 50,
+   "kind": "file",
+   "file": "Engine.cs",
+   "part": 1,
+   "parts": 2
+  },
+  {
+   "n": 51,
+   "kind": "file",
+   "file": "Engine.cs",
+   "part": 2,
+   "parts": 2
+  },
+  {
+   "n": 52,
+   "kind": "file",
+   "file": "App.cs",
+   "part": 1,
+   "parts": 3
+  },
+  {
+   "n": 53,
+   "kind": "file",
+   "file": "App.cs",
+   "part": 2,
+   "parts": 3
+  },
+  {
+   "n": 54,
+   "kind": "file",
+   "file": "App.cs",
+   "part": 3,
+   "parts": 3
+  },
+  {
+   "n": 55,
+   "kind": "file",
+   "file": "Commands.cs",
+   "part": 1,
+   "parts": 1
+  },
+  {
+   "n": 56,
+   "kind": "file",
+   "file": "PopupForm.cs",
+   "part": 1,
+   "parts": 3
+  },
+  {
+   "n": 57,
+   "kind": "file",
+   "file": "PopupForm.cs",
+   "part": 2,
+   "parts": 3
+  },
+  {
+   "n": 58,
+   "kind": "file",
+   "file": "PopupForm.cs",
+   "part": 3,
+   "parts": 3
+  },
+  {
+   "n": 59,
+   "kind": "file",
+   "file": "SettingsForm.cs",
+   "part": 1,
+   "parts": 4
+  },
+  {
+   "n": 60,
+   "kind": "file",
+   "file": "SettingsForm.cs",
+   "part": 2,
+   "parts": 4
+  },
+  {
+   "n": 61,
+   "kind": "file",
+   "file": "SettingsForm.cs",
+   "part": 3,
+   "parts": 4
+  },
+  {
+   "n": 62,
+   "kind": "file",
+   "file": "SettingsForm.cs",
+   "part": 4,
+   "parts": 4
+  },
+  {
+   "n": 63,
+   "kind": "file",
+   "file": "WordEditForm.cs",
+   "part": 1,
+   "parts": 1
+  },
+  {
+   "n": 64,
+   "kind": "file",
+   "file": "SnippetForm.cs",
+   "part": 1,
+   "parts": 4
+  },
+  {
+   "n": 65,
+   "kind": "file",
+   "file": "SnippetForm.cs",
+   "part": 2,
+   "parts": 4
+  },
+  {
+   "n": 66,
+   "kind": "file",
+   "file": "SnippetForm.cs",
+   "part": 3,
+   "parts": 4
+  },
+  {
+   "n": 67,
+   "kind": "file",
+   "file": "SnippetForm.cs",
+   "part": 4,
+   "parts": 4
+  },
+  {
+   "n": 68,
+   "kind": "file",
+   "file": "InfoBox.cs",
+   "part": 1,
+   "parts": 1
+  },
+  {
+   "n": 69,
+   "kind": "file",
+   "file": "UiTheme.cs",
+   "part": 1,
+   "parts": 1
+  },
+  {
+   "n": 70,
+   "kind": "file",
+   "file": "IconAssets.cs",
+   "part": 1,
+   "parts": 1
+  },
+  {
+   "n": 71,
+   "kind": "section",
+   "file": null,
+   "part": null,
+   "parts": null
+  },
+  {
+   "n": 72,
+   "kind": "file",
+   "file": "SelfTest.cs",
+   "part": 1,
+   "parts": 2
+  },
+  {
+   "n": 73,
+   "kind": "file",
+   "file": "SelfTest.cs",
+   "part": 2,
+   "parts": 2
+  },
+  {
+   "n": 74,
+   "kind": "file",
+   "file": "Probes.Support.cs",
+   "part": 1,
+   "parts": 1
+  },
+  {
+   "n": 75,
+   "kind": "file",
+   "file": "Probes.Pure.cs",
+   "part": 1,
+   "parts": 1
+  },
+  {
+   "n": 76,
+   "kind": "file",
+   "file": "Probes.Host.cs",
+   "part": 1,
+   "parts": 2
+  },
+  {
+   "n": 77,
+   "kind": "file",
+   "file": "Probes.Host.cs",
+   "part": 2,
+   "parts": 2
+  },
+  {
+   "n": 78,
+   "kind": "file",
+   "file": "Probes.Key.cs",
+   "part": 1,
+   "parts": 1
+  },
+  {
+   "n": 79,
+   "kind": "file",
+   "file": "Probes.Decl.cs",
+   "part": 1,
+   "parts": 1
+  },
+  {
+   "n": 80,
+   "kind": "file",
+   "file": "Probes.Caret.cs",
+   "part": 1,
+   "parts": 1
+  },
+  {
+   "n": 81,
+   "kind": "file",
+   "file": "Probes.Dump.cs",
+   "part": 1,
+   "parts": 1
+  },
+  {
+   "n": 82,
+   "kind": "file",
+   "file": "Probes.Env.cs",
+   "part": 1,
+   "parts": 1
+  },
+  {
+   "n": 83,
+   "kind": "file",
+   "file": "Probes.Ui.cs",
+   "part": 1,
+   "parts": 1
+  },
+  {
+   "n": 84,
+   "kind": "outro",
+   "file": null,
+   "part": null,
+   "parts": null
+  },
+  {
+   "n": 85,
+   "kind": "outro",
+   "file": null,
+   "part": null,
+   "parts": null
+  },
+  {
+   "n": 86,
+   "kind": "outro",
+   "file": null,
+   "part": null,
+   "parts": null
+  },
+  {
+   "n": 87,
+   "kind": "ending",
+   "file": null,
+   "part": null,
+   "parts": null
+  }
+ ]
+}
